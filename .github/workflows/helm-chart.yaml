@@ -41,6 +41,7 @@ jobs:
       - name: Helm unittest
         run: |
           docker run --rm \
+            -u "$(id -u):$(id -g)" \
             -v "${GITHUB_WORKSPACE}:/apps" \
             helmunittest/helm-unittest:3.11.1-0.3.0 .
 
