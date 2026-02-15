@@ -155,6 +155,11 @@ jobs:
           git push
           git push --tags
 
+      - name: Build release notes
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          awk 'BEGIN{p=0} /^## /{if(p==0){p=1;print;next}else{exit}} p==1{print}' CHANGELOG.md > RELEASE_BODY.md
+
       - name: Trigger Helm Release workflow
         if: steps.bump.outputs.bump != 'none'
         run: |
@@ -168,4 +173,8 @@ jobs:
         with:
           tag_name: v${{ steps.next.outputs.new_version }}
           name: v${{ steps.next.outputs.new_version }}
-          generate_release_notes: true
+          body_path: RELEASE_BODY.md
+
+      - name: Cleanup release notes
+        if: always()
+        run: rm -f RELEASE_BODY.md
