@@ -43,9 +43,11 @@ jobs:
           kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.29.0 /tmp/manifest.yaml
 
       - name: Helm unittest
-        uses: helm-unittest/helm-unittest-action@v2.2.0
-        with:
-          charts: .
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/apps" \
+            helmunittest/helm-unittest:3.11.1-0.3.0 .
+
 
   release:
     runs-on: ubuntu-latest
