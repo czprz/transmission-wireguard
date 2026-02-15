@@ -158,7 +158,20 @@ jobs:
       - name: Build release notes
         if: steps.bump.outputs.bump != 'none'
         run: |
-          awk 'BEGIN{p=0} /^## /{if(p==0){p=1;print;next}else{exit}} p==1{print}' CHANGELOG.md > RELEASE_BODY.md
+          VERSION="${{ steps.next.outputs.new_version }}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^v${VERSION}$" | head -n 1)
+          {
+            echo "## v${VERSION} ($(date -u +%Y-%m-%d))"
+            echo ""
+            if [ -n "${PREV_TAG}" ]; then
+              git log "${PREV_TAG}..HEAD" --pretty=format:"* %s" || true
+            else
+              git log --pretty=format:"* %s" || true
+            fi
+          } > RELEASE_BODY.md
+          if ! grep -q "^\*" RELEASE_BODY.md; then
+            echo "* No notable changes." >> RELEASE_BODY.md
+          fi
 
       - name: Trigger Helm Release workflow
         if: steps.bump.outputs.bump != 'none'
