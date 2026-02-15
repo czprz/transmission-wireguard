@@ -1,4 +1,13 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.5.0...v) (2026-02-15)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.5.1...v) (2026-02-15)
+
+
+### Features
+
+* enhance release notes generation using conventional-changelog ([86d41a7](https://github.com/czprz/transmission-wireguard/commit/86d41a723d57b3880fe10adc0cf1e72698fc20e7))
+
+
+
+## [0.5.1](https://github.com/czprz/transmission-wireguard/compare/v0.5.0...v0.5.1) (2026-02-15)
 
 
 ### Bug Fixes
