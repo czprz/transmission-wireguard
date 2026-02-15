@@ -4,12 +4,14 @@ replicaCount: 1
 
 images:
   wireguard:
-    repository: ghcr.io/linuxserver/wireguard
-    tag: latest
+    # Override defaults from the chart if needed.
+    repository: ""
+    tag: ""
     pullPolicy: IfNotPresent
   transmission:
-    repository: lscr.io/linuxserver/transmission
-    tag: latest
+    # Override defaults from the chart if needed.
+    repository: ""
+    tag: ""
     pullPolicy: IfNotPresent
 
 service:

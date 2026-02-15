@@ -21,3 +21,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-wg" (include "twg.fullname" .) -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "twg.wireguardImage" -}}
+{{- $repo := default "ghcr.io/linuxserver/wireguard" .Values.images.wireguard.repository -}}
+{{- $tag := default "1.0.20250521-r1-ls102" .Values.images.wireguard.tag -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- end -}}
+
+{{- define "twg.transmissionImage" -}}
+{{- $repo := default "lscr.io/linuxserver/transmission" .Values.images.transmission.repository -}}
+{{- $tag := default "4.1.0-r0-ls329" .Values.images.transmission.tag -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- end -}}

@@ -22,7 +22,7 @@ spec:
       {{- end }}
       containers:
         - name: wireguard
-          image: "{{ .Values.images.wireguard.repository }}:{{ .Values.images.wireguard.tag }}"
+          image: "{{ include "twg.wireguardImage" . }}"
           imagePullPolicy: {{ .Values.images.wireguard.pullPolicy }}
           securityContext:
             {{- toYaml .Values.wireguard.securityContext | nindent 12 }}
@@ -54,7 +54,7 @@ spec:
             {{- toYaml .Values.wireguard.resources | nindent 12 }}
 
         - name: transmission
-          image: "{{ .Values.images.transmission.repository }}:{{ .Values.images.transmission.tag }}"
+          image: "{{ include "twg.transmissionImage" . }}"
           imagePullPolicy: {{ .Values.images.transmission.pullPolicy }}
           securityContext:
             {{- toYaml .Values.transmission.securityContext | nindent 12 }}

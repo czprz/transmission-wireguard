@@ -1,0 +1,142 @@
+name: Helm Main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Lint chart
+        run: helm lint . --strict
+
+      - name: Render chart
+        run: helm template transmission-wireguard . >/dev/null
+
+  release:
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Read current chart version
+        id: chart
+        uses: mikefarah/yq@v4
+        with:
+          cmd: yq -r '.version' Chart.yaml
+
+      - name: Determine recommended bump
+        id: bump
+        run: |
+          BUMP=$(npx -y conventional-recommended-bump -p angular || true)
+          if [ -z "${BUMP}" ]; then
+            echo "bump=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next version
+        id: next
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          CURRENT="${{ steps.chart.outputs.result }}"
+          BUMP="${{ steps.bump.outputs.bump }}"
+          NEW_VERSION=$(python - <<'PY'
+import os
+cur = os.environ["CURRENT"]
+bump = os.environ["BUMP"]
+parts = cur.split(".")
+if len(parts) != 3 or not all(p.isdigit() for p in parts):
+    raise SystemExit("Chart.yaml version must be x.y.z")
+major, minor, patch = map(int, parts)
+if bump == "major":
+    major += 1
+    minor = 0
+    patch = 0
+elif bump == "minor":
+    minor += 1
+    patch = 0
+elif bump == "patch":
+    patch += 1
+else:
+    raise SystemExit(f"Unsupported bump: {bump}")
+print(f"{major}.{minor}.{patch}")
+PY
+)
+          echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+        env:
+          CURRENT: ${{ steps.chart.outputs.result }}
+          BUMP: ${{ steps.bump.outputs.bump }}
+
+      - name: Update Chart.yaml version
+        if: steps.bump.outputs.bump != 'none'
+        run: yq -i '.version = strenv(NEW_VERSION)' Chart.yaml
+        env:
+          NEW_VERSION: ${{ steps.next.outputs.new_version }}
+
+      - name: Update CHANGELOG
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          touch CHANGELOG.md
+          npx -y conventional-changelog-cli -p angular -i CHANGELOG.md -s -r 0
+
+      - name: Generate release notes
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          npx -y conventional-changelog-cli -p angular -r 1 > RELEASE_NOTES.md
+
+      - name: Commit and tag
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          if [ -z "${{ steps.next.outputs.new_version }}" ]; then
+            echo "No new version computed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Chart.yaml CHANGELOG.md RELEASE_NOTES.md
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(release): v${{ steps.next.outputs.new_version }}"
+          git tag "v${{ steps.next.outputs.new_version }}"
+          git push
+          git push --tags
+
+      - name: Create GitHub release
+        if: steps.bump.outputs.bump != 'none'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.next.outputs.new_version }}
+          name: v${{ steps.next.outputs.new_version }}
+          body_path: RELEASE_NOTES.md
