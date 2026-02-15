@@ -41,10 +41,10 @@ issuer:
 persistence:
   enabled: true
   # Recommended: use a PVC with ReadWriteOnce and a stable storageClass.
-  # type: pvc
-  # accessModes:
-  #   - ReadWriteOnce
-  # size: 10Gi   # Required when using PVC; ignored for hostPath.
+  type: pvc
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi   # Required when using PVC; ignored for hostPath.
   # storageClassName: ""
   # existingClaim: ""
   # hostPath:
