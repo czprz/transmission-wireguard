@@ -38,8 +38,7 @@ jobs:
           sudo mv kubeconform /usr/local/bin/kubeconform
           kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.29.0 /tmp/manifest.yaml
 
-      - name: Install helm-unittest
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest
-
       - name: Helm unittest
-        run: helm unittest .
+        uses: helm-unittest/helm-unittest-action@v2.2.0
+        with:
+          charts: .
