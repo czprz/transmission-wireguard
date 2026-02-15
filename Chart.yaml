@@ -6,9 +6,9 @@ version: 0.2.0
 appVersion: "1.0"
 home: https://github.com/czprz/transmission-wireguard
 sources:
-	- https://github.com/czprz/transmission-wireguard
+  - https://github.com/czprz/transmission-wireguard
 keywords:
-	- transmission
-	- wireguard
-	- vpn
+  - transmission
+  - wireguard
+  - vpn
 icon: https://raw.githubusercontent.com/czprz/transmission-wireguard/main/icon.svg
