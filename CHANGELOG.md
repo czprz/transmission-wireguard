@@ -1,4 +1,13 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.3.0...v) (2026-02-15)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.3.1...v) (2026-02-15)
+
+
+### Bug Fixes
+
+* remove generation of RELEASE_NOTES.md from Helm workflow ([c8bf775](https://github.com/czprz/transmission-wireguard/commit/c8bf7753857abac287951e0c41241c3c00847222))
+
+
+
+## [0.3.1](https://github.com/czprz/transmission-wireguard/compare/v0.3.0...v0.3.1) (2026-02-15)
 
 
 ### Bug Fixes
