@@ -35,12 +35,12 @@ jobs:
         run: helm template transmission-wireguard . > /tmp/manifest.yaml
 
       - name: Kubeconform
-        uses: yannh/kubeconform@v1.0.0
-        with:
-          files: /tmp/manifest.yaml
-          strict: true
-          ignore-missing-schemas: true
-          kubernetes-version: 1.29.0
+        run: |
+          KUBECONFORM_VERSION=0.6.7
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz
+          sudo mv kubeconform /usr/local/bin/kubeconform
+          kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.29.0 /tmp/manifest.yaml
 
       - name: Install helm-unittest
         run: helm plugin install https://github.com/helm-unittest/helm-unittest
