@@ -135,6 +135,12 @@ jobs:
           npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
             conventional-changelog -p angular -i CHANGELOG.md -s -r 0
 
+      - name: Build release notes
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
+            conventional-changelog -p angular -r 1 > RELEASE_BODY.md
+
       - name: Commit and tag
         if: steps.bump.outputs.bump != 'none'
         run: |
@@ -154,12 +160,6 @@ jobs:
           git tag "v${{ steps.next.outputs.new_version }}"
           git push
           git push --tags
-
-      - name: Build release notes
-        if: steps.bump.outputs.bump != 'none'
-        run: |
-          npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
-            conventional-changelog -p angular -r 1 > RELEASE_BODY.md
 
       - name: Trigger Helm Release workflow
         if: steps.bump.outputs.bump != 'none'
