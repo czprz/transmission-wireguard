@@ -1,10 +1,9 @@
 name: Helm Release
 
-on:
-  workflow_run:
-    workflows: ["Helm Main"]
-    types:
-      - completed
+"on":
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: read
@@ -13,12 +12,6 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: >-
-      ${
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.head_branch == 'main'
-      }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,21 +25,6 @@ jobs:
 
       - name: Lint chart
         run: helm lint . --strict
-
-      - name: Read chart version
-        id: chart
-        uses: mikefarah/yq@v4
-        with:
-          cmd: yq -r '.version' Chart.yaml
-
-      - name: Verify tag exists
-        run: |
-          git fetch --tags
-          TAG="v${{ steps.chart.outputs.result }}"
-          if ! git rev-parse "${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} not found."
-            exit 1
-          fi
 
       - name: Read chart version
         id: chart
