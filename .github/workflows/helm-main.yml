@@ -1,6 +1,6 @@
 name: Helm Main
 
-on:
+"on":
   push:
     branches:
       - main
@@ -70,28 +70,30 @@ jobs:
         run: |
           CURRENT="${{ steps.chart.outputs.result }}"
           BUMP="${{ steps.bump.outputs.bump }}"
-          NEW_VERSION=$(python - <<'PY'
-import os
-cur = os.environ["CURRENT"]
-bump = os.environ["BUMP"]
-parts = cur.split(".")
-if len(parts) != 3 or not all(p.isdigit() for p in parts):
-    raise SystemExit("Chart.yaml version must be x.y.z")
-major, minor, patch = map(int, parts)
-if bump == "major":
-    major += 1
-    minor = 0
-    patch = 0
-elif bump == "minor":
-    minor += 1
-    patch = 0
-elif bump == "patch":
-    patch += 1
-else:
-    raise SystemExit(f"Unsupported bump: {bump}")
-print(f"{major}.{minor}.{patch}")
-PY
-)
+          if ! echo "${CURRENT}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Chart.yaml version must be x.y.z"
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<<"${CURRENT}"
+          case "${BUMP}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+            *)
+              echo "Unsupported bump: ${BUMP}"
+              exit 1
+              ;;
+          esac
+          NEW_VERSION="${major}.${minor}.${patch}"
           echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
         env:
           CURRENT: ${{ steps.chart.outputs.result }}
