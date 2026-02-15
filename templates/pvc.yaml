@@ -10,7 +10,7 @@ spec:
     {{- toYaml (default (list "ReadWriteOnce") .Values.persistence.accessModes) | nindent 4 }}
   resources:
     requests:
-      storage: {{ default "10Gi" .Values.persistence.size | quote }}
+      storage: {{ required "persistence.size must be set when using PVC" .Values.persistence.size | quote }}
   {{- if .Values.persistence.storageClassName }}
   storageClassName: {{ .Values.persistence.storageClassName }}
   {{- end }}

@@ -44,7 +44,7 @@ persistence:
   # type: pvc
   # accessModes:
   #   - ReadWriteOnce
-  # size: 10Gi
+  # size: 10Gi   # Required when using PVC; ignored for hostPath.
   # storageClassName: ""
   # existingClaim: ""
   # hostPath:
