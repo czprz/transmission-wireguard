@@ -1,4 +1,13 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.3.1...v) (2026-02-15)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.3.2...v) (2026-02-15)
+
+
+### Bug Fixes
+
+* remove RELEASE_NOTES.md as it is no longer needed ([ef0ae32](https://github.com/czprz/transmission-wireguard/commit/ef0ae32389ee08b19eb29d6575fa6e72da2cccdc))
+
+
+
+## [0.3.2](https://github.com/czprz/transmission-wireguard/compare/v0.3.1...v0.3.2) (2026-02-15)
 
 
 ### Bug Fixes
