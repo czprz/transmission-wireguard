@@ -4,6 +4,7 @@ name: Helm Release
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read

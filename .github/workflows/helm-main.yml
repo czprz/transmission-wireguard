@@ -139,6 +139,13 @@ jobs:
           git push
           git push --tags
 
+      - name: Trigger Helm Release workflow
+        if: steps.bump.outputs.bump != 'none'
+        run: |
+          gh workflow run helm-release.yml --ref "v${{ steps.next.outputs.new_version }}"
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
       - name: Create GitHub release
         if: steps.bump.outputs.bump != 'none'
         uses: softprops/action-gh-release@v2
