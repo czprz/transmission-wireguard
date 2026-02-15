@@ -7,10 +7,10 @@ metadata:
     {{- include "twg.labels" . | nindent 4 }}
 spec:
   accessModes:
-    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+    {{- toYaml (default (list "ReadWriteOnce") .Values.persistence.accessModes) | nindent 4 }}
   resources:
     requests:
-      storage: {{ .Values.persistence.size }}
+      storage: {{ default "10Gi" .Values.persistence.size | quote }}
   {{- if .Values.persistence.storageClassName }}
   storageClassName: {{ .Values.persistence.storageClassName }}
   {{- end }}
