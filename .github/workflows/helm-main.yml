@@ -135,12 +135,6 @@ jobs:
           npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
             conventional-changelog -p angular -i CHANGELOG.md -s -r 0
 
-      - name: Generate release notes
-        if: steps.bump.outputs.bump != 'none'
-        run: |
-          npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
-            conventional-changelog -p angular -r 1 > RELEASE_NOTES.md
-
       - name: Commit and tag
         if: steps.bump.outputs.bump != 'none'
         run: |
@@ -151,7 +145,7 @@ jobs:
           git remote set-url origin "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Chart.yaml CHANGELOG.md RELEASE_NOTES.md
+          git add Chart.yaml CHANGELOG.md
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
@@ -174,4 +168,4 @@ jobs:
         with:
           tag_name: v${{ steps.next.outputs.new_version }}
           name: v${{ steps.next.outputs.new_version }}
-          body_path: RELEASE_NOTES.md
+          generate_release_notes: true
