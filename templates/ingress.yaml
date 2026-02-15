@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "twg.fullname" . }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+  {{- $annotations := deepCopy (default dict .Values.ingress.annotations) -}}
+  {{- if .Values.issuer.enabled }}
+    {{- $issuerName := default (printf "%s-issuer" (include "twg.fullname" .)) .Values.issuer.name -}}
+    {{- if eq (default "Issuer" .Values.issuer.kind) "ClusterIssuer" -}}
+      {{- $_ := set $annotations "cert-manager.io/cluster-issuer" $issuerName -}}
+    {{- else -}}
+      {{- $_ := set $annotations "cert-manager.io/issuer" $issuerName -}}
+    {{- end -}}
+  {{- end }}
+  {{- if $annotations }}
+  annotations:
+    {{- toYaml $annotations | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "twg.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.webPort }}
+          {{- end }}
+    {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

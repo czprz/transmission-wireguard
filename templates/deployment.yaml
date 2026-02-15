@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "twg.fullname" . }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "twg.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "twg.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- if .Values.wireguard.dns.override }}
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+          {{- toYaml .Values.wireguard.dns.nameservers | nindent 10 }}
+      {{- end }}
+      containers:
+        - name: wireguard
+          image: "{{ .Values.images.wireguard.repository }}:{{ .Values.images.wireguard.tag }}"
+          imagePullPolicy: {{ .Values.images.wireguard.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.wireguard.securityContext | nindent 12 }}
+          env:
+            {{- range $k, $v := .Values.wireguard.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: wgconf
+              mountPath: /config/wg_confs
+            {{- if and .Values.wireguard.kernelMode.enabled .Values.wireguard.kernelMode.mountTun }}
+            - name: dev-net-tun
+              mountPath: /dev/net/tun
+            {{- end }}
+            {{- if and .Values.wireguard.kernelMode.enabled .Values.wireguard.kernelMode.mountLibModules }}
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            {{- end }}
+          readinessProbe:
+            exec:
+              command: ["sh","-lc","wg show wg0 >/dev/null 2>&1"]
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          resources:
+            {{- toYaml .Values.wireguard.resources | nindent 12 }}
+
+        - name: transmission
+          image: "{{ .Values.images.transmission.repository }}:{{ .Values.images.transmission.tag }}"
+          imagePullPolicy: {{ .Values.images.transmission.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.transmission.securityContext | nindent 12 }}
+          env:
+            {{- range $k, $v := .Values.transmission.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.service.webPort }}
+              protocol: TCP
+            - containerPort: {{ .Values.service.peerPortTcp }}
+              protocol: TCP
+            - containerPort: {{ .Values.service.peerPortUdp }}
+              protocol: UDP
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.service.webPort }}
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          volumeMounts:
+            - name: transmission-config
+              mountPath: /config
+            - name: transmission-settings
+              mountPath: /config/settings.json
+              subPath: settings.json
+            {{- if .Values.persistence.enabled }}
+            - name: transmission-storage
+              mountPath: {{ .Values.persistence.mounts.data.mountPath }}
+              {{- if .Values.persistence.mounts.data.subPath }}
+              subPath: {{ .Values.persistence.mounts.data.subPath }}
+              {{- end }}
+            {{- end }}
+
+      volumes:
+        - name: wgconf
+          secret:
+            secretName: {{ include "twg.wgSecretName" . }}
+
+        {{- if .Values.persistence.enabled }}
+        - name: transmission-storage
+          {{- if eq .Values.persistence.type "hostPath" }}
+          hostPath:
+            path: {{ .Values.persistence.hostPath.path | quote }}
+            type: {{ .Values.persistence.hostPath.type | quote }}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ default (include "twg.fullname" .) .Values.persistence.existingClaim }}
+          {{- end }}
+        {{- end }}
+
+        - name: transmission-config
+          emptyDir: {}
+
+        - name: transmission-settings
+          configMap:
+            name: {{ include "twg.fullname" . }}-transmission-settings
+
+        {{- if and .Values.wireguard.kernelMode.enabled .Values.wireguard.kernelMode.mountTun }}
+        - name: dev-net-tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+        {{- end }}
+        {{- if and .Values.wireguard.kernelMode.enabled .Values.wireguard.kernelMode.mountLibModules }}
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+        {{- end }}

@@ -1,0 +1,23 @@
+This chart uses a WireGuard CLIENT container (linuxserver/wireguard) + Transmission in the same Pod.
+
+1) Provide wg0.conf securely:
+   - Recommended: create a secret and set wireguard.existingSecret in values.yaml.
+     kubectl create secret generic <name> --from-file=wg0.conf=/path/to/wg0.conf
+   - Alternative: set wireguard.wg0Conf in values.yaml (not recommended for public repos).
+
+2) Ensure the Endpoint is IPv4 (NOT [IPv6]) or you can hit silent tunnel failures.
+
+3) Add a kill switch to wg0.conf (recommended). Example:
+
+[Interface]
+...
+PostUp = iptables -P OUTPUT DROP; iptables -A OUTPUT -o lo -j ACCEPT; iptables -A OUTPUT -o wg0 -j ACCEPT; iptables -A OUTPUT -p udp -d <ENDPOINT_IP> --dport 51820 -j ACCEPT; iptables -A OUTPUT -p tcp -d 1.1.1.1 --dport 443 -j ACCEPT
+PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT
+
+(Replace <ENDPOINT_IP> with the IPv4 Endpoint IP in your config.)
+
+4) Install:
+   helm install transmission ./transmission-wireguard -f values.yaml
+
+5) Verify egress IP:
+   kubectl exec -it deploy/<release>-transmission-wireguard -c transmission -- sh -c 'wget -qO- https://ifconfig.io || true'

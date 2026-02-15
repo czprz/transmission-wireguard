@@ -1,0 +1,18 @@
+{{- if .Values.issuer.enabled -}}
+apiVersion: cert-manager.io/v1
+kind: {{ default "Issuer" .Values.issuer.kind }}
+metadata:
+  name: {{ default (printf "%s-issuer" (include "twg.fullname" .)) .Values.issuer.name }}
+spec:
+  acme:
+    server: {{ .Values.issuer.server | quote }}
+    email: {{ required "issuer.email is required when issuer.enabled=true" .Values.issuer.email | quote }}
+    privateKeySecretRef:
+      name: {{ default (printf "%s-issuer" (include "twg.fullname" .)) .Values.issuer.privateKeySecretName }}
+    solvers:
+      - http01:
+          ingress:
+            {{- if .Values.ingress.className }}
+            class: {{ .Values.ingress.className | quote }}
+            {{- end }}
+{{- end }}

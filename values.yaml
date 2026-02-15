@@ -1,0 +1,130 @@
+# Running more than 1 replica is not recommended unless each replica has
+# its own unique storage and WireGuard config.
+replicaCount: 1
+
+images:
+  wireguard:
+    repository: ghcr.io/linuxserver/wireguard
+    tag: latest
+    pullPolicy: IfNotPresent
+  transmission:
+    repository: lscr.io/linuxserver/transmission
+    tag: latest
+    pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  webPort: 9091
+  peerPortTcp: 51413
+  peerPortUdp: 51413
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+issuer:
+  # Enable to create a cert-manager Issuer/ClusterIssuer for this release.
+  # If you already have one, keep this disabled and reference it in ingress.annotations.
+  enabled: false
+  kind: Issuer
+  name: ""
+  email: ""
+  server: https://acme-v02.api.letsencrypt.org/directory
+  privateKeySecretName: ""
+
+persistence:
+  enabled: true
+  # Recommended: use a PVC with ReadWriteOnce and a stable storageClass.
+  # type: pvc
+  # accessModes:
+  #   - ReadWriteOnce
+  # size: 10Gi
+  # storageClassName: ""
+  # existingClaim: ""
+  # hostPath:
+  #   path: /path/to/transmission
+  #   type: Directory
+
+  # mounts:
+  #   data:
+  #     mountPath: /data
+
+transmission:
+  env:
+    TZ: "UTC"
+    PUID: "1000"
+    PGID: "1000"
+  # Transmission settings are rendered into settings.json on startup.
+  # Tip: you can generate a baseline by running Transmission once and exporting its settings.json.
+  # Official docs:
+  # - https://github.com/transmission/transmission/blob/main/docs/Editing-Configuration-Files.md
+  # - https://github.com/transmission/transmission/blob/main/docs/Configuration-Files.md
+  settings:
+    download-dir: /data/complete
+    incomplete-dir: /data/incomplete
+    incomplete-dir-enabled: true
+    watch-dir: /data/watch
+    watch-dir-enabled: true
+    rpc-enabled: true
+    rpc-bind-address: 0.0.0.0
+    rpc-port: 9091
+    rpc-url: /transmission/
+    rpc-authentication-required: false
+    rpc-username: ""
+    rpc-password: ""
+    rpc-whitelist: 127.0.0.1
+    rpc-whitelist-enabled: false
+    rpc-host-whitelist: localhost
+    rpc-host-whitelist-enabled: false
+    port-forwarding-enabled: false
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+      add: ["SETUID", "SETGID", "CHOWN"]
+
+wireguard:
+  # Provide a FULL WireGuard CLIENT config here (wg0.conf), with an IPv4 Endpoint.
+  # For public charts, prefer wireguard.existingSecret and leave wg0Conf empty.
+  wg0Conf: ""
+
+  # Name of an existing secret that contains wg0.conf (key name: wg0.conf).
+  # If set, this chart will NOT create its own secret.
+  existingSecret: ""
+
+  env:
+    TZ: "UTC"
+    PUID: "1000"
+    PGID: "1000"
+
+  # If your cluster forbids sysctls, this chart does NOT use them.
+  # For kernel WireGuard, the container needs these mounts/capabilities.
+  kernelMode:
+    enabled: true
+    # Mount host kernel modules so wg kernel module works (common requirement).
+    mountLibModules: true
+    # Mount /dev/net/tun
+    mountTun: true
+
+  # Pod DNS: set nameservers to public resolvers so DNS goes through the tunnel (recommended).
+  # If you change these nameservers, also update your wg0.conf `DNS = ...` line to match.
+  # Keeping them in sync avoids leaks or failed lookups when the killswitch is active.
+  dns:
+    override: true
+    nameservers:
+      - 1.1.1.1
+      - 1.0.0.1
+
+  resources: {}
+  securityContext:
+    privileged: true   # simplest/most compatible; you can tighten later if your cluster supports it
+
+probes:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
