@@ -1,4 +1,13 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.3.2...v) (2026-02-15)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.3.3...v) (2026-02-15)
+
+
+### Features
+
+* enhance release notes generation in Helm workflow ([3af4bb0](https://github.com/czprz/transmission-wireguard/commit/3af4bb0ebcd281919518a174c4f9252319635e82))
+
+
+
+## [0.3.3](https://github.com/czprz/transmission-wireguard/compare/v0.3.2...v0.3.3) (2026-02-15)
 
 
 ### Bug Fixes
