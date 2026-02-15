@@ -161,7 +161,7 @@ jobs:
           VERSION="${{ steps.next.outputs.new_version }}"
           PREV_TAG=$(git tag --sort=-v:refname | grep -v "^v${VERSION}$" | head -n 1)
           {
-            echo "## v${VERSION} ($(date -u +%Y-%m-%d))"
+            echo "## $(date -u +%Y-%m-%d)"
             echo ""
             if [ -n "${PREV_TAG}" ]; then
               git log "${PREV_TAG}..HEAD" --pretty=format:"* %s" || true
