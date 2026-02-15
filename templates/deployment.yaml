@@ -85,10 +85,13 @@ spec:
               subPath: settings.json
             {{- if .Values.persistence.enabled }}
             - name: transmission-storage
-              mountPath: {{ default "/data" (dig "persistence" "mounts" "data" "mountPath" .Values) }}
-              {{- $dataSubPath := dig "persistence" "mounts" "data" "subPath" .Values -}}
-              {{- if $dataSubPath }}
-              subPath: {{ $dataSubPath }}
+              {{- if and .Values.persistence.mounts .Values.persistence.mounts.data }}
+              mountPath: {{ default "/data" .Values.persistence.mounts.data.mountPath }}
+              {{- if .Values.persistence.mounts.data.subPath }}
+              subPath: {{ .Values.persistence.mounts.data.subPath }}
+              {{- end }}
+              {{- else }}
+              mountPath: /data
               {{- end }}
             {{- end }}
 
