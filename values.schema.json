@@ -1,0 +1,132 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": { "type": "integer", "minimum": 1 },
+    "images": {
+      "type": "object",
+      "properties": {
+        "wireguard": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" },
+            "pullPolicy": { "type": "string" }
+          }
+        },
+        "transmission": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" },
+            "pullPolicy": { "type": "string" }
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "webPort": { "type": "integer" },
+        "peerPortTcp": { "type": "integer" },
+        "peerPortUdp": { "type": "integer" },
+        "annotations": { "type": "object" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "type": "object" },
+        "hosts": { "type": "array" },
+        "tls": { "type": "array" }
+      }
+    },
+    "issuer": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "kind": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "server": { "type": "string" },
+        "privateKeySecretName": { "type": "string" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "type": { "type": "string" },
+        "accessModes": { "type": "array", "items": { "type": "string" } },
+        "size": { "type": "string" },
+        "storageClassName": { "type": "string" },
+        "existingClaim": { "type": "string" },
+        "hostPath": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "type": { "type": "string" }
+          }
+        },
+        "mounts": {
+          "type": "object",
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "mountPath": { "type": "string" },
+                "subPath": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "transmission": {
+      "type": "object",
+      "properties": {
+        "env": { "type": "object" },
+        "settings": { "type": "object" },
+        "securityContext": { "type": "object" }
+      }
+    },
+    "wireguard": {
+      "type": "object",
+      "properties": {
+        "wg0Conf": { "type": "string" },
+        "existingSecret": { "type": "string" },
+        "env": { "type": "object" },
+        "kernelMode": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "mountLibModules": { "type": "boolean" },
+            "mountTun": { "type": "boolean" }
+          }
+        },
+        "dns": {
+          "type": "object",
+          "properties": {
+            "override": { "type": "boolean" },
+            "nameservers": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "resources": { "type": "object" },
+        "securityContext": { "type": "object" }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "properties": {
+        "initialDelaySeconds": { "type": "integer" },
+        "periodSeconds": { "type": "integer" },
+        "timeoutSeconds": { "type": "integer" },
+        "failureThreshold": { "type": "integer" }
+      }
+    }
+  }
+}

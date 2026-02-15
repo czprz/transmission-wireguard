@@ -1,0 +1,6 @@
+chart-dirs:
+  - .
+validate-maintainers: false
+validate-yaml: true
+validate-schema: true
+check-version-increment: false

@@ -1,0 +1,25 @@
+suite: service
+
+templates:
+  - templates/service.yaml
+
+tests:
+  - it: should render service ports
+    asserts:
+      - isKind:
+          of: Service
+      - contains:
+          path: spec.ports
+          content:
+            port: 9091
+            protocol: TCP
+      - contains:
+          path: spec.ports
+          content:
+            port: 51413
+            protocol: TCP
+      - contains:
+          path: spec.ports
+          content:
+            port: 51413
+            protocol: UDP

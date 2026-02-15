@@ -1,0 +1,25 @@
+suite: deployment
+
+templates:
+  - templates/deployment.yaml
+
+tests:
+  - it: should render deployment with two containers
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.template.spec.containers[0].name
+          value: wireguard
+      - equal:
+          path: spec.template.spec.containers[1].name
+          value: transmission
+
+  - it: should mount settings config
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[1].volumeMounts[1].mountPath
+          value: /config/settings.json
+      - equal:
+          path: spec.template.spec.containers[1].volumeMounts[1].subPath
+          value: settings.json

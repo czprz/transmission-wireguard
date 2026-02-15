@@ -4,3 +4,11 @@ description: Transmission forced through a WireGuard client sidecar (wg-quick) i
 type: application
 version: 0.1.3
 appVersion: "1.0"
+home: https://github.com/czprz/transmission-wireguard
+sources:
+	- https://github.com/czprz/transmission-wireguard
+keywords:
+	- transmission
+	- wireguard
+	- vpn
+icon: https://raw.githubusercontent.com/czprz/transmission-wireguard/main/icon.svg

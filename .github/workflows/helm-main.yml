@@ -17,6 +17,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up chart-testing
+        uses: helm/chart-testing-action@v2.6.1
+
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
@@ -25,8 +28,25 @@ jobs:
       - name: Lint chart
         run: helm lint . --strict
 
+      - name: Chart-testing lint
+        run: ct lint --all --chart-dirs .
+
       - name: Render chart
-        run: helm template transmission-wireguard . >/dev/null
+        run: helm template transmission-wireguard . > /tmp/manifest.yaml
+
+      - name: Kubeconform
+        uses: yannh/kubeconform@v1.2.0
+        with:
+          files: /tmp/manifest.yaml
+          strict: true
+          ignore-missing-schemas: true
+          kubernetes-version: 1.29.0
+
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest
+
+      - name: Helm unittest
+        run: helm unittest .
 
   release:
     runs-on: ubuntu-latest
