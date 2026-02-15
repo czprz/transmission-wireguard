@@ -1,4 +1,13 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.4.0...v) (2026-02-15)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.5.0...v) (2026-02-15)
+
+
+### Bug Fixes
+
+* update release notes header to include only the date ([e372530](https://github.com/czprz/transmission-wireguard/commit/e37253097138c537d2b2466c75a5826ded43e91d))
+
+
+
+# [0.5.0](https://github.com/czprz/transmission-wireguard/compare/v0.4.0...v0.5.0) (2026-02-15)
 
 
 ### Features
