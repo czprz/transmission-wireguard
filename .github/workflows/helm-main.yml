@@ -35,7 +35,7 @@ jobs:
         run: helm template transmission-wireguard . > /tmp/manifest.yaml
 
       - name: Kubeconform
-        uses: yannh/kubeconform@v1.2.0
+        uses: yannh/kubeconform@v1.0.0
         with:
           files: /tmp/manifest.yaml
           strict: true
