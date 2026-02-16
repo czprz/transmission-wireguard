@@ -1,4 +1,8 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.6.0...v) (2026-02-15)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.7.0...v) (2026-02-16)
+
+
+
+# [0.7.0](https://github.com/czprz/transmission-wireguard/compare/v0.6.0...v0.7.0) (2026-02-15)
 
 
 ### Features
