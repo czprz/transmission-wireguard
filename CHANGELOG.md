@@ -1,4 +1,17 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.5.1...v) (2026-02-15)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.7.0...v) (2026-02-16)
+
+
+
+# [0.7.0](https://github.com/czprz/transmission-wireguard/compare/v0.6.0...v0.7.0) (2026-02-15)
+
+
+### Features
+
+* add release notes generation and ignore RELEASE_BODY.md ([e9abdb0](https://github.com/czprz/transmission-wireguard/commit/e9abdb0f36f1c0af8fb0d4de785b8056f03864e5))
+
+
+
+# [0.6.0](https://github.com/czprz/transmission-wireguard/compare/v0.5.1...v0.6.0) (2026-02-15)
 
 
 ### Features
