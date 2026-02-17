@@ -1,4 +1,13 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.7.0...v) (2026-02-16)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.7.1...v) (2026-02-17)
+
+
+### Bug Fixes
+
+* update workflow triggers and job name in helm-chart.yaml ([a1d39fc](https://github.com/czprz/transmission-wireguard/commit/a1d39fc8d89d3fd2a9640a08bf4213a6e6507ee3))
+
+
+
+## [0.7.1](https://github.com/czprz/transmission-wireguard/compare/v0.7.0...v0.7.1) (2026-02-16)
 
 
 
