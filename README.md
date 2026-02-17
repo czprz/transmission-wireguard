@@ -128,3 +128,51 @@ kubectl exec -it deploy/<release>-transmission-wireguard -c transmission -- \
 ## Values overview
 
 See `values.yaml` for the full list of configuration options.
+
+[![CI](https://github.com/czprz/transmission-wireguard/actions/workflows/helm-main.yml/badge.svg)](https://github.com/czprz/transmission-wireguard/actions/workflows/helm-main.yml)
+
+---
+
+> **Quickstart**
+>
+> 1. Create your WireGuard secret:
+>    ```bash
+>    kubectl create secret generic wg-client --from-file=wg0.conf=/path/to/wg0.conf
+>    ```
+> 2. Copy and edit `values.yaml` for your needs.
+> 3. Install:
+>    ```bash
+>    helm install transmission ./transmission-wireguard -f values.yaml
+>    ```
+> 4. [Verify egress IP](#verify-egress-ip) to confirm VPN routing.
+
+---
+
+# User & Contributor Guide
+
+- See [ARCHITECTURE.md](ARCHITECTURE.md) for a diagram and explanation of how the chart works.
+- See [CONTRIBUTING.md](CONTRIBUTING.md) if you want to help improve this chart.
+- For troubleshooting and advanced usage, see below.
+
+# Troubleshooting
+
+- **Tunnel not working?**
+  - Ensure your `wg0.conf` uses an IPv4 endpoint.
+  - Check that the kill switch rules in `PostUp`/`PreDown` are correct for your cluster.
+  - Use the [Verify egress IP](#verify-egress-ip) step to confirm traffic is routed through WireGuard.
+- **DNS leaks or failures?**
+  - Make sure the DNS in `values.yaml` and `wg0.conf` match.
+  - If using a custom DNS, verify it is reachable through the tunnel.
+- **Multiple replicas?**
+  - Not recommended unless each replica has unique storage and config.
+- **PVC/hostPath issues?**
+  - Check your storage class and access modes.
+
+# Advanced Usage
+
+- **Custom environment variables:**
+  - You can add extra environment variables for both containers under `transmission.env` and `wireguard.env` in `values.yaml`.
+- **Resource limits and scheduling:**
+  - Set `resources`, `nodeSelector`, `affinity`, and `tolerations` in `values.yaml` for advanced scheduling.
+- **Customizing settings.json:**
+  - See the Transmission docs linked above for all available settings.
