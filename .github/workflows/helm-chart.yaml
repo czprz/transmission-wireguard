@@ -2,16 +2,21 @@ name: Helm Chart
 
 on:
   pull_request:
+  push:
+    branches:
+      - dev
 
 permissions:
   contents: read
 
 jobs:
-  lint:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up chart-testing
         uses: helm/chart-testing-action@v2.6.1
