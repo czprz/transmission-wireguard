@@ -130,3 +130,8 @@ probes:
   periodSeconds: 10
   timeoutSeconds: 3
   failureThreshold: 3
+
+# Node scheduling and resource management
+nodeSelector: {}
+affinity: {}
+tolerations: []

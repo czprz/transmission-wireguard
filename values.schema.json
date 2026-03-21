@@ -127,6 +127,9 @@
         "timeoutSeconds": { "type": "integer" },
         "failureThreshold": { "type": "integer" }
       }
-    }
+    },
+    "nodeSelector": { "type": "object" },
+    "affinity": { "type": "object" },
+    "tolerations": { "type": "array", "items": { "type": "object" } }
   }
 }
