@@ -1,15 +1,13 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.7.1...v) (2026-02-17)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.7.2...v) (2026-03-21)
+
+## [0.7.2](https://github.com/czprz/transmission-wireguard/compare/v0.7.1...v0.7.2) (2026-02-17)
 
 
 ### Bug Fixes
 
 * update workflow triggers and job name in helm-chart.yaml ([a1d39fc](https://github.com/czprz/transmission-wireguard/commit/a1d39fc8d89d3fd2a9640a08bf4213a6e6507ee3))
 
-
-
 ## [0.7.1](https://github.com/czprz/transmission-wireguard/compare/v0.7.0...v0.7.1) (2026-02-16)
-
-
 
 # [0.7.0](https://github.com/czprz/transmission-wireguard/compare/v0.6.0...v0.7.0) (2026-02-15)
 
@@ -18,16 +16,12 @@
 
 * add release notes generation and ignore RELEASE_BODY.md ([e9abdb0](https://github.com/czprz/transmission-wireguard/commit/e9abdb0f36f1c0af8fb0d4de785b8056f03864e5))
 
-
-
 # [0.6.0](https://github.com/czprz/transmission-wireguard/compare/v0.5.1...v0.6.0) (2026-02-15)
 
 
 ### Features
 
 * enhance release notes generation using conventional-changelog ([86d41a7](https://github.com/czprz/transmission-wireguard/commit/86d41a723d57b3880fe10adc0cf1e72698fc20e7))
-
-
 
 ## [0.5.1](https://github.com/czprz/transmission-wireguard/compare/v0.5.0...v0.5.1) (2026-02-15)
 
@@ -36,16 +30,12 @@
 
 * update release notes header to include only the date ([e372530](https://github.com/czprz/transmission-wireguard/commit/e37253097138c537d2b2466c75a5826ded43e91d))
 
-
-
 # [0.5.0](https://github.com/czprz/transmission-wireguard/compare/v0.4.0...v0.5.0) (2026-02-15)
 
 
 ### Features
 
 * improve release notes generation by including version and commit log ([84717b2](https://github.com/czprz/transmission-wireguard/commit/84717b2a94ac5d61f0fdab610ac91ddaaab1d888))
-
-
 
 # [0.4.0](https://github.com/czprz/transmission-wireguard/compare/v0.3.3...v0.4.0) (2026-02-15)
 
@@ -54,16 +44,12 @@
 
 * enhance release notes generation in Helm workflow ([3af4bb0](https://github.com/czprz/transmission-wireguard/commit/3af4bb0ebcd281919518a174c4f9252319635e82))
 
-
-
 ## [0.3.3](https://github.com/czprz/transmission-wireguard/compare/v0.3.2...v0.3.3) (2026-02-15)
 
 
 ### Bug Fixes
 
 * remove RELEASE_NOTES.md as it is no longer needed ([ef0ae32](https://github.com/czprz/transmission-wireguard/commit/ef0ae32389ee08b19eb29d6575fa6e72da2cccdc))
-
-
 
 ## [0.3.2](https://github.com/czprz/transmission-wireguard/compare/v0.3.1...v0.3.2) (2026-02-15)
 
@@ -72,8 +58,6 @@
 
 * remove generation of RELEASE_NOTES.md from Helm workflow ([c8bf775](https://github.com/czprz/transmission-wireguard/commit/c8bf7753857abac287951e0c41241c3c00847222))
 
-
-
 ## [0.3.1](https://github.com/czprz/transmission-wireguard/compare/v0.3.0...v0.3.1) (2026-02-15)
 
 
@@ -81,8 +65,6 @@
 
 * enable persistence configuration for PVC in values.yaml ([bf98de3](https://github.com/czprz/transmission-wireguard/commit/bf98de346dfbe955d670c015df8c4552d3bcd32f))
 * enforce required persistence.size for PVC in values.yaml and update storage request in pvc.yaml ([ec0bdb2](https://github.com/czprz/transmission-wireguard/commit/ec0bdb290e183ea384ecb82f200ca86d7fec7433))
-
-
 
 # [0.3.0](https://github.com/czprz/transmission-wireguard/compare/v0.2.0...v0.3.0) (2026-02-15)
 
@@ -103,8 +85,6 @@
 
 * add chart-testing setup and tests for deployment and service ([f1bae29](https://github.com/czprz/transmission-wireguard/commit/f1bae2995756303c8d7950cb48fb5941a042114d))
 
-
-
 # [0.2.0](https://github.com/czprz/transmission-wireguard/compare/v0.1.3...v0.2.0) (2026-02-15)
 
 
@@ -112,17 +92,8 @@
 
 * add trigger for Helm Release workflow on version bump and enable manual dispatch ([a06d6e0](https://github.com/czprz/transmission-wireguard/commit/a06d6e0825f2f2d6ac6970897d9b02050aa2d2a8))
 
-
-
 ## [0.1.3](https://github.com/czprz/transmission-wireguard/compare/v0.1.2...v0.1.3) (2026-02-15)
-
-
 
 ## [0.1.2](https://github.com/czprz/transmission-wireguard/compare/v0.1.1...v0.1.2) (2026-02-15)
 
-
-
 ## 0.1.1 (2026-02-15)
-
-
-
