@@ -12,3 +12,9 @@ keywords:
   - wireguard
   - vpn
 icon: https://raw.githubusercontent.com/czprz/transmission-wireguard/main/icon.svg
+annotations:
+  artifacthub.io/images: |
+    - name: wireguard
+      image: ghcr.io/linuxserver/wireguard:1.0.20250521-r1-ls102
+    - name: transmission
+      image: lscr.io/linuxserver/transmission:4.1.0-r0-ls329
