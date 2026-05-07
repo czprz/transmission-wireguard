@@ -112,11 +112,12 @@ wireguard:
     # Mount /dev/net/tun
     mountTun: true
 
-  # Pod DNS: set nameservers to public resolvers so DNS goes through the tunnel (recommended).
+  # Pod DNS override: only needed if the DNS in wg0.conf doesn't apply at the pod level.
+  # If your wg0.conf already has a DNS = line, leave this disabled.
   # If you change these nameservers, also update your wg0.conf `DNS = ...` line to match.
   # Keeping them in sync avoids leaks or failed lookups when the killswitch is active.
   dns:
-    override: true
+    override: false
     nameservers:
       - 1.1.1.1
       - 1.0.0.1
