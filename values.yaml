@@ -89,6 +89,13 @@ transmission:
       drop: ["ALL"]
       add: ["SETUID", "SETGID", "CHOWN"]
 
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
 wireguard:
   # Provide a FULL WireGuard CLIENT config here (wg0.conf), with an IPv4 Endpoint.
   # For public charts, prefer wireguard.existingSecret and leave wg0Conf empty.
@@ -122,7 +129,12 @@ wireguard:
       - 1.1.1.1
       - 1.0.0.1
 
-  resources: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
   securityContext:
     privileged: true   # simplest/most compatible; you can tighten later if your cluster supports it
 

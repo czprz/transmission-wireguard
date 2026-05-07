@@ -11,10 +11,10 @@ This chart uses a WireGuard CLIENT container (linuxserver/wireguard) + Transmiss
 
 [Interface]
 ...
-PostUp = iptables -P OUTPUT DROP; iptables -A OUTPUT -o lo -j ACCEPT; iptables -A OUTPUT -o wg0 -j ACCEPT; iptables -A OUTPUT -p udp -d <ENDPOINT_IP> --dport 51820 -j ACCEPT; iptables -A OUTPUT -p tcp -d 1.1.1.1 --dport 443 -j ACCEPT
-PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT
+PostUp = iptables -w -P OUTPUT DROP; iptables -w -A OUTPUT -o lo -j ACCEPT; iptables -w -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT; iptables -w -A OUTPUT -p udp -d 203.0.113.1 --dport 51820 -j ACCEPT; iptables -w -A OUTPUT -o %i -j ACCEPT; ip6tables -w -P OUTPUT DROP; ip6tables -w -A OUTPUT -o lo -j ACCEPT; ip6tables -w -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT; ip6tables -w -A OUTPUT -o %i -j ACCEPT
+PreDown = iptables -w -P OUTPUT ACCEPT; iptables -w -F OUTPUT; ip6tables -w -P OUTPUT ACCEPT; ip6tables -w -F OUTPUT
 
-(Replace <ENDPOINT_IP> with the IPv4 Endpoint IP in your config.)
+(Replace <ENDPOINT_IP> with the actual IPv4 address from your Endpoint = line.)
 
 4) Install:
    helm install transmission ./transmission-wireguard -f values.yaml

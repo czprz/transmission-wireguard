@@ -50,6 +50,13 @@ spec:
             periodSeconds: {{ .Values.probes.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.failureThreshold }}
+          livenessProbe:
+            exec:
+              command: ["sh","-lc","hs=$(wg show wg0 latest-handshakes | awk '{print $2}'); [ -n \"$hs\" ] && [ $(($(date +%s) - hs)) -lt 300 ]"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.wireguard.resources | nindent 12 }}
 
@@ -77,6 +84,8 @@ spec:
             periodSeconds: {{ .Values.probes.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.failureThreshold }}
+          resources:
+            {{- toYaml .Values.transmission.resources | nindent 12 }}
           volumeMounts:
             - name: transmission-config
               mountPath: /config
