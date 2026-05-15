@@ -89,6 +89,7 @@ spec:
           volumeMounts:
             - name: transmission-config
               mountPath: /config
+              subPath: config
             - name: transmission-settings
               mountPath: /config/settings.json
               subPath: settings.json
@@ -122,7 +123,12 @@ spec:
         {{- end }}
 
         - name: transmission-config
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (include "twg.fullname" .) .Values.persistence.existingClaim }}
+          {{- else }}
           emptyDir: {}
+          {{- end }}
 
         - name: transmission-settings
           configMap:
