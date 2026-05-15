@@ -1,4 +1,11 @@
-# [](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.1...v) (2026-05-15)
+# [](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.2...v) (2026-05-15)
+
+
+### Bug Fixes
+
+* use single PVC volume with subPath for /config and /data ([b62e709](https://github.com/dever-labs/transmission-wireguard/commit/b62e709c7fc39bc9e15bc3b18fb16b986494e31e))
+
+## [0.9.2](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.1...v0.9.2) (2026-05-15)
 
 
 ### Bug Fixes
