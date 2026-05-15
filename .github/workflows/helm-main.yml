@@ -175,11 +175,12 @@ jobs:
 
       - name: Create GitHub release
         if: steps.bump.outputs.bump != 'none'
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3
-        with:
-          tag_name: v${{ steps.next.outputs.new_version }}
-          name: v${{ steps.next.outputs.new_version }}
-          body_path: RELEASE_BODY.md
+        run: |
+          gh release create "v${{ steps.next.outputs.new_version }}" \
+            --title "v${{ steps.next.outputs.new_version }}" \
+            --notes-file RELEASE_BODY.md
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Cleanup release notes
         if: always()
