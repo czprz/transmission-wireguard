@@ -1,5 +1,6 @@
 version: 2
 updates:
+  # GitHub Actions updates — handled here since Renovate is scoped to Docker images only.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -8,13 +9,6 @@ updates:
       time: "06:00"
     open-pull-requests-limit: 5
 
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "06:00"
-    open-pull-requests-limit: 5
-    allow:
-      - dependency-name: "ghcr.io/linuxserver/wireguard"
-      - dependency-name: "lscr.io/linuxserver/transmission"
+  # Docker image updates are handled by Renovate (renovate.json).
+  # Renovate uses regexManagers to track image tags in templates/_helpers.tpl
+  # and Chart.yaml, which Dependabot's docker ecosystem cannot do.

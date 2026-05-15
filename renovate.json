@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 7am on monday"],
+  "labels": ["dependencies"],
+  "managers": [
+    {
+      "manager": "github-actions",
+      "enabled": false
+    }
+  ],
+  "regexManagers": [
+    {
+      "fileMatch": ["templates/_helpers\\.tpl"],
+      "matchStrings": [
+        "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.transmission\\.tag"
+      ],
+      "depNameTemplate": "lscr.io/linuxserver/transmission",
+      "datasourceTemplate": "docker"
+    },
+    {
+      "fileMatch": ["templates/_helpers\\.tpl"],
+      "matchStrings": [
+        "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.wireguard\\.tag"
+      ],
+      "depNameTemplate": "ghcr.io/linuxserver/wireguard",
+      "datasourceTemplate": "docker"
+    },
+    {
+      "fileMatch": ["Chart\\.yaml"],
+      "matchStrings": [
+        "image: (?<depName>[^:]+):(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}
