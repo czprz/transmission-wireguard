@@ -129,7 +129,7 @@ kubectl exec -it deploy/<release>-transmission-wireguard -c transmission -- \
 
 See `values.yaml` for the full list of configuration options.
 
-[![CI](https://github.com/czprz/transmission-wireguard/actions/workflows/helm-main.yml/badge.svg)](https://github.com/czprz/transmission-wireguard/actions/workflows/helm-main.yml)
+[![CI](https://github.com/dever-labs/transmission-wireguard/actions/workflows/helm-main.yml/badge.svg)](https://github.com/dever-labs/transmission-wireguard/actions/workflows/helm-main.yml)
 
 ---
 
