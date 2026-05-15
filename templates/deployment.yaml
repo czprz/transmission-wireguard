@@ -87,9 +87,14 @@ spec:
           resources:
             {{- toYaml .Values.transmission.resources | nindent 12 }}
           volumeMounts:
-            - name: transmission-config
+            {{- if .Values.persistence.enabled }}
+            - name: transmission-storage
               mountPath: /config
               subPath: config
+            {{- else }}
+            - name: transmission-config
+              mountPath: /config
+            {{- end }}
             - name: transmission-settings
               mountPath: /config/settings.json
               subPath: settings.json
@@ -120,15 +125,10 @@ spec:
           persistentVolumeClaim:
             claimName: {{ default (include "twg.fullname" .) .Values.persistence.existingClaim }}
           {{- end }}
-        {{- end }}
-
+        {{- else }}
         - name: transmission-config
-          {{- if .Values.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ default (include "twg.fullname" .) .Values.persistence.existingClaim }}
-          {{- else }}
           emptyDir: {}
-          {{- end }}
+        {{- end }}
 
         - name: transmission-settings
           configMap:
