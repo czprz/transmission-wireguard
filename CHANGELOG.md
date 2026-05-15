@@ -1,11 +1,11 @@
-# [](https://github.com/czprz/transmission-wireguard/compare/v0.7.3...v) (2026-03-21)
+# [](https://github.com/czprz/transmission-wireguard/compare/v0.8.0...v) (2026-05-15)
 
 
-### Features
+### Bug Fixes
 
-* add architecture and contributing documentation, enhance Makefile, and support node scheduling in values ([#4](https://github.com/czprz/transmission-wireguard/issues/4)) ([294e318](https://github.com/czprz/transmission-wireguard/commit/294e318d037eda4798f26e6dc10ccbbef043eb0f))
+* bump Transmission image to 4.1.1-r1-ls343 to resolve tracker blacklist warning
 
-## [0.7.3](https://github.com/czprz/transmission-wireguard/compare/v0.7.2...v0.7.3) (2026-03-21)
+## [0.8.0](https://github.com/czprz/transmission-wireguard/compare/v0.7.2...v0.7.3) (2026-03-21)
 
 ## [0.7.2](https://github.com/czprz/transmission-wireguard/compare/v0.7.1...v0.7.2) (2026-02-17)
 

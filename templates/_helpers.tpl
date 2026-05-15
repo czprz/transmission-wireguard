@@ -30,6 +30,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "twg.transmissionImage" -}}
 {{- $repo := default "lscr.io/linuxserver/transmission" .Values.images.transmission.repository -}}
-{{- $tag := default "4.1.0-r0-ls329" .Values.images.transmission.tag -}}
+{{- $tag := default "4.1.1-r1-ls343" .Values.images.transmission.tag -}}
 {{- printf "%s:%s" $repo $tag -}}
 {{- end -}}
