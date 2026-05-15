@@ -1,4 +1,11 @@
-# [](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.0...v) (2026-05-15)
+# [](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.1...v) (2026-05-15)
+
+
+### Bug Fixes
+
+* persist /config via PVC subPath to survive pod restarts ([5b2f700](https://github.com/dever-labs/transmission-wireguard/commit/5b2f700864af36f35ce304aaeac3c708820540c8))
+
+## [0.9.1](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.0...v0.9.1) (2026-05-15)
 
 # [0.9.0](https://github.com/dever-labs/transmission-wireguard/compare/v0.8.0...v0.9.0) (2026-05-15)
 
