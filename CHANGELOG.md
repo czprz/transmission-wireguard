@@ -1,4 +1,6 @@
-# [](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.3...v) (2026-06-26)
+# [](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.4...v) (2026-09-04)
+
+## [0.9.4](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.3...v0.9.4) (2026-06-26)
 
 ## [0.9.3](https://github.com/dever-labs/transmission-wireguard/compare/v0.9.2...v0.9.3) (2026-05-15)
 
