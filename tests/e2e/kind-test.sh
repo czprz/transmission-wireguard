@@ -90,7 +90,8 @@ restarted_since() { (($(sidecar_restarts) > $1)); }
 helm_test() {
   local rc=0
   HELM_TEST_OUT=$(helm test $RELEASE -n "$NS" --logs --timeout 3m 2>&1) || rc=$?
-  sed -n 's/^\(PASS\|FAIL\)  /        test pod: &/p' <<<"$HELM_TEST_OUT"
+  # helm can print the pod's log more than once.
+  sed -n 's/^\(PASS\|FAIL\)  /        test pod: &/p' <<<"$HELM_TEST_OUT" | awk '!seen[$0]++'
   return $rc
 }
 

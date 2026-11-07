@@ -7,16 +7,27 @@ values:
   - values/base.yaml
 
 tests:
-  - it: runs as a helm test hook, cleaned up after success
+  - it: runs as a helm test hook
     asserts:
       - hasDocuments:
           count: 4
       - equal:
           path: metadata.annotations["helm.sh/hook"]
           value: test
+
+  - it: removes the exec Role after a successful run
+    documentIndex: 1
+    asserts:
       - equal:
           path: metadata.annotations["helm.sh/hook-delete-policy"]
           value: before-hook-creation,hook-succeeded
+
+  - it: keeps the test pod until the next run, for helm test --logs
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          value: before-hook-creation
 
   - it: may only read and exec into pods
     documentIndex: 1

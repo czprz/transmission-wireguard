@@ -190,7 +190,7 @@ It checks four things:
 - the pod uses only `wireguard.dns.nameservers`;
 - the public address the pod gets from `tests.ipEchoUrl` (default `https://icanhazip.com`) differs from the cluster's own, and `eth0` can't reach it.
 
-While the test runs, a temporary Role lets the test pod exec into the release's pods. The echo service sees both addresses; set `tests.ipEchoUrl: ""` to skip that check, or `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server and the echo service.
+While the test runs, a temporary Role lets the test pod exec into the release's pods; the finished test pod stays until the next run so `--logs` can read it. The echo service sees both addresses; set `tests.ipEchoUrl: ""` to skip that check, or `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server and the echo service.
 
 By hand:
 

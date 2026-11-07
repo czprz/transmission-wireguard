@@ -2,7 +2,8 @@
 {{- $name := printf "%s-test" (include "twg.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- $hook := dict "helm.sh/hook" "test" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" -}}
 # `helm test` checks the running release for leaks from inside the pod. The
-# Role exists only while the test runs (exec into the release's pod).
+# Role exists only while the test runs (exec into the release's pods).
+# The pod stays until the next run so `helm test --logs` can read it.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -59,7 +60,8 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
   annotations:
-    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   serviceAccountName: {{ $name }}
   restartPolicy: Never
