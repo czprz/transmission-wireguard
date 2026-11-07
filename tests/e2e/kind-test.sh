@@ -74,6 +74,8 @@ wait_for() {
 sidecar_restarts() {
   kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.initContainerStatuses[?(@.name=="wireguard")].restartCount}'
 }
+# Re-reads the count on every call, so it can be polled with wait_for.
+restarted_since() { (($(sidecar_restarts) > $1)); }
 
 step "setup"
 SERVER_KEY=$(wg_tool genkey)
@@ -188,6 +190,8 @@ fi
 
 step "web UI"
 code=$(ordinary_pod curl -sS -m 5 -o /dev/null -w '%{http_code}' "http://$RELEASE-transmission-wireguard:9091/transmission/web/" || true)
+# kubectl run -i can print the output twice (attach, then the logs).
+code=${code:0:3}
 if [[ $code =~ ^(200|301|401|409)$ ]]; then
   pass "web UI reachable through the Service (HTTP $code)"
 else
@@ -205,7 +209,7 @@ for _ in $(seq 10); do
   sleep 1
 done
 if [[ -z $leaked ]]; then pass "no direct egress during the restart"; else fail "LEAK during restart (canary saw $leaked)"; fi
-if wait_for "sidecar restarted" 30 test "$(sidecar_restarts)" -gt "$before" && wait_for "traffic via VPN" 45 via_vpn; then
+if wait_for "sidecar restarted" 30 restarted_since "$before" && wait_for "traffic via VPN" 45 via_vpn; then
   pass "tunnel recovers after restart"
 else
   fail "tunnel did not recover after restart"
@@ -230,7 +234,8 @@ if [[ -z $seen ]]; then
 else
   fail "LEAK: canary reached with the in-pod kill switch gone (saw $seen)"
 fi
-if wait_for "liveness restart" 60 test "$(sidecar_restarts)" -gt "$before"; then
+# Liveness needs 3 failures 30s apart, plus the restart itself.
+if wait_for "liveness restart" 90 restarted_since "$before"; then
   pass "liveness probe restarted the sidecar"
 else
   fail "liveness probe did not restart the sidecar"
