@@ -24,4 +24,5 @@ graph TD
 - The WireGuard container is a native sidecar (`initContainers` with `restartPolicy: Always`), so Transmission starts only after its startup probe confirms the kill switch and tunnel.
 - `files/settings-init.sh` composes `settings.json` (chart settings, RPC credentials, bind address from `wg0.conf`) into a memory-backed volume mounted read-only.
 - The NetworkPolicy is a second, independent layer enforced by the CNI outside the pod.
-- Tests: `tests/*.yaml` (helm-unittest), `tests/e2e/netns-leak-test.sh` (Docker), `tests/e2e/kind-test.sh` (kind).
+- `templates/tests/leak-test.yaml` is the `helm test`: it execs into the running pod to check the rules, `eth0`, DNS and the public address.
+- Tests: `tests/*.yaml` (helm-unittest), `tests/e2e/netns-leak-test.sh` (Docker, amd64 and arm64), `tests/e2e/kind-test.sh` on clusters from `tests/e2e/kind-cluster.sh` (kindnet dual-stack, Calico, Cilium).

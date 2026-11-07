@@ -19,6 +19,11 @@ Transmission is running behind a WireGuard sidecar with a chart-managed kill swi
   (kubectl -n {{ .Release.Namespace }} rollout restart deploy/{{ include "twg.fullname" . }}).
 {{- end }}
 
+{{- if .Values.tests.enabled }}
+Check for leaks from inside the cluster:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+
+{{ end -}}
 Verify the egress IP is the VPN's:
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c transmission -- sh -c 'wget -qO- https://ifconfig.io'
 

@@ -52,6 +52,12 @@ always wins, and overriding repository or tag drops the default digest.
 {{- include "twg.image" (dict "img" .Values.images.wireguard "repo" "ghcr.io/linuxserver/wireguard" "tag" $tag "digest" $digest) -}}
 {{- end -}}
 
+{{- define "twg.testImage" -}}
+{{- $tag := default "1.34.1" .Values.tests.image.tag -}}
+{{- $digest := default "sha256:8413f8890d19aa03f63851654f642957e65ba59654b0c9357ddc6ec0b05b63a6" .Values.tests.image.digest -}}
+{{- include "twg.image" (dict "img" .Values.tests.image "repo" "docker.io/alpine/kubectl" "tag" $tag "digest" $digest) -}}
+{{- end -}}
+
 {{- define "twg.transmissionImage" -}}
 {{- $tag := default "4.1.1-r1-ls343" .Values.images.transmission.tag -}}
 {{- $digest := default "sha256:62a88fbc210fc62d867eab9c67a0f5474db7257013ce598173a9efc1043e97b8" .Values.images.transmission.digest -}}
@@ -116,8 +122,8 @@ true
 {{- fail "wireguard.wg0Conf or wireguard.existingSecret must be set" -}}
 {{- end -}}
 {{- with .Values.wireguard.wg0Conf -}}
-{{- if and (not $.Values.firewall.allowConfFirewallHooks) (regexMatch "(?mi)^[ \\t]*(PreUp|PostUp|PreDown|PostDown)[ \\t]*=.*\\b(iptables|ip6tables|nft)\\b" .) -}}
-{{- fail "wireguard.wg0Conf has iptables/nft commands in PreUp/PostUp/PreDown/PostDown. The chart manages the kill switch, remove them." -}}
+{{- if and (not $.Values.firewall.allowConfHooks) (regexMatch "(?mi)^[ \\t]*(PreUp|PostUp|PreDown|PostDown)[ \\t]*=" .) -}}
+{{- fail "wireguard.wg0Conf has PreUp/PostUp/PreDown/PostDown hooks. They run as root and can open the kill switch, so remove them or set firewall.allowConfHooks" -}}
 {{- end -}}
 {{- $allowed := list -}}
 {{- range regexFindAll "(?mi)^[ \\t]*AllowedIPs[ \\t]*=[^#\\r\\n]*" . -1 -}}
@@ -150,6 +156,9 @@ true
 {{- end -}}
 {{- if index $s "peer-port-random-on-start" -}}
 {{- fail "transmission.settings peer-port-random-on-start must be false. The kill switch only accepts peers on the fixed peer-port" -}}
+{{- end -}}
+{{- if hasKey .Values.firewall "allowConfFirewallHooks" -}}
+{{- fail "firewall.allowConfFirewallHooks was renamed to firewall.allowConfHooks and now covers every PreUp/PostUp/PreDown/PostDown hook" -}}
 {{- end -}}
 {{- if .Values.service.exposePeerPorts -}}
 {{- fail "service.exposePeerPorts was removed. Peers can only reach Transmission through the VPN, never through the Service" -}}

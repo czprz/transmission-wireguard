@@ -20,7 +20,7 @@ PEER_PORT="${TWG_PEER_PORT:-51413}"
 WEB_CIDRS="${TWG_WEB_ALLOWED_CIDRS:-}"
 SAVED_ROUTE_TABLE="${TWG_SAVED_ROUTE_TABLE:-1000}"
 HANDSHAKE_MAX_AGE="${TWG_HANDSHAKE_MAX_AGE:-0}"
-ALLOW_CONF_HOOKS="${TWG_ALLOW_CONF_FIREWALL_HOOKS:-false}"
+ALLOW_CONF_HOOKS="${TWG_ALLOW_CONF_HOOKS:-false}"
 CONF="${TWG_WG_CONF:-/config/wg_confs/${WG_IFACE}.conf}"
 
 IN=TWG-INPUT
@@ -212,9 +212,12 @@ preflight() {
     [[ ! -e $f || $f == "$CONF" ]] || die "unexpected WireGuard config ${f}: only ${CONF} is allowed (the Secret must hold just wg0.conf)"
   done
 
+  # Hooks run as root with NET_ADMIN. Any of them (directly or through a
+  # script) can open the kill switch, e.g. by marking packets so they leave
+  # via eth0, so none run unless explicitly allowed.
   if [[ $ALLOW_CONF_HOOKS != true ]] &&
-    grep -Eiq '^[[:space:]]*(PreUp|PostUp|PreDown|PostDown)[[:space:]]*=.*(^|[^[:alnum:]_])(iptables|ip6tables|nft)([^[:alnum:]_]|$)' "$CONF"; then
-    die "${CONF} has firewall commands in PreUp/PostUp/PreDown/PostDown. The chart manages the kill switch; remove them (a PreDown that flushes OUTPUT would open the firewall on every tunnel restart)."
+    grep -Eiq '^[[:space:]]*(PreUp|PostUp|PreDown|PostDown)[[:space:]]*=' "$CONF"; then
+    die "${CONF} has PreUp/PostUp/PreDown/PostDown hooks. The chart manages the kill switch; remove them or set firewall.allowConfHooks (a PreDown that flushes OUTPUT would open the firewall on every tunnel restart)."
   fi
 
   while read -r ep; do

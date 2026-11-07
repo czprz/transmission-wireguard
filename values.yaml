@@ -130,7 +130,7 @@ wireguard:
   # Provide a FULL WireGuard CLIENT config here (wg0.conf):
   # - Endpoint must be an IP address (DNS is blocked until the tunnel is up)
   # - AllowedIPs must include 0.0.0.0/0 (and ::/0 for IPv6)
-  # - No iptables/nft commands in PostUp/PreDown: the chart owns the kill switch
+  # - No PreUp/PostUp/PreDown/PostDown hooks: the chart owns the kill switch
   # - PersistentKeepalive = 25 is recommended
   # For public charts, prefer wireguard.existingSecret and leave wg0Conf empty.
   wg0Conf: ""
@@ -202,9 +202,10 @@ firewall:
     - fc00::/7
   # Firewall mark wg-quick puts on WireGuard's own UDP packets (its default).
   wgFwmark: 51820
-  # Set true to allow iptables/nft commands in wg0.conf PreUp/PostUp/
-  # PreDown/PostDown (refused by default: they can open the kill switch).
-  allowConfFirewallHooks: false
+  # Set true to run wg0.conf PreUp/PostUp/PreDown/PostDown hooks. Refused by
+  # default: they run as root with NET_ADMIN and, directly or through a
+  # script, can open the kill switch.
+  allowConfHooks: false
 
 # Second layer, enforced by the CNI outside the pod: egress only to the VPN
 # endpoints. Needs a CNI that implements NetworkPolicy (Calico, Cilium, ...).
@@ -214,6 +215,22 @@ networkPolicy:
   ingressFrom: []
   # Extra egress rules (NetworkPolicyEgressRule list).
   extraEgress: []
+
+# `helm test <release> --logs` checks the running pod for leaks: the kill
+# switch is intact, the tunnel is up, eth0 is blocked, DNS uses only the
+# configured nameservers, and the public address differs from the cluster's.
+# While it runs, a Role lets the test pod exec into the release's pods.
+tests:
+  enabled: true
+  # Plain-text "what is my IP" service. The test fetches it from the pod
+  # (through the VPN) and from an ordinary pod and requires different
+  # addresses. The service sees both requests. Empty skips this check.
+  ipEchoUrl: https://icanhazip.com
+  image:
+    repository: ""
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
 
 podSecurityContext: {}
 #  sysctls:

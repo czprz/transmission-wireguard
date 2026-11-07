@@ -82,7 +82,7 @@ The sidecar refuses to start (and the chart refuses to render an inline `wg0Conf
 - `Endpoint` is an IP address with a port. DNS is blocked until the tunnel is up.
 - `AllowedIPs` includes `0.0.0.0/0` (add `::/0` for IPv6): full tunnel only.
 - There is no `Table =` line, and `FwMark`, if set, equals `firewall.wgFwmark` (51820). The kill switch relies on `wg-quick`'s fwmark routing.
-- There are **no** `iptables`/`nft` commands in `PreUp`/`PostUp`/`PreDown`/`PostDown`. The chart owns the kill switch. The old recommended `PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT` opened the firewall on every tunnel restart while Transmission kept running. Only direct commands are detected, so don't hide them in a script either.
+- There are **no** `PreUp`/`PostUp`/`PreDown`/`PostDown` hooks. The chart owns the kill switch. Hooks run as root with `NET_ADMIN`, so any of them, directly or through a script, could open it. The old recommended `PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT` opened the firewall on every tunnel restart while Transmission kept running. If you really need a hook, set `firewall.allowConfHooks: true` and make sure it never touches the firewall or routing.
 
 `PersistentKeepalive = 25` is recommended. A `DNS =` line is optional; the pod uses `wireguard.dns.nameservers`, so copy your provider's resolver there. The default (Cloudflare `1.1.1.1`) is reached through the tunnel but means Cloudflare sees your lookups.
 
@@ -118,7 +118,7 @@ PersistentKeepalive = 25
 1.0 turns the kill switch on unconditionally and changes several defaults. Before upgrading:
 
 - **Kubernetes 1.29+** is required (native sidecars).
-- **Remove firewall lines from `wg0.conf`.** `PostUp`/`PreDown` `iptables` commands (recommended by earlier versions of this README) are refused.
+- **Remove hooks from `wg0.conf`.** `PreUp`/`PostUp`/`PreDown`/`PostDown` lines (earlier versions of this README recommended `iptables` ones) are refused. `firewall.allowConfFirewallHooks` is now `firewall.allowConfHooks`.
 - **Set `wireguard.endpoints`** when using `existingSecret`. The egress NetworkPolicy needs the VPN server's IP and port. If your CNI doesn't enforce NetworkPolicy, set `networkPolicy.enabled: false` instead.
 - **DNS** now goes through the tunnel to `wireguard.dns.nameservers` (`dns.override: true`). Set your VPN provider's resolver.
 - **RPC auth** is required when the web UI is exposed (ingress or a non-ClusterIP Service). Move `rpc-username`/`rpc-password` from `transmission.settings` to `transmission.rpcAuth` (settings still work); or set `rpcAuth.allowAnonymous: true`.
@@ -177,6 +177,23 @@ If you already have an issuer, leave `issuer.enabled` false and reference your i
 
 ## Verify egress IP
 
+`helm test` checks a running release from inside the cluster:
+
+```bash
+helm test <release> -n <namespace> --logs
+```
+
+It checks four things:
+
+- the kill switch rules are intact and the tunnel is up;
+- a socket bound to `eth0` can't reach the Kubernetes API, though the test pod can;
+- the pod uses only `wireguard.dns.nameservers`;
+- the public address the pod gets from `tests.ipEchoUrl` (default `https://icanhazip.com`) differs from the cluster's own, and `eth0` can't reach it.
+
+While the test runs, a temporary Role lets the test pod exec into the release's pods. The echo service sees both addresses; set `tests.ipEchoUrl: ""` to skip that check, or `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server and the echo service.
+
+By hand:
+
 ```bash
 kubectl exec -it deploy/<release>-transmission-wireguard -c transmission -- \
   sh -c 'wget -qO- https://ifconfig.io || true'
@@ -194,9 +211,9 @@ kubectl exec deploy/<release>-transmission-wireguard -c transmission -- \
 
 - `make lint`: `helm lint` and the helm-unittest suites in `tests/`.
 - `make e2e-docker`: builds a dual-stack Pod-like network namespace in Docker with the chart's images and scripts, a WireGuard server and a canary, then tries to leak over IPv4 and IPv6: sockets bound to `eth0`, DNS-port traffic, a deleted `wg0`, sidecar restarts and SIGKILL, tampered and flushed rules, unsafe configs. Needs Docker with kernel WireGuard.
-- `make e2e-kind`: the same idea on a kind cluster (`kind create cluster` first), plus start order, kubelet probes, pod DNS, the Service, and the NetworkPolicy holding with the in-pod kill switch flushed. The leak checks run first without the NetworkPolicy, so they test the in-pod kill switch alone.
+- `make e2e-kind CNI=kindnet|calico|cilium`: creates a kind cluster with that CNI (kindnet dual-stack, with IPv6 checks) and runs the same idea there. It adds start order, kubelet probes, pod DNS, the Service, `helm test` against a healthy and a tampered pod, and the NetworkPolicy holding with the in-pod kill switch flushed. The leak checks run first without the NetworkPolicy, so they test the in-pod kill switch alone. Delete the cluster afterwards with `kind delete cluster`.
 
-CI runs both on every pull request and on pushes to `main`.
+CI runs the Docker test on amd64 and arm64 and the kind test with each CNI, on every pull request and on pushes to `dev` and `main`.
 
 ## Values overview
 
@@ -230,7 +247,7 @@ See `values.yaml` for the full list of configuration options.
 # Troubleshooting
 
 - **Pod stuck in `Init` / sidecar crash-looping?**
-  - `kubectl logs <pod> -c wireguard` shows `[twg-firewall] FATAL: ...` when `wg0.conf` is refused (hostname endpoint, split tunnel, firewall hooks).
+  - `kubectl logs <pod> -c wireguard` shows `[twg-firewall] FATAL: ...` when `wg0.conf` is refused (hostname endpoint, split tunnel, PreUp/PostUp/PreDown/PostDown hooks).
   - Without a handshake, check that `wireguard.endpoints` matches the `Endpoint` line (the NetworkPolicy only allows that address).
 - **Web UI unreachable?**
   - The source (ingress controller, kubelet) must be in `firewall.webAllowedCIDRs`, and in `networkPolicy.ingressFrom` if you set it.

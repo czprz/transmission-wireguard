@@ -305,8 +305,11 @@
             "string"
           ]
         },
-        "allowConfFirewallHooks": {
+        "allowConfHooks": {
           "type": "boolean"
+        },
+        "allowConfFirewallHooks": {
+          "description": "Removed: renamed to allowConfHooks"
         }
       }
     },
@@ -327,6 +330,37 @@
           "type": "array",
           "items": {
             "type": "object"
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ipEchoUrl": {
+          "type": "string",
+          "pattern": "^(https?://.+)?$"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(sha256:[a-f0-9]{64})?$"
+            }
           }
         }
       }

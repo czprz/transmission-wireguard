@@ -421,6 +421,7 @@ expect_accepted() {
   fi
 }
 expect_refused "PreDown that flushes the firewall" '/^\[Interface\]/a PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT'
+expect_refused "hook that runs a script" '/^\[Interface\]/a PostUp = /config/up.sh'
 expect_refused "hostname endpoint" "s/^Endpoint = .*/Endpoint = vpn.example.com:51820/"
 expect_refused "endpoint without a port" "s/^Endpoint = .*/Endpoint = $SERVER_IP/"
 expect_refused "split tunnel" "s|^AllowedIPs = .*|AllowedIPs = 10.0.0.0/8|"

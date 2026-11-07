@@ -1,0 +1,171 @@
+{{- if .Values.tests.enabled -}}
+{{- $name := printf "%s-test" (include "twg.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $hook := dict "helm.sh/hook" "test" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" -}}
+# `helm test` checks the running release for leaks from inside the pod. The
+# Role exists only while the test runs (exec into the release's pod).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-1"
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  # WebSocket exec is authorized as get before Kubernetes 1.35, create after.
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $name }}
+  # Not the release's selector labels: the NetworkPolicy must not apply here.
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-test
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+spec:
+  serviceAccountName: {{ $name }}
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: leak-test
+      image: {{ include "twg.testImage" . }}
+      imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      env:
+        - name: HOME
+          value: /tmp
+        - name: SELECTOR
+          value: {{ printf "app.kubernetes.io/name=%s,app.kubernetes.io/instance=%s" .Chart.Name .Release.Name | quote }}
+        - name: IP_ECHO_URL
+          value: {{ .Values.tests.ipEchoUrl | quote }}
+        - name: NAMESERVERS
+          value: {{ if .Values.wireguard.dns.override }}{{ join " " .Values.wireguard.dns.nameservers | quote }}{{ else }}""{{ end }}
+      command:
+        - sh
+        - -c
+        - |
+          failed=0
+          pass() { echo "PASS  $*"; }
+          fail() { echo "FAIL  $*"; failed=$((failed + 1)); }
+          pod=$(kubectl get pod -l "$SELECTOR" --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+          [ -n "$pod" ] || { echo "FAIL  no running pod matches $SELECTOR"; exit 1; }
+          echo "testing pod $pod"
+          in_wg() { kubectl exec "$pod" -c wireguard -- "$@"; }
+          in_tx() { kubectl exec "$pod" -c transmission -- "$@"; }
+          trim() { tr -d '[:space:]'; }
+
+          if in_wg /twg/scripts/firewall.sh live; then
+            pass "kill switch rules intact and tunnel up"
+          else
+            fail "kill switch or tunnel check failed (see the wireguard container log)"
+          fi
+
+          # The API server is reachable from every pod, so it shows whether
+          # the pod's own interface is blocked rather than merely unrouted.
+          host=$KUBERNETES_SERVICE_HOST
+          case $host in *:*) host="[$host]" ;; esac
+          api="https://$host:$KUBERNETES_SERVICE_PORT/version"
+          if curl -sk -m 5 -o /dev/null "$api"; then
+            if in_tx curl -sk -m 5 -o /dev/null --interface eth0 "$api"; then
+              fail "LEAK: a socket bound to eth0 reached the Kubernetes API"
+            else
+              pass "a socket bound to eth0 is rejected"
+            fi
+          else
+            fail "this test pod cannot reach the Kubernetes API, so the eth0 check proves nothing"
+          fi
+
+          if [ -n "$NAMESERVERS" ]; then
+            want=$(echo "$NAMESERVERS" | tr ' ' '\n' | sort | tr '\n' ' ')
+            got=$(in_tx sed -n 's/^nameserver[[:space:]]*//p' /etc/resolv.conf | sort | tr '\n' ' ')
+            if [ "$got" = "$want" ]; then
+              pass "pod DNS uses only the configured nameservers ($want)"
+            else
+              fail "pod nameservers are '$got', expected '$want'"
+            fi
+          fi
+
+          if [ -n "$IP_ECHO_URL" ]; then
+            direct=$(curl -4 -fsS -m 10 "$IP_ECHO_URL" | trim)
+            vpn=$(in_tx curl -4 -fsS -m 10 "$IP_ECHO_URL" | trim)
+            if [ -z "$direct" ]; then
+              fail "this test pod cannot reach $IP_ECHO_URL, so the egress address cannot be compared"
+            elif [ -z "$vpn" ]; then
+              fail "the pod cannot reach $IP_ECHO_URL through the VPN"
+            elif [ "$vpn" = "$direct" ]; then
+              fail "LEAK: the pod's IPv4 egress address $vpn is the cluster's own"
+            else
+              pass "IPv4 egress leaves through the VPN as $vpn (the cluster egresses as $direct)"
+            fi
+            direct6=$(curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
+            if [ -n "$direct6" ]; then
+              vpn6=$(in_tx curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
+              if [ "$vpn6" = "$direct6" ]; then
+                fail "LEAK: the pod's IPv6 egress address $vpn6 is the cluster's own"
+              else
+                pass "IPv6 does not leave as the cluster's address $direct6 (VPN: ${vpn6:-no IPv6})"
+              fi
+            fi
+            if in_tx curl -4 -sS -m 5 -o /dev/null --interface eth0 "$IP_ECHO_URL" 2>/dev/null; then
+              fail "LEAK: a socket bound to eth0 reached $IP_ECHO_URL"
+            else
+              pass "a socket bound to eth0 cannot reach $IP_ECHO_URL"
+            fi
+          fi
+
+          [ "$failed" -eq 0 ] || { echo "$failed check(s) failed"; exit 1; }
+          echo "no leaks found"
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir: {}
+{{- end }}

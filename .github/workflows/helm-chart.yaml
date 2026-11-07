@@ -54,9 +54,15 @@ jobs:
 
 
   # Leak tests: try to make traffic escape the tunnel and fail if it does.
-  e2e:
-    runs-on: ubuntu-latest
+  # The Docker test runs on amd64 and arm64 (the images are multi-arch).
+  e2e-docker:
+    name: e2e-docker (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
@@ -75,18 +81,44 @@ jobs:
       - name: Kill switch leak test (Docker)
         run: tests/e2e/netns-leak-test.sh
 
+  # The kind test runs once per NetworkPolicy implementation; kindnet runs
+  # dual-stack and adds the IPv6 checks.
+  e2e-kind:
+    name: e2e-kind (${{ matrix.cni }})
+    runs-on: ubuntu-latest
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cni: kindnet
+            ipv6: 1
+          - cni: calico
+            ipv6: 0
+          - cni: cilium
+            ipv6: 0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      - name: Load WireGuard kernel module
+        run: sudo modprobe wireguard
+
+      - name: Unload host AppArmor profiles
+        run: sudo aa-teardown || sudo systemctl stop apparmor || true
+
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.14.4
 
-      # go install verifies kind against the Go checksum database; the node
-      # image is the digest published in the kind v0.27.0 release notes.
-      - name: Create kind cluster
+      # go install verifies kind against the Go checksum database.
+      - name: Create kind cluster (${{ matrix.cni }})
         run: |
           go install sigs.k8s.io/kind@v0.27.0
-          "$(go env GOPATH)/bin/kind" create cluster --wait 120s \
-            --image kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f
+          KIND="$(go env GOPATH)/bin/kind" tests/e2e/kind-cluster.sh ${{ matrix.cni }}
 
-      - name: Kill switch leak test (kind)
+      - name: Kill switch leak test (kind, ${{ matrix.cni }})
         run: tests/e2e/kind-test.sh
+        env:
+          IPV6: ${{ matrix.ipv6 }}

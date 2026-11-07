@@ -38,12 +38,12 @@ tests:
         Endpoint = 203.0.113.10:51820
     asserts:
       - failedTemplate:
-          errorMessage: "wireguard.wg0Conf has iptables/nft commands in PreUp/PostUp/PreDown/PostDown. The chart manages the kill switch, remove them."
+          errorMessage: "wireguard.wg0Conf has PreUp/PostUp/PreDown/PostDown hooks. They run as root and can open the kill switch, so remove them or set firewall.allowConfHooks"
 
   - template: templates/deployment.yaml
-    it: allows firewall hooks only when opted in
+    it: allows hooks only when opted in
     set:
-      firewall.allowConfFirewallHooks: true
+      firewall.allowConfHooks: true
       wireguard.wg0Conf: |
         [Interface]
         PostUp = iptables -w -A OUTPUT -o %i -j ACCEPT
@@ -225,18 +225,26 @@ tests:
           errorMessage: "wireguard.wg0Conf sets Table, which turns off the fwmark routing the kill switch relies on. Remove it."
 
   - template: templates/deployment.yaml
-    it: does not mistake words containing nft for firewall hooks
+    it: rejects hooks that hide firewall commands in a script
     set:
       wireguard.wg0Conf: |
         [Interface]
         PrivateKey = x
-        PostUp = echo up > /config/infti.log
+        postup=/config/up.sh
         [Peer]
         AllowedIPs = 0.0.0.0/0
         Endpoint = 203.0.113.10:51820
     asserts:
-      - isKind:
-          of: Deployment
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf has PreUp/PostUp/PreDown/PostDown hooks. They run as root and can open the kill switch, so remove them or set firewall.allowConfHooks"
+
+  - template: templates/deployment.yaml
+    it: refuses the pre-1.0 hooks key
+    set:
+      firewall.allowConfFirewallHooks: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "firewall.allowConfFirewallHooks was renamed to firewall.allowConfHooks and now covers every PreUp/PostUp/PreDown/PostDown hook"
 
   - template: templates/deployment.yaml
     it: refuses an rpc-port different from the web port

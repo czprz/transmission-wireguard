@@ -1,0 +1,82 @@
+suite: helm test
+
+templates:
+  - templates/tests/leak-test.yaml
+
+values:
+  - values/base.yaml
+
+tests:
+  - it: runs as a helm test hook, cleaned up after success
+    asserts:
+      - hasDocuments:
+          count: 4
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: test
+      - equal:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          value: before-hook-creation,hook-succeeded
+
+  - it: may only read and exec into pods
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [pods]
+              verbs: [get, list]
+            - apiGroups: [""]
+              resources: [pods/exec]
+              verbs: [get, create]
+
+  - it: keeps the test pod out of the release's selector and NetworkPolicy
+    documentIndex: 3
+    asserts:
+      - isKind:
+          of: Pod
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: transmission-wireguard-test
+      - contains:
+          path: spec.containers[0].env
+          content: { name: SELECTOR, value: "app.kubernetes.io/name=transmission-wireguard,app.kubernetes.io/instance=RELEASE-NAME" }
+
+  - it: pins the test image by digest
+    documentIndex: 3
+    asserts:
+      - matchRegex:
+          path: spec.containers[0].image
+          pattern: ^docker\.io/alpine/kubectl:[0-9.]+@sha256:[a-f0-9]{64}$
+
+  - it: checks the configured nameservers and echo service
+    documentIndex: 3
+    set:
+      tests.ipEchoUrl: http://203.0.113.80/ip
+      wireguard.dns.nameservers: [10.64.0.1]
+    asserts:
+      - contains:
+          path: spec.containers[0].env
+          content: { name: NAMESERVERS, value: "10.64.0.1" }
+      - contains:
+          path: spec.containers[0].env
+          content: { name: IP_ECHO_URL, value: "http://203.0.113.80/ip" }
+
+  - it: skips the DNS check without the DNS override
+    documentIndex: 3
+    set:
+      wireguard.dns.override: false
+    asserts:
+      - contains:
+          path: spec.containers[0].env
+          content: { name: NAMESERVERS, value: "" }
+
+  - it: can be disabled
+    set:
+      tests.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

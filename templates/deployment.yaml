@@ -97,8 +97,8 @@ spec:
               value: {{ join " " .Values.firewall.webAllowedCIDRs | quote }}
             - name: TWG_WG_FWMARK
               value: {{ .Values.firewall.wgFwmark | quote }}
-            - name: TWG_ALLOW_CONF_FIREWALL_HOOKS
-              value: {{ .Values.firewall.allowConfFirewallHooks | quote }}
+            - name: TWG_ALLOW_CONF_HOOKS
+              value: {{ .Values.firewall.allowConfHooks | quote }}
             - name: TWG_HANDSHAKE_MAX_AGE
               value: {{ .Values.wireguard.handshakeMaxAgeSeconds | quote }}
           volumeMounts:

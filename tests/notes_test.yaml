@@ -31,3 +31,15 @@ tests:
     asserts:
       - matchRegexRaw:
           pattern: 'restart the pod after changing it'
+
+  - it: points to helm test
+    asserts:
+      - matchRegexRaw:
+          pattern: 'Check for leaks from inside the cluster:\n  helm test RELEASE-NAME -n NAMESPACE --logs\n\nVerify the egress IP'
+
+  - it: omits helm test when disabled
+    set:
+      tests.enabled: false
+    asserts:
+      - notMatchRegexRaw:
+          pattern: 'helm test'

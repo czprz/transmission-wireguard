@@ -74,7 +74,7 @@ tests:
           content: { name: TWG_HANDSHAKE_MAX_AGE, value: "300" }
       - contains:
           path: spec.template.spec.initContainers[1].env
-          content: { name: TWG_ALLOW_CONF_FIREWALL_HOOKS, value: "false" }
+          content: { name: TWG_ALLOW_CONF_HOOKS, value: "false" }
       - contains:
           path: spec.template.spec.containers[0].ports
           content: { containerPort: 6881, protocol: UDP }
