@@ -18,7 +18,7 @@ LOCAL_MARK="${TWG_LOCAL_MARK:-0x10000000}"
 WEB_PORT="${TWG_WEB_PORT:-9091}"
 PEER_PORT="${TWG_PEER_PORT:-51413}"
 WEB_CIDRS="${TWG_WEB_ALLOWED_CIDRS:-}"
-SAVED_ROUTE_TABLE="${TWG_SAVED_ROUTE_TABLE:-51821}"
+SAVED_ROUTE_TABLE="${TWG_SAVED_ROUTE_TABLE:-1000}"
 HANDSHAKE_MAX_AGE="${TWG_HANDSHAKE_MAX_AGE:-0}"
 ALLOW_CONF_HOOKS="${TWG_ALLOW_CONF_FIREWALL_HOOKS:-false}"
 CONF="${TWG_WG_CONF:-/config/wg_confs/${WG_IFACE}.conf}"
@@ -60,6 +60,21 @@ reset_chain() {
   "$ipt" -w -t "$table" -I "$parent" 1 -j "$chain"
 }
 
+# Hash of a chain's rules, excluding its final (sealing) rule when asked.
+chain_hash() {
+  local ipt=$1 table=$2 chain=$3 drop_last=$4 dump
+  dump=$("$ipt" -w -t "$table" -S "$chain" | sed 1d)
+  [[ $drop_last == true ]] && dump=$(sed '$d' <<<"$dump")
+  sha256sum <<<"$dump" | cut -c1-16
+}
+
+# The last rule of each chain carries a hash of the rules before it, so the
+# probes notice any rule added, removed or changed inside the chain.
+seal_chain() {
+  local ipt=$1 table=$2 chain=$3; shift 3
+  "$ipt" -w -t "$table" -A "$chain" -m comment --comment "twg:$(chain_hash "$ipt" "$table" "$chain" false)" "$@"
+}
+
 apply_family() {
   local fam=$1 ipt cidr
   ipt=$(ipt_for "$fam")
@@ -72,37 +87,45 @@ apply_family() {
 
   # Inbound: replies, BitTorrent peers via the tunnel, and the web UI from
   # cluster-local sources only. RPC is never reachable through the tunnel.
+  # IPv6 neighbour discovery comes before the INVALID drop because some
+  # kernels classify it as INVALID. Hop limit 255 means it came from the link.
+  local t
   "$ipt" -w -A "$IN" -i lo -j ACCEPT
+  if [[ $fam == 6 ]]; then
+    for t in router-advertisement neighbour-solicitation neighbour-advertisement; do
+      "$ipt" -w -A "$IN" ! -i "$WG_IFACE" -p ipv6-icmp --icmpv6-type "$t" -m hl --hl-eq 255 -j ACCEPT
+    done
+  fi
   "$ipt" -w -A "$IN" -m conntrack --ctstate INVALID -j DROP
   "$ipt" -w -A "$IN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   "$ipt" -w -A "$IN" -i "$WG_IFACE" -p tcp --dport "$PEER_PORT" -j ACCEPT
   "$ipt" -w -A "$IN" -i "$WG_IFACE" -p udp --dport "$PEER_PORT" -j ACCEPT
-  if [[ $fam == 6 ]]; then
-    local t
-    for t in router-advertisement neighbour-solicitation neighbour-advertisement; do
-      "$ipt" -w -A "$IN" ! -i "$WG_IFACE" -p ipv6-icmp --icmpv6-type "$t" -j ACCEPT
-    done
-  fi
   while read -r cidr; do
     [[ -n $cidr ]] || continue
     "$ipt" -w -A "$IN" ! -i "$WG_IFACE" -s "$cidr" -p tcp --dport "$WEB_PORT" -j ACCEPT
   done < <(cidrs_for "$fam")
-  "$ipt" -w -A "$IN" -j DROP
+  seal_chain "$ipt" filter "$IN" -j DROP
 
   # Outbound: only the tunnel, WireGuard's own encrypted packets (identified
   # by the fwmark wg-quick sets on its socket; unprivileged processes cannot
   # set marks) and replies on connections that arrived from the cluster.
   "$ipt" -w -A "$OUT" -o lo -j ACCEPT
+  if [[ $fam == 6 ]]; then
+    for t in router-solicitation neighbour-solicitation neighbour-advertisement; do
+      "$ipt" -w -A "$OUT" ! -o "$WG_IFACE" -p ipv6-icmp --icmpv6-type "$t" -m hl --hl-eq 255 -j ACCEPT
+    done
+  fi
   "$ipt" -w -A "$OUT" -m conntrack --ctstate INVALID -j DROP
+  # Replies to cluster callers must carry WireGuard's fwmark, which routes
+  # them out eth0. Without it (for a moment while the mangle rules below are
+  # re-applied) they would be routed into the tunnel, so reject them. This
+  # cannot use -o: in OUTPUT it names the interface chosen before the mangle
+  # mark re-routed the packet.
+  "$ipt" -w -A "$OUT" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -m mark ! --mark "$WG_FWMARK" -j REJECT
   "$ipt" -w -A "$OUT" -o "$WG_IFACE" -j ACCEPT
   "$ipt" -w -A "$OUT" -m mark --mark "$WG_FWMARK" -j ACCEPT
   "$ipt" -w -A "$OUT" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  if [[ $fam == 6 ]]; then
-    for t in router-solicitation neighbour-solicitation neighbour-advertisement; do
-      "$ipt" -w -A "$OUT" ! -o "$WG_IFACE" -p ipv6-icmp --icmpv6-type "$t" -j ACCEPT
-    done
-  fi
-  "$ipt" -w -A "$OUT" -j REJECT
+  seal_chain "$ipt" filter "$OUT" -j REJECT
 
   # Connections that arrive outside the tunnel (kubelet probes, ingress) get
   # a connmark, and their packets carry WireGuard's fwmark. wg-quick's policy
@@ -116,27 +139,56 @@ apply_family() {
   "$ipt" -w -t mangle -A "$PRE" -m conntrack --ctstate NEW -j CONNMARK --set-xmark "$LOCAL_MARK/$LOCAL_MARK"
   "$ipt" -w -t mangle -A "$PRE" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -j MARK --set-mark "$WG_FWMARK"
   "$ipt" -w -t mangle -A "$MOUT" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -j MARK --set-mark "$WG_FWMARK"
+  seal_chain "$ipt" mangle "$PRE" -j RETURN
+  seal_chain "$ipt" mangle "$MOUT" -j RETURN
 }
 
-# Recover the namespace from a previous container run: a SIGKILLed tunnel
-# leaves wg0 behind (wg-quick up then fails), and the image deletes the
+# "via X dev Y [onlink] [mtu N]" from `ip route show default` on stdin. The
+# raw line cannot be replayed: RA-learned IPv6 routes carry "expires", and
+# multipath routes put the gateway on nexthop lines.
+default_route_args() {
+  local tok prev="" via="" dev="" onlink="" mtu=""
+  # shellcheck disable=SC2013
+  for tok in $(cat); do
+    case $prev in
+      via) [[ -n $via ]] || via=$tok ;;
+      dev) [[ -n $dev ]] || dev=$tok ;;
+      mtu) [[ $tok == lock ]] || mtu=$tok ;;
+    esac
+    [[ $tok == onlink ]] && onlink=onlink
+    prev=$tok
+  done
+  [[ -n $dev ]] || return 0
+  echo "${via:+via $via }dev $dev${onlink:+ onlink}${mtu:+ mtu $mtu}"
+}
+
+# Recover the namespace from a previous container run. A SIGKILLed tunnel
+# leaves wg0, wg-quick's policy rules and its nft table behind (wg-quick up
+# then fails or picks another table and fwmark), and the image deletes the
 # default route when wg-quick fails, which would leave WireGuard unable to
 # reach its endpoint forever. The route is kept in a spare table, which lives
 # in the namespace like everything else.
 reset_netns() {
-  local fam route
+  local fam route f table=$((WG_FWMARK))
   ip link del "$WG_IFACE" 2>/dev/null || true
+  if command -v nft >/dev/null 2>&1; then
+    for f in ip ip6; do nft delete table "$f" "wg-quick-$WG_IFACE" 2>/dev/null || true; done
+  fi
   for fam in "${FAMILIES[@]}"; do
-    route=$(ip -"$fam" route show default 2>/dev/null | head -n1 || true)
+    while ip -"$fam" rule del table "$table" 2>/dev/null; do :; done
+    while ip -"$fam" rule del table main suppress_prefixlength 0 2>/dev/null; do :; done
+    ip -"$fam" route flush table "$table" 2>/dev/null || true
+
+    route=$(ip -"$fam" route show default 2>/dev/null | default_route_args || true)
     if [[ -n $route ]]; then
       # shellcheck disable=SC2086
-      ip -"$fam" route replace $route table "$SAVED_ROUTE_TABLE"
+      ip -"$fam" route replace default $route table "$SAVED_ROUTE_TABLE"
     else
-      route=$(ip -"$fam" route show default table "$SAVED_ROUTE_TABLE" 2>/dev/null | head -n1 || true)
+      route=$(ip -"$fam" route show default table "$SAVED_ROUTE_TABLE" 2>/dev/null | default_route_args || true)
       if [[ -n $route ]]; then
         log "restoring IPv$fam default route: $route"
         # shellcheck disable=SC2086
-        ip -"$fam" route add $route
+        ip -"$fam" route add default $route
       fi
     fi
   done
@@ -152,51 +204,70 @@ conf_value() {
 
 # Reject configs that would weaken or bypass the kill switch.
 preflight() {
-  local ep host fwmark
+  local ep host port fwmark table f
   [[ -r $CONF ]] || die "WireGuard config ${CONF} not found"
 
+  # The image brings up every *.conf it finds; only wg0 is validated.
+  for f in "$(dirname "$CONF")"/*.conf; do
+    [[ ! -e $f || $f == "$CONF" ]] || die "unexpected WireGuard config ${f}: only ${CONF} is allowed (the Secret must hold just wg0.conf)"
+  done
+
   if [[ $ALLOW_CONF_HOOKS != true ]] &&
-    grep -Eiq '^[[:space:]]*(PreUp|PostUp|PreDown|PostDown)[[:space:]]*=.*(iptables|ip6tables|nft)' "$CONF"; then
+    grep -Eiq '^[[:space:]]*(PreUp|PostUp|PreDown|PostDown)[[:space:]]*=.*(^|[^[:alnum:]_])(iptables|ip6tables|nft)([^[:alnum:]_]|$)' "$CONF"; then
     die "${CONF} has firewall commands in PreUp/PostUp/PreDown/PostDown. The chart manages the kill switch; remove them (a PreDown that flushes OUTPUT would open the firewall on every tunnel restart)."
   fi
 
   while read -r ep; do
     [[ -n $ep ]] || continue
+    port=0
+    [[ $ep =~ :([0-9]{1,5})$ ]] && port=$((10#${BASH_REMATCH[1]}))
+    ((port >= 1 && port <= 65535)) || die "Endpoint ${ep} needs a port between 1 and 65535"
     if [[ $ep == \[* ]]; then host=${ep#[}; host=${host%%]*}; else host=${ep%:*}; fi
     is_ip "$host" || die "Endpoint ${ep} is not an IP address. DNS is blocked until the tunnel is up, so the endpoint must be a literal IP."
   done < <(conf_value Endpoint)
 
-  conf_value AllowedIPs | grep -Eq '(^|[ ,])(0\.0\.0\.0/0|::/0)([ ,]|$)' ||
+  conf_value AllowedIPs | tr -s ',[:blank:]' '\n' | grep -qx '0\.0\.0\.0/0' ||
     die "AllowedIPs must include 0.0.0.0/0 (full tunnel)"
-  if conf_value Table | grep -Eiq '^off$'; then
-    die "Table = off disables wg-quick's routing; all traffic would be rejected"
+
+  table=$(conf_value Table | tail -n1)
+  if [[ -n $table && ${table,,} != auto ]]; then
+    die "Table = ${table} turns off wg-quick's fwmark policy routing; remove it (all traffic would be rejected)"
   fi
 
   fwmark=$(conf_value FwMark | tail -n1)
-  if [[ -n $fwmark && $fwmark != "$WG_FWMARK" ]]; then
-    die "FwMark ${fwmark} in ${CONF} differs from firewall.wgFwmark (${WG_FWMARK})"
+  if [[ -n $fwmark ]]; then
+    if ! [[ $fwmark =~ ^(0[xX][0-9a-fA-F]+|[1-9][0-9]*)$ ]] || ((fwmark != WG_FWMARK)); then
+      die "FwMark ${fwmark} in ${CONF} differs from firewall.wgFwmark (${WG_FWMARK})"
+    fi
   fi
 }
 
 # Rule dumps are captured before matching: grep -q exiting early would SIGPIPE
 # iptables and, with pipefail, turn a match into a failure.
 check_family() {
-  local fam=$1 ipt chain dump rules
+  local fam=$1 ipt chain dump rules want spec table target
   ipt=$(ipt_for "$fam")
   for chain in INPUT FORWARD OUTPUT; do
     dump=$("$ipt" -w -S "$chain")
     [[ $'\n'$dump$'\n' == *$'\n'"-P $chain DROP"$'\n'* ]] || { log "IPv$fam $chain policy is not DROP"; return 1; }
     if [[ $chain != FORWARD ]]; then
-      local want="$IN"; [[ $chain == OUTPUT ]] && want="$OUT"
+      want="$IN"; [[ $chain == OUTPUT ]] && want="$OUT"
       [[ $(sed -n 2p <<<"$dump") == "-A $chain -j $want" ]] || { log "IPv$fam $chain does not jump to $want first"; return 1; }
     fi
   done
-  rules=$("$ipt" -w -S "$IN")
-  [[ $(tail -n1 <<<"$rules") == "-A $IN -j DROP" ]] || { log "IPv$fam $IN does not end in DROP"; return 1; }
-  rules=$("$ipt" -w -S "$OUT")
-  [[ $(tail -n1 <<<"$rules") == "-A $OUT -j REJECT"* ]] || { log "IPv$fam $OUT does not end in REJECT"; return 1; }
   rules=$("$ipt" -w -t mangle -S OUTPUT)
   [[ $(sed -n 2p <<<"$rules") == "-A OUTPUT -j $MOUT" ]] || { log "IPv$fam mangle OUTPUT does not jump to $MOUT first"; return 1; }
+  rules=$("$ipt" -w -t mangle -S PREROUTING)
+  [[ $'\n'$rules$'\n' == *$'\n'"-A PREROUTING -j $PRE"$'\n'* ]] || { log "IPv$fam mangle PREROUTING does not jump to $PRE"; return 1; }
+
+  for spec in "filter $IN DROP" "filter $OUT REJECT" "mangle $PRE RETURN" "mangle $MOUT RETURN"; do
+    read -r table chain target <<<"$spec"
+    rules=$("$ipt" -w -t "$table" -S "$chain")
+    [[ $(tail -n1 <<<"$rules") =~ ^-A\ $chain\ -m\ comment\ --comment\ \"?twg:([0-9a-f]{16})\"?\ -j\ $target( |$) ]] ||
+      { log "IPv$fam $chain does not end in its sealed $target rule"; return 1; }
+    [[ ${BASH_REMATCH[1]} == "$(chain_hash "$ipt" "$table" "$chain" true)" ]] ||
+      { log "IPv$fam $chain rules were changed"; return 1; }
+  done
 }
 
 check() {
@@ -204,9 +275,15 @@ check() {
   for fam in "${FAMILIES[@]}"; do check_family "$fam"; done
 }
 
+# Up means wg-quick has finished: the interface has its address and the
+# fwmark policy rule is in place, so Transmission can bind to the address.
 tunnel() {
+  local rules
   check
   wg show "$WG_IFACE" >/dev/null 2>&1 || { log "$WG_IFACE is not up"; return 1; }
+  [[ -n $(ip -o addr show dev "$WG_IFACE" 2>/dev/null) ]] || { log "$WG_IFACE has no address yet"; return 1; }
+  rules=$(ip -4 rule show 2>/dev/null)
+  [[ $rules == *"not from all fwmark $(printf '0x%x' "$WG_FWMARK") lookup"* ]] || { log "wg-quick policy routing is not in place"; return 1; }
 }
 
 live() {

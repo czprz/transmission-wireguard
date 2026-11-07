@@ -7,7 +7,7 @@ lint:
 	docker run --rm -v "$(PWD):/apps" helmunittest/helm-unittest:3.11.1-0.3.0 .
 
 validate:
-	ct lint --all --chart-dirs .
+	ct lint --charts . --validate-maintainers=false
 
 install:
 	helm install transmission ./transmission-wireguard -f values.yaml

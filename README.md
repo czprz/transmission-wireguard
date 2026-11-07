@@ -28,7 +28,17 @@ kubectl create secret generic wg-client \
   --from-file=wg0.conf=/path/to/wg0.conf
 ```
 
-2) Create a values override file
+The Secret should hold only `wg0.conf`; other keys are not mounted.
+
+2) Create the web UI credentials (needed when the UI is exposed)
+
+```bash
+kubectl create secret generic transmission-rpc \
+  --from-literal=username=admin \
+  --from-literal=password="$(openssl rand -base64 24)"
+```
+
+3) Create a values override file
 
 ```yaml
 wireguard:
@@ -59,7 +69,7 @@ ingress:
       secretName: transmission-ingress-tls
 ```
 
-3) Install
+4) Install
 
 ```bash
 helm install transmission ./transmission-wireguard -f values.yaml
@@ -69,11 +79,14 @@ helm install transmission ./transmission-wireguard -f values.yaml
 
 The sidecar refuses to start (and the chart refuses to render an inline `wg0Conf`) unless:
 
-- `Endpoint` is an IP address. DNS is blocked until the tunnel is up.
-- `AllowedIPs` includes `0.0.0.0/0` (and `::/0` for IPv6): full tunnel only.
-- There are **no** `iptables`/`nft` commands in `PreUp`/`PostUp`/`PreDown`/`PostDown`. The chart owns the kill switch. The old recommended `PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT` opened the firewall on every tunnel restart while Transmission kept running.
+- `Endpoint` is an IP address with a port. DNS is blocked until the tunnel is up.
+- `AllowedIPs` includes `0.0.0.0/0` (add `::/0` for IPv6): full tunnel only.
+- There is no `Table =` line, and `FwMark`, if set, equals `firewall.wgFwmark` (51820). The kill switch relies on `wg-quick`'s fwmark routing.
+- There are **no** `iptables`/`nft` commands in `PreUp`/`PostUp`/`PreDown`/`PostDown`. The chart owns the kill switch. The old recommended `PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT` opened the firewall on every tunnel restart while Transmission kept running. Only direct commands are detected, so don't hide them in a script either.
 
-`PersistentKeepalive = 25` is recommended. A `DNS =` line is optional; the pod uses `wireguard.dns.nameservers`.
+`PersistentKeepalive = 25` is recommended. A `DNS =` line is optional; the pod uses `wireguard.dns.nameservers`, so copy your provider's resolver there. The default (Cloudflare `1.1.1.1`) is reached through the tunnel but means Cloudflare sees your lookups.
+
+Changes to an inline `wg0Conf` or `rpcAuth.username`/`password` roll the pod on `helm upgrade`. With `existingSecret`, restart it yourself after editing the Secret: `kubectl rollout restart deploy/<release>-transmission-wireguard`.
 
 Example `wg0.conf` (redact your private key before sharing):
 
@@ -99,6 +112,20 @@ PersistentKeepalive = 25
 | NetworkPolicy | Egress only to `wireguard.endpoints` on UDP. Enforced by the CNI outside the pod. |
 | DNS | `dnsPolicy: None` with `wireguard.dns.nameservers`, reached through the tunnel. Cluster DNS would forward your lookups upstream from the node. |
 | Transmission | Peer sockets bound to the tunnel address (`bindToTunnel`), Local Peer Discovery and UPnP/NAT-PMP off, peer ports not on the Service. |
+
+## Upgrading to 1.0
+
+1.0 turns the kill switch on unconditionally and changes several defaults. Before upgrading:
+
+- **Kubernetes 1.29+** is required (native sidecars).
+- **Remove firewall lines from `wg0.conf`.** `PostUp`/`PreDown` `iptables` commands (recommended by earlier versions of this README) are refused.
+- **Set `wireguard.endpoints`** when using `existingSecret`. The egress NetworkPolicy needs the VPN server's IP and port. If your CNI doesn't enforce NetworkPolicy, set `networkPolicy.enabled: false` instead.
+- **DNS** now goes through the tunnel to `wireguard.dns.nameservers` (`dns.override: true`). Set your VPN provider's resolver.
+- **RPC auth** is required when the web UI is exposed (ingress or a non-ClusterIP Service). Move `rpc-username`/`rpc-password` from `transmission.settings` to `transmission.rpcAuth` (settings still work); or set `rpcAuth.allowAnonymous: true`.
+- **`rpc-host-whitelist-enabled` is now `true`.** The Service name and ingress hosts are allowed automatically. If you reach the UI under another name (Gateway API, an external proxy, a Tailscale name), add it to `transmission.settings.rpc-host-whitelist` or you get HTTP 421.
+- **`transmission.settings.rpc-port` must equal `service.webPort`**, and `peer-port-random-on-start` must be `false`.
+- **Peer ports are off the Service.** `service.exposePeerPorts`, `peerPortTcp` and `peerPortUdp` are gone; peers connect through the VPN (forward a port at your provider and set `peer-port`).
+- **Host mounts are off**: `wireguard.kernelMode.mountLibModules` and `mountTun` default to `false` (kernel WireGuard is built into Linux 5.6+).
 
 ## Transmission settings
 
@@ -144,7 +171,9 @@ If you already have an issuer, leave `issuer.enabled` false and reference your i
 - Keep `wg0.conf` in a Secret, not in Git.
 - The web UI requires RPC credentials (`transmission.rpcAuth`) when exposed through an ingress or a non-ClusterIP Service. They are read from a Secret into a read-only `settings.json`, never stored in the ConfigMap.
 - The WireGuard sidecar is privileged by default because `wg-quick` sets `net.ipv4.conf.all.src_valid_mark`. If your kubelet allows that sysctl, set it in `podSecurityContext.sysctls` and use `wireguard.securityContext: {privileged: false, capabilities: {add: [NET_ADMIN, NET_RAW]}}`.
-- Default images are pinned by digest.
+- Transmission runs without network capabilities. The chart refuses a `transmission.securityContext` that is privileged or adds `NET_ADMIN`, `NET_RAW`, `SYS_ADMIN` or `ALL`, since those could bypass the kill switch.
+- Default images are pinned by digest. Overriding `images.*.repository` or `tag` drops the default digest; set `images.*.digest` to keep pulls immutable.
+- Inline `rpcAuth` credentials are hashed into a pod annotation (so changes roll the pod). Use a strong password, or `rpcAuth.existingSecret`.
 
 ## Verify egress IP
 
@@ -164,10 +193,10 @@ kubectl exec deploy/<release>-transmission-wireguard -c transmission -- \
 ## Testing
 
 - `make lint`: `helm lint` and the helm-unittest suites in `tests/`.
-- `make e2e-docker`: builds a Pod-like network namespace in Docker with the chart's images and scripts, a WireGuard server and a canary, then tries to leak: sockets bound to `eth0`, DNS-port traffic, a deleted `wg0`, sidecar restarts and SIGKILL, a flushed firewall, unsafe configs. Needs Docker with kernel WireGuard.
-- `make e2e-kind`: the same idea on a kind cluster (`kind create cluster` first), plus start order, kubelet probes, pod DNS, the Service, and the NetworkPolicy holding with the in-pod kill switch flushed.
+- `make e2e-docker`: builds a dual-stack Pod-like network namespace in Docker with the chart's images and scripts, a WireGuard server and a canary, then tries to leak over IPv4 and IPv6: sockets bound to `eth0`, DNS-port traffic, a deleted `wg0`, sidecar restarts and SIGKILL, tampered and flushed rules, unsafe configs. Needs Docker with kernel WireGuard.
+- `make e2e-kind`: the same idea on a kind cluster (`kind create cluster` first), plus start order, kubelet probes, pod DNS, the Service, and the NetworkPolicy holding with the in-pod kill switch flushed. The leak checks run first without the NetworkPolicy, so they test the in-pod kill switch alone.
 
-CI runs both on every pull request.
+CI runs both on every pull request and on pushes to `main`.
 
 ## Values overview
 
@@ -205,6 +234,8 @@ See `values.yaml` for the full list of configuration options.
   - Without a handshake, check that `wireguard.endpoints` matches the `Endpoint` line (the NetworkPolicy only allows that address).
 - **Web UI unreachable?**
   - The source (ingress controller, kubelet) must be in `firewall.webAllowedCIDRs`, and in `networkPolicy.ingressFrom` if you set it.
+  - A LoadBalancer or NodePort with `externalTrafficPolicy: Local` keeps public client IPs, which the default private ranges don't cover. Add your clients' ranges, or use an ingress. The same applies to global (non-ULA) IPv6 pod CIDRs.
+  - HTTP 421 means the hostname isn't in `rpc-host-whitelist`.
 - **DNS failures?**
   - Lookups go to `wireguard.dns.nameservers` through the tunnel. Use a resolver your VPN allows (usually the provider's).
   - Cluster-internal names do not resolve from this pod, by design.

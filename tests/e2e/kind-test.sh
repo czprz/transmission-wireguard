@@ -10,6 +10,9 @@
 # probes through the kill switch, pod DNS, the Service, and the NetworkPolicy
 # blocking egress even when the in-pod firewall is flushed.
 #
+# The leak checks first run with the NetworkPolicy disabled, so they test the
+# in-pod kill switch alone; the policy is then enabled for the last scenario.
+#
 # Usage: kind create cluster && tests/e2e/kind-test.sh
 set -euo pipefail
 
@@ -38,8 +41,17 @@ trap '[[ -n ${KEEP:-} ]] || cleanup' EXIT
 wg_tool() { docker run --rm -i --entrypoint wg "$WG_IMAGE" "$@"; }
 container_ip() { docker inspect -f "{{(index .NetworkSettings.Networks \"$KIND_NET\").IPAddress}}" "$1"; }
 kx() { kubectl -n "$NS" exec "$POD" -c "$1" -- "${@:2}"; }
+# Source address the canary saw (empty if blocked). Extra arguments go to curl.
+remote_addr() { sed -n 's/^RemoteAddr: \(.*\):[0-9]*\r\{0,1\}$/\1/p'; }
 canary_seen() {
-  kx transmission curl -sS -m 3 "http://$CANARY_IP/" 2>/dev/null | sed -n 's/^RemoteAddr: \(.*\):[0-9]*\r\{0,1\}$/\1/p' || true
+  kx transmission curl -sS -m 3 "$@" "http://$CANARY_IP/" 2>/dev/null | remote_addr || true
+}
+# TCP connect check: telnet:// never ends on its own, so curl always times
+# out; time_connect says whether the connection was established.
+tcp_open() { [[ $("$@" -s -o /dev/null -m 2 -w '%{time_connect}' 2>/dev/null </dev/null) =~ ^0*[.,]0*[1-9] ]]; }
+# The same request from an ordinary pod in the namespace.
+ordinary_pod() {
+  kubectl -n "$NS" run "probe-$RANDOM" --rm -i --restart=Never --quiet --image=curlimages/curl:8.11.1 --command -- "$@" 2>/dev/null
 }
 via_vpn() { [[ $(canary_seen) == "$SERVER_IP" ]]; }
 wait_for() {
@@ -87,12 +99,14 @@ AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = $SERVER_IP:51820
 PersistentKeepalive = 5
 EOF
-helm install $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m \
-  --set wireguard.existingSecret=wg-client \
-  --set "wireguard.endpoints[0].ip=$SERVER_IP" \
-  --set wireguard.endpoints[0].port=51820 \
-  --set wireguard.handshakeMaxAgeSeconds=60 \
+helm_args=(
+  --set wireguard.existingSecret=wg-client
+  --set "wireguard.endpoints[0].ip=$SERVER_IP"
+  --set "wireguard.endpoints[0].port=51820"
+  --set wireguard.handshakeMaxAgeSeconds=60
   --set persistence.enabled=false
+)
+helm install $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${helm_args[@]}" --set networkPolicy.enabled=false
 POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/instance=$RELEASE -o jsonpath='{.items[0].metadata.name}')
 wait_for "first handshake" 15 via_vpn || true
 
@@ -109,18 +123,33 @@ if [[ -n $wg_started && -n $tx_started && ! $tx_started < $wg_started ]]; then
 else
   fail "start order wrong (wireguard=$wg_started transmission=$tx_started)"
 fi
-if kubectl -n "$NS" logs "$POD" -c wireguard | grep -q 'kill switch installed'; then
-  pass "kill switch installed before wg-quick ran"
+wg_log=$(kubectl -n "$NS" logs "$POD" -c wireguard)
+fw_line=$(grep -n -m1 'kill switch installed' <<<"$wg_log" | cut -d: -f1 || true)
+up_line=$(grep -n -m1 'ip link add dev wg0' <<<"$wg_log" | cut -d: -f1 || true)
+if [[ -n $fw_line && -n $up_line ]] && ((fw_line < up_line)); then
+  pass "kill switch installed before wg-quick ran (log lines $fw_line < $up_line)"
 else
-  fail "kill switch log line missing"
+  fail "kill switch not logged before wg-quick (installed=${fw_line:-missing}, wg0 up=${up_line:-missing})"
 fi
 
-step "egress"
+step "egress (in-pod kill switch only, NetworkPolicy off)"
+baseline=$(ordinary_pod curl -sS -m 5 "http://$CANARY_IP/" | remote_addr || true)
+if [[ -n $baseline && $baseline != "$SERVER_IP" ]]; then
+  pass "baseline: an ordinary pod reaches the canary directly (as $baseline)"
+else
+  fail "baseline: an ordinary pod cannot reach the canary directly (harness broken)"
+fi
 seen=$(canary_seen)
 if [[ $seen == "$SERVER_IP" ]]; then
   pass "egress exits through the VPN (canary saw $seen, node is $NODE_IP)"
 else
   fail "egress did not go through the VPN (canary saw '${seen:-nothing}')"
+fi
+seen=$(canary_seen --interface eth0)
+if [[ -z $seen ]]; then
+  pass "a socket bound to eth0 is rejected"
+else
+  fail "LEAK: a socket bound to eth0 reached the canary (saw $seen)"
 fi
 if kx transmission sh -c 'grep "^nameserver" /etc/resolv.conf' | grep -qvx 'nameserver 1\.[01]\.[01]\.1'; then
   fail "pod resolv.conf has nameservers other than the configured ones"
@@ -128,25 +157,26 @@ else
   pass "pod DNS uses the configured nameservers only"
 fi
 dns_ip=$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')
-if kubectl -n "$NS" run dns-baseline --rm -i --restart=Never --quiet --image="$WG_IMAGE" --command -- \
-  nc -z -w 3 "$dns_ip" 53 >/dev/null 2>&1; then
-  if kx transmission nc -z -w 3 "$dns_ip" 53 >/dev/null 2>&1; then
-    fail "LEAK: cluster DNS ($dns_ip) reachable from the pod"
+# Bound to eth0, so a pass means the kill switch blocked it, not that the
+# query went into the tunnel and got lost there.
+if tcp_open ordinary_pod curl "telnet://$dns_ip:53"; then
+  if tcp_open kx transmission curl --interface eth0 "telnet://$dns_ip:53"; then
+    fail "LEAK: cluster DNS ($dns_ip) reachable from the pod via eth0"
   else
-    pass "cluster DNS ($dns_ip) unreachable from the pod (reachable from an ordinary pod)"
+    pass "cluster DNS ($dns_ip) unreachable from the pod via eth0 (reachable from an ordinary pod)"
   fi
 else
   fail "baseline: cluster DNS not reachable from an ordinary pod (test broken)"
 fi
-if kx transmission curl -sS -m 4 -k "https://kubernetes.default.svc/version" >/dev/null 2>&1; then
-  fail "the Kubernetes API is reachable from the pod"
+api_ip=$(kubectl get svc kubernetes -o jsonpath='{.spec.clusterIP}')
+if kx transmission curl -sS -m 4 -k --interface eth0 "https://$api_ip/version" >/dev/null 2>&1; then
+  fail "the Kubernetes API is reachable from the pod via eth0"
 else
-  pass "the Kubernetes API is unreachable from the pod"
+  pass "the Kubernetes API is unreachable from the pod via eth0"
 fi
 
 step "web UI"
-code=$(kubectl -n "$NS" run curl-probe --rm -i --restart=Never --quiet --image=curlimages/curl:8.11.1 -- \
-  curl -sS -m 5 -o /dev/null -w '%{http_code}' "http://$RELEASE-transmission-wireguard:9091/transmission/web/" 2>/dev/null || true)
+code=$(ordinary_pod curl -sS -m 5 -o /dev/null -w '%{http_code}' "http://$RELEASE-transmission-wireguard:9091/transmission/web/" || true)
 if [[ $code =~ ^(200|301|401|409)$ ]]; then
   pass "web UI reachable through the Service (HTTP $code)"
 else
@@ -158,8 +188,9 @@ before=$(sidecar_restarts)
 kx wireguard sh -c 'kill 1' || true
 leaked=""
 for _ in $(seq 10); do
-  seen=$(canary_seen)
-  [[ -n $seen && $seen != "$SERVER_IP" ]] && leaked=$seen
+  for seen in "$(canary_seen)" "$(canary_seen --interface eth0)"; do
+    [[ -z $seen || $seen == "$SERVER_IP" ]] || leaked=$seen
+  done
   sleep 1
 done
 if [[ -z $leaked ]]; then pass "no direct egress during the restart"; else fail "LEAK during restart (canary saw $leaked)"; fi
@@ -170,9 +201,19 @@ else
 fi
 
 step "in-pod firewall flushed and tunnel deleted (NetworkPolicy must hold)"
+# Only adds the NetworkPolicy; the pod spec is unchanged, so no rollout.
+helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${helm_args[@]}" --set networkPolicy.enabled=true
+if kubectl -n "$NS" get networkpolicy "$RELEASE-transmission-wireguard" >/dev/null 2>&1; then
+  pass "NetworkPolicy enabled"
+else
+  fail "NetworkPolicy not created"
+fi
+sleep 5
 before=$(sidecar_restarts)
 kx wireguard sh -c 'iptables -P OUTPUT ACCEPT; iptables -F OUTPUT; ip link del wg0'
 seen=$(canary_seen)
+seen_eth0=$(canary_seen --interface eth0)
+seen=${seen:-$seen_eth0}
 if [[ -z $seen ]]; then
   pass "NetworkPolicy blocks direct egress with the kill switch gone"
 else

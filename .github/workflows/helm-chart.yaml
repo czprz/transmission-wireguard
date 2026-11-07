@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - dev
+      - main
 
 permissions:
   contents: read
@@ -30,7 +31,7 @@ jobs:
         run: helm lint . --strict -f ci/default-values.yaml
 
       - name: Chart-testing lint
-        run: ct lint --all --chart-dirs .
+        run: ct lint --charts . --validate-maintainers=false
 
       - name: Render chart
         run: helm template transmission-wireguard . -f ci/default-values.yaml > /tmp/manifest.yaml
@@ -38,8 +39,9 @@ jobs:
       - name: Kubeconform
         run: |
           KUBECONFORM_VERSION=0.6.7
-          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar -xz
+          curl -sSLo kubeconform.tar.gz "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
           sudo mv kubeconform /usr/local/bin/kubeconform
           kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.29.0 /tmp/manifest.yaml
 
@@ -70,13 +72,13 @@ jobs:
         with:
           version: v3.14.4
 
+      # go install verifies kind against the Go checksum database; the node
+      # image is the digest published in the kind v0.27.0 release notes.
       - name: Create kind cluster
         run: |
-          KIND_VERSION=0.27.0
-          curl -sSLo kind "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-linux-amd64"
-          chmod +x kind
-          sudo mv kind /usr/local/bin/kind
-          kind create cluster --image kindest/node:v1.32.2 --wait 120s
+          go install sigs.k8s.io/kind@v0.27.0
+          "$(go env GOPATH)/bin/kind" create cluster --wait 120s \
+            --image kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f
 
       - name: Kill switch leak test (kind)
         run: tests/e2e/kind-test.sh

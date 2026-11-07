@@ -17,6 +17,10 @@ spec:
       annotations:
         checksum/scripts: {{ include (print $.Template.BasePath "/configmap-scripts.yaml") . | sha256sum }}
         checksum/settings: {{ include (print $.Template.BasePath "/configmap-settings.yaml") . | sha256sum }}
+        # Secrets are only read at start; roll the pod when they change.
+        # (With existingSecret, restart the pod yourself after editing it.)
+        checksum/wg: {{ include (print $.Template.BasePath "/secret-wg.yaml") . | sha256sum }}
+        checksum/rpc: {{ include (print $.Template.BasePath "/secret-rpc.yaml") . | sha256sum }}
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
@@ -198,6 +202,10 @@ spec:
           secret:
             secretName: {{ include "twg.wgSecretName" . }}
             defaultMode: 0400
+            # The image brings up every *.conf it finds; only wg0 is validated.
+            items:
+              - key: wg0.conf
+                path: wg0.conf
         - name: scripts
           configMap:
             name: {{ include "twg.fullname" . }}-scripts

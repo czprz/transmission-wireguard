@@ -16,6 +16,6 @@ icon: https://raw.githubusercontent.com/dever-labs/transmission-wireguard/main/i
 annotations:
   artifacthub.io/images: |
     - name: wireguard
-      image: ghcr.io/linuxserver/wireguard:1.0.20250521-r1-ls102
+      image: ghcr.io/linuxserver/wireguard:1.0.20250521-r1-ls102@sha256:72a3c0b6eb67bcecf0138092a7a66220c081246083c7f1e0d078c186560e745b
     - name: transmission
-      image: lscr.io/linuxserver/transmission:4.1.1-r1-ls343
+      image: lscr.io/linuxserver/transmission:4.1.1-r1-ls343@sha256:62a88fbc210fc62d867eab9c67a0f5474db7257013ce598173a9efc1043e97b8

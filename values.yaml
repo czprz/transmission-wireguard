@@ -20,12 +20,9 @@ images:
 
 service:
   type: ClusterIP
+  # Must match transmission.settings.rpc-port. Peers reach Transmission only
+  # through the VPN, so the Service carries no peer ports.
   webPort: 9091
-  # Peers reach Transmission through the VPN, never through the Service.
-  # Exposing these on a NodePort/LoadBalancer would advertise the node's real IP.
-  exposePeerPorts: false
-  peerPortTcp: 51413
-  peerPortUdp: 51413
   annotations: {}
 
 ingress:
@@ -80,7 +77,8 @@ transmission:
     existingSecret: ""
     usernameKey: username
     passwordKey: password
-    # Or let the chart create the Secret (keeps credentials out of the ConfigMap).
+    # Or let the chart create the Secret (keeps credentials out of the
+    # ConfigMap). Its checksum is a pod annotation, so use a strong password.
     username: ""
     password: ""
     allowAnonymous: false
@@ -167,7 +165,9 @@ wireguard:
 
   # Pod DNS. The kill switch blocks cluster DNS (it would leak lookups via
   # CoreDNS's upstream), so the pod resolves through these nameservers, which
-  # are reached through the tunnel. Prefer your VPN provider's resolver.
+  # are reached through the tunnel. The defaults are Cloudflare: lookups are
+  # hidden from your network but visible to Cloudflare. Set your VPN
+  # provider's resolver (usually the DNS = line of its config) instead.
   dns:
     override: true
     nameservers:
@@ -191,7 +191,9 @@ wireguard:
 firewall:
   # Sources allowed to reach the web UI port outside the tunnel (kubelet
   # probes, ingress controller, other pods). Replies go back out eth0; nothing
-  # else does. Narrow these to your node/pod CIDRs if you can.
+  # else does. Narrow these to your node/pod CIDRs if you can. Add your
+  # clients' ranges for a LoadBalancer/NodePort with externalTrafficPolicy:
+  # Local (it keeps public client IPs), and global IPv6 pod CIDRs.
   webAllowedCIDRs:
     - 10.0.0.0/8
     - 172.16.0.0/12
@@ -200,7 +202,8 @@ firewall:
     - fc00::/7
   # Firewall mark wg-quick puts on WireGuard's own UDP packets (its default).
   wgFwmark: 51820
-  # Fail startup if wg0.conf contains iptables/nft hook commands.
+  # Set true to allow iptables/nft commands in wg0.conf PreUp/PostUp/
+  # PreDown/PostDown (refused by default: they can open the kill switch).
   allowConfFirewallHooks: false
 
 # Second layer, enforced by the CNI outside the pod: egress only to the VPN

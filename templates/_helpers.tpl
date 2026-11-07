@@ -62,6 +62,10 @@ always wins, and overriding repository or tag drops the default digest.
 {{- index .Values.transmission.settings "peer-port" | default 51413 | int -}}
 {{- end -}}
 
+{{- define "twg.ipPattern" -}}
+^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*$
+{{- end -}}
+
 {{/*
 VPN endpoints as a JSON list of {ip, port}: wireguard.endpoints plus every
 Endpoint line parsed from an inline wg0Conf.
@@ -69,20 +73,42 @@ Endpoint line parsed from an inline wg0Conf.
 {{- define "twg.vpnEndpoints" -}}
 {{- $out := list -}}
 {{- range .Values.wireguard.endpoints -}}
-{{- $out = append $out (dict "ip" (required "wireguard.endpoints[].ip is required" .ip) "port" (int (default 51820 .port))) -}}
+{{- $ip := required "wireguard.endpoints[].ip is required" .ip | toString -}}
+{{- $port := int (default 51820 .port) -}}
+{{- if not (regexMatch (include "twg.ipPattern" $) $ip) -}}
+{{- fail (printf "wireguard.endpoints ip %s must be an IP address" $ip) -}}
+{{- end -}}
+{{- if or (lt $port 1) (gt $port 65535) -}}
+{{- fail (printf "wireguard.endpoints port %d must be between 1 and 65535" $port) -}}
+{{- end -}}
+{{- $out = append $out (dict "ip" $ip "port" $port) -}}
 {{- end -}}
 {{- if .Values.wireguard.wg0Conf -}}
 {{- range regexFindAll "(?mi)^[ \\t]*Endpoint[ \\t]*=[ \\t]*[^ \\t\\r\\n#]+" .Values.wireguard.wg0Conf -1 -}}
 {{- $ep := regexReplaceAll "(?i)^[ \\t]*Endpoint[ \\t]*=[ \\t]*" . "" -}}
+{{- if not (regexMatch ":[0-9]{1,5}$" $ep) -}}
+{{- fail (printf "wireguard.wg0Conf Endpoint %s needs a port (ip and port, e.g. 203.0.113.10 then 51820)" $ep) -}}
+{{- end -}}
 {{- $host := regexReplaceAll "^\\[?(.*?)\\]?:[0-9]+$" $ep "${1}" -}}
-{{- $port := regexReplaceAll "^.*:([0-9]+)$" $ep "${1}" -}}
-{{- if not (regexMatch "^([0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*)$" $host) -}}
+{{- $port := regexReplaceAll "^.*:([0-9]+)$" $ep "${1}" | int -}}
+{{- if not (regexMatch (include "twg.ipPattern" $) $host) -}}
 {{- fail (printf "wireguard.wg0Conf Endpoint %s must be an IP address because DNS is blocked until the tunnel is up" $host) -}}
 {{- end -}}
-{{- $out = append $out (dict "ip" $host "port" (int $port)) -}}
+{{- if or (lt $port 1) (gt $port 65535) -}}
+{{- fail (printf "wireguard.wg0Conf Endpoint port %d must be between 1 and 65535" $port) -}}
+{{- end -}}
+{{- $out = append $out (dict "ip" $host "port" $port) -}}
 {{- end -}}
 {{- end -}}
 {{- toJson $out -}}
+{{- end -}}
+
+{{/* RPC auth is configured through rpcAuth or, the pre-1.0 way, settings. */}}
+{{- define "twg.rpcAuthConfigured" -}}
+{{- $s := .Values.transmission.settings -}}
+{{- if or (include "twg.rpcSecretName" .) (and (index $s "rpc-authentication-required") (index $s "rpc-username") (index $s "rpc-password")) -}}
+true
+{{- end -}}
 {{- end -}}
 
 {{- define "twg.validate" -}}
@@ -90,18 +116,52 @@ Endpoint line parsed from an inline wg0Conf.
 {{- fail "wireguard.wg0Conf or wireguard.existingSecret must be set" -}}
 {{- end -}}
 {{- with .Values.wireguard.wg0Conf -}}
-{{- if and (not $.Values.firewall.allowConfFirewallHooks) (regexMatch "(?mi)^[ \\t]*(PreUp|PostUp|PreDown|PostDown)[ \\t]*=.*(iptables|ip6tables|nft)" .) -}}
+{{- if and (not $.Values.firewall.allowConfFirewallHooks) (regexMatch "(?mi)^[ \\t]*(PreUp|PostUp|PreDown|PostDown)[ \\t]*=.*\\b(iptables|ip6tables|nft)\\b" .) -}}
 {{- fail "wireguard.wg0Conf has iptables/nft commands in PreUp/PostUp/PreDown/PostDown. The chart manages the kill switch, remove them." -}}
 {{- end -}}
-{{- if not (regexMatch "(?mi)^[ \\t]*AllowedIPs[ \\t]*=.*(0\\.0\\.0\\.0/0|::/0)" .) -}}
+{{- $allowed := list -}}
+{{- range regexFindAll "(?mi)^[ \\t]*AllowedIPs[ \\t]*=[^#\\r\\n]*" . -1 -}}
+{{- $allowed = concat $allowed (regexSplit "[ \\t,]+" (regexReplaceAll "(?i)^[ \\t]*AllowedIPs[ \\t]*=" . "") -1) -}}
+{{- end -}}
+{{- if not (has "0.0.0.0/0" $allowed) -}}
 {{- fail "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel)" -}}
+{{- end -}}
+{{- range regexFindAll "(?mi)^[ \\t]*Table[ \\t]*=[ \\t]*[^ \\t\\r\\n#]+" . -1 -}}
+{{- if not (regexMatch "(?i)=[ \\t]*auto$" .) -}}
+{{- fail "wireguard.wg0Conf sets Table, which turns off the fwmark routing the kill switch relies on. Remove it." -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if and .Values.networkPolicy.enabled (eq (include "twg.vpnEndpoints" . | fromJsonArray | len) 0) -}}
 {{- fail "networkPolicy.enabled needs the VPN endpoint. Set wireguard.endpoints (ip and port of your Endpoint), or disable networkPolicy if your CNI does not enforce it" -}}
 {{- end -}}
+{{- with .Values.transmission.rpcAuth -}}
+{{- if and (not .existingSecret) (or .username .password) (not (and .username .password)) -}}
+{{- fail "transmission.rpcAuth needs both username and password (or existingSecret)" -}}
+{{- end -}}
+{{- end -}}
 {{- $exposed := or .Values.ingress.enabled (ne .Values.service.type "ClusterIP") -}}
-{{- if and $exposed (not (include "twg.rpcSecretName" .)) (not .Values.transmission.rpcAuth.allowAnonymous) -}}
-{{- fail "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true" -}}
+{{- if and $exposed (not (include "twg.rpcAuthConfigured" .)) (not .Values.transmission.rpcAuth.allowAnonymous) -}}
+{{- fail "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth" -}}
+{{- end -}}
+{{- $s := .Values.transmission.settings -}}
+{{- if and (hasKey $s "rpc-port") (ne (int (index $s "rpc-port")) (int .Values.service.webPort)) -}}
+{{- fail (printf "transmission.settings rpc-port (%v) must equal service.webPort (%v), the only port the kill switch opens to the cluster" (index $s "rpc-port") .Values.service.webPort) -}}
+{{- end -}}
+{{- if index $s "peer-port-random-on-start" -}}
+{{- fail "transmission.settings peer-port-random-on-start must be false. The kill switch only accepts peers on the fixed peer-port" -}}
+{{- end -}}
+{{- if .Values.service.exposePeerPorts -}}
+{{- fail "service.exposePeerPorts was removed. Peers can only reach Transmission through the VPN, never through the Service" -}}
+{{- end -}}
+{{- with .Values.transmission.securityContext -}}
+{{- $caps := list -}}
+{{- with .capabilities }}{{ $caps = default list .add }}{{ end -}}
+{{- if or .privileged (has "NET_ADMIN" $caps) (has "NET_RAW" $caps) (has "SYS_ADMIN" $caps) (has "ALL" $caps) -}}
+{{- fail "transmission.securityContext must not be privileged or add NET_ADMIN, NET_RAW, SYS_ADMIN or ALL. These would let Transmission bypass the kill switch" -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.wireguard.dns.override (not .Values.wireguard.dns.nameservers) -}}
+{{- fail "wireguard.dns.override needs at least one entry in wireguard.dns.nameservers" -}}
 {{- end -}}
 {{- end -}}

@@ -34,6 +34,15 @@ tests:
           path: data["settings.json"]
           pattern: '"rpc-host-whitelist-enabled":true'
 
+  - it: lets the host whitelist be turned off
+    template: templates/configmap-settings.yaml
+    set:
+      transmission.settings.rpc-host-whitelist-enabled: false
+    asserts:
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"rpc-host-whitelist-enabled":false'
+
   - it: ships the kill switch and settings scripts
     template: templates/configmap-scripts.yaml
     asserts:

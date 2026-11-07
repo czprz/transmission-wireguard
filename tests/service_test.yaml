@@ -18,22 +18,3 @@ tests:
               port: 9091
               protocol: TCP
               targetPort: 9091
-
-  - it: exposes peer ports only when asked
-    set:
-      service.exposePeerPorts: true
-    asserts:
-      - contains:
-          path: spec.ports
-          content:
-            name: peer-tcp
-            port: 51413
-            protocol: TCP
-            targetPort: 51413
-      - contains:
-          path: spec.ports
-          content:
-            name: peer-udp
-            port: 51413
-            protocol: UDP
-            targetPort: 51413

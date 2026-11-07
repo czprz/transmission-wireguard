@@ -4,6 +4,8 @@ templates:
   - templates/deployment.yaml
   - templates/configmap-scripts.yaml
   - templates/configmap-settings.yaml
+  - templates/secret-wg.yaml
+  - templates/secret-rpc.yaml
 
 values:
   - values/base.yaml
@@ -169,3 +171,62 @@ tests:
       - equal:
           path: spec.template.spec.initContainers[1].image
           value: ghcr.io/linuxserver/wireguard:1.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+  - it: mounts only wg0.conf from the WireGuard Secret
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: wgconf
+            secret:
+              secretName: RELEASE-NAME-transmission-wireguard-wg
+              defaultMode: 0400
+              items:
+                - key: wg0.conf
+                  path: wg0.conf
+
+  - it: rolls the pod when the Secrets change
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.username: admin
+      transmission.rpcAuth.password: s3cret
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/wg"]
+          pattern: ^[0-9a-f]{64}$
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/rpc"]
+          pattern: ^[0-9a-f]{64}$
+      - notEqual:
+          path: spec.template.metadata.annotations["checksum/rpc"]
+          value: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+  - it: keeps the read-only settings mount without persistence
+    template: templates/deployment.yaml
+    set:
+      persistence.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: transmission-config, mountPath: /config }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: settings-run, mountPath: /config/settings.json, subPath: settings.json, readOnly: true }
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: transmission-config, emptyDir: {} }
+
+  - it: supports hostPath persistence
+    template: templates/deployment.yaml
+    set:
+      persistence.type: hostPath
+      persistence.hostPath.path: /srv/transmission
+      persistence.hostPath.type: Directory
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: transmission-storage, hostPath: { path: /srv/transmission, type: Directory } }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: transmission-storage, mountPath: /config, subPath: config }

@@ -13,12 +13,16 @@ v4=""
 v6=""
 if [ "$BIND_TO_TUNNEL" = "true" ]; then
   [ -r "$CONF" ] || { echo "[twg-settings] FATAL: ${CONF} not readable" >&2; exit 1; }
-  for addr in $(sed -nE 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*([^#]*).*/\1/Ip' "$CONF" | tr ',' ' '); do
+  for addr in $(tr -d '\r' <"$CONF" | sed -nE 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*([^#]*).*/\1/Ip' | tr ',' ' '); do
     addr=${addr%%/*}
-    case "$addr" in
-      *:*) [ -n "$v6" ] || v6=$addr ;;
-      *.*) [ -n "$v4" ] || v4=$addr ;;
-    esac
+    if printf '%s' "$addr" | grep -Eqx '([0-9]{1,3}\.){3}[0-9]{1,3}'; then
+      [ -n "$v4" ] || v4=$addr
+    elif printf '%s' "$addr" | grep -Eqx '[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*'; then
+      [ -n "$v6" ] || v6=$addr
+    else
+      echo "[twg-settings] FATAL: Address ${addr} in ${CONF} is not an IP address" >&2
+      exit 1
+    fi
   done
   # Without a tunnel address for a family, bind it to loopback so that
   # family cannot reach the network at all.

@@ -62,17 +62,8 @@
         "webPort": {
           "type": "integer"
         },
-        "peerPortTcp": {
-          "type": "integer"
-        },
-        "peerPortUdp": {
-          "type": "integer"
-        },
         "annotations": {
           "type": "object"
-        },
-        "exposePeerPorts": {
-          "type": "boolean"
         }
       }
     },
@@ -282,7 +273,7 @@
             "properties": {
               "ip": {
                 "type": "string",
-                "pattern": "^([0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*)$"
+                "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*$"
               },
               "port": {
                 "type": "integer",

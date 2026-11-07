@@ -29,7 +29,7 @@
     {
       "fileMatch": ["Chart\\.yaml"],
       "matchStrings": [
-        "image: (?<depName>[^:]+):(?<currentValue>[^\\s]+)"
+        "image: (?<depName>[^:\\s]+):(?<currentValue>[^\\s@]+)@(?<currentDigest>sha256:[a-f0-9]+)"
       ],
       "datasourceTemplate": "docker"
     }

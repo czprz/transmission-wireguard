@@ -4,6 +4,8 @@ templates:
   - templates/deployment.yaml
   - templates/configmap-scripts.yaml
   - templates/configmap-settings.yaml
+  - templates/secret-wg.yaml
+  - templates/secret-rpc.yaml
 
 values:
   - values/base.yaml
@@ -101,7 +103,7 @@ tests:
       ingress.enabled: true
     asserts:
       - failedTemplate:
-          errorMessage: "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true"
+          errorMessage: "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth"
 
   - template: templates/deployment.yaml
     it: refuses a LoadBalancer web UI without RPC auth
@@ -109,7 +111,7 @@ tests:
       service.type: LoadBalancer
     asserts:
       - failedTemplate:
-          errorMessage: "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true"
+          errorMessage: "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth"
 
   - template: templates/deployment.yaml
     it: allows an exposed web UI with RPC auth
@@ -128,3 +130,160 @@ tests:
     asserts:
       - isKind:
           of: Deployment
+
+  - template: templates/deployment.yaml
+    it: accepts RPC auth set the pre-1.0 way in settings
+    set:
+      ingress.enabled: true
+      transmission.settings.rpc-authentication-required: true
+      transmission.settings.rpc-username: admin
+      transmission.settings.rpc-password: s3cret
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: refuses half-set inline RPC credentials
+    set:
+      transmission.rpcAuth.username: admin
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.rpcAuth needs both username and password (or existingSecret)"
+
+  - template: templates/deployment.yaml
+    it: refuses an Endpoint without a port
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        PrivateKey = x
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf Endpoint 203.0.113.10 needs a port (ip and port, e.g. 203.0.113.10 then 51820)"
+
+  - template: templates/deployment.yaml
+    it: refuses an out-of-range Endpoint port
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        PrivateKey = x
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:99999
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf Endpoint port 99999 must be between 1 and 65535"
+
+  - template: templates/deployment.yaml
+    it: refuses an Endpoint that is not a valid IP
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        PrivateKey = x
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 999.1.1.1:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf Endpoint 999.1.1.1 must be an IP address because DNS is blocked until the tunnel is up"
+
+  - template: templates/deployment.yaml
+    it: refuses AllowedIPs that only look like a full tunnel
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        PrivateKey = x
+        [Peer]
+        AllowedIPs = 10.0.0.0/0, 10.0.0.0/8 # todo 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel)"
+
+  - template: templates/deployment.yaml
+    it: accepts a full tunnel with CRLF line endings and several AllowedIPs lines
+    set:
+      wireguard.wg0Conf: "[Interface]\r\nPrivateKey = x\r\n[Peer]\r\nAllowedIPs = ::/0\r\nAllowedIPs = 0.0.0.0/0\r\nEndpoint = 203.0.113.10:51820\r\n"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: refuses Table in wg0.conf
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        PrivateKey = x
+        Table = 1234
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf sets Table, which turns off the fwmark routing the kill switch relies on. Remove it."
+
+  - template: templates/deployment.yaml
+    it: does not mistake words containing nft for firewall hooks
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        PrivateKey = x
+        PostUp = echo up > /config/infti.log
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: refuses an rpc-port different from the web port
+    set:
+      transmission.settings.rpc-port: 8080
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.settings rpc-port (8080) must equal service.webPort (9091), the only port the kill switch opens to the cluster"
+
+  - template: templates/deployment.yaml
+    it: refuses random peer ports
+    set:
+      transmission.settings.peer-port-random-on-start: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.settings peer-port-random-on-start must be false. The kill switch only accepts peers on the fixed peer-port"
+
+  - template: templates/deployment.yaml
+    it: refuses the removed exposePeerPorts
+    set:
+      service.exposePeerPorts: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "service.exposePeerPorts was removed. Peers can only reach Transmission through the VPN, never through the Service"
+
+  - template: templates/deployment.yaml
+    it: refuses capabilities that would let Transmission bypass the kill switch
+    set:
+      transmission.securityContext.capabilities.add: [NET_ADMIN]
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.securityContext must not be privileged or add NET_ADMIN, NET_RAW, SYS_ADMIN or ALL. These would let Transmission bypass the kill switch"
+
+  - template: templates/deployment.yaml
+    it: refuses a privileged Transmission container
+    set:
+      transmission.securityContext.privileged: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.securityContext must not be privileged or add NET_ADMIN, NET_RAW, SYS_ADMIN or ALL. These would let Transmission bypass the kill switch"
+
+  - template: templates/deployment.yaml
+    it: refuses a DNS override without nameservers
+    set:
+      wireguard.dns.nameservers: []
+      wireguard.existingSecret: wg
+      networkPolicy.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.dns.override needs at least one entry in wireguard.dns.nameservers"
