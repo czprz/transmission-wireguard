@@ -1,23 +1,21 @@
-This chart uses a WireGuard CLIENT container (linuxserver/wireguard) + Transmission in the same Pod.
+Transmission is running behind a WireGuard sidecar with a chart-managed kill switch.
 
-1) Provide wg0.conf securely:
-   - Recommended: create a secret and set wireguard.existingSecret in values.yaml.
-     kubectl create secret generic <name> --from-file=wg0.conf=/path/to/wg0.conf
-   - Alternative: set wireguard.wg0Conf in values.yaml (not recommended for public repos).
+- Traffic can only leave the pod through the tunnel; if the tunnel goes down, it is blocked.
+- Transmission starts only after the kill switch and the tunnel are up.
+{{- if .Values.networkPolicy.enabled }}
+- Egress NetworkPolicy allows only:{{ range include "twg.vpnEndpoints" . | fromJsonArray }} {{ .ip }}:{{ .port }}/udp{{ end }}
+  (needs a CNI that enforces NetworkPolicy)
+{{- else }}
+- WARNING: networkPolicy is disabled. Only the in-pod kill switch protects against leaks.
+{{- end }}
+- DNS: {{ if .Values.wireguard.dns.override }}{{ join ", " .Values.wireguard.dns.nameservers }} through the tunnel{{ else }}WARNING: cluster DNS (lookups leak via CoreDNS's upstream and fail behind the kill switch){{ end }}
 
-2) Ensure the Endpoint is IPv4 (NOT [IPv6]) or you can hit silent tunnel failures.
+Verify the egress IP is the VPN's:
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c transmission -- sh -c 'wget -qO- https://ifconfig.io'
 
-3) Add a kill switch to wg0.conf (recommended). Example:
+Check the kill switch holds (must print "blocked"):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c wireguard -- ip link del wg0
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c transmission -- sh -c 'wget -T 5 -qO- https://ifconfig.io || echo blocked'
 
-[Interface]
-...
-PostUp = iptables -w -P OUTPUT DROP; iptables -w -A OUTPUT -o lo -j ACCEPT; iptables -w -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT; iptables -w -A OUTPUT -p udp -d 203.0.113.1 --dport 51820 -j ACCEPT; iptables -w -A OUTPUT -o %i -j ACCEPT; ip6tables -w -P OUTPUT DROP; ip6tables -w -A OUTPUT -o lo -j ACCEPT; ip6tables -w -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT; ip6tables -w -A OUTPUT -o %i -j ACCEPT
-PreDown = iptables -w -P OUTPUT ACCEPT; iptables -w -F OUTPUT; ip6tables -w -P OUTPUT ACCEPT; ip6tables -w -F OUTPUT
-
-(Replace <ENDPOINT_IP> with the actual IPv4 address from your Endpoint = line.)
-
-4) Install:
-   helm install transmission ./transmission-wireguard -f values.yaml
-
-5) Verify egress IP:
-   kubectl exec -it deploy/<release>-transmission-wireguard -c transmission -- sh -c 'wget -qO- https://ifconfig.io || true'
+Sidecar logs (refused configs show up as "[twg-firewall] FATAL"):
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "twg.fullname" . }} -c wireguard

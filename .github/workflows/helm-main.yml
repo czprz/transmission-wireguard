@@ -26,13 +26,13 @@ jobs:
           version: v3.14.4
 
       - name: Lint chart
-        run: helm lint . --strict
+        run: helm lint . --strict -f ci/default-values.yaml
 
       - name: Chart-testing lint
         run: ct lint --all --chart-dirs .
 
       - name: Render chart
-        run: helm template transmission-wireguard . > /tmp/manifest.yaml
+        run: helm template transmission-wireguard . -f ci/default-values.yaml > /tmp/manifest.yaml
 
       - name: Kubeconform
         run: |

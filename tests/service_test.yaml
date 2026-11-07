@@ -3,18 +3,26 @@ suite: service
 templates:
   - templates/service.yaml
 
+values:
+  - values/base.yaml
+
 tests:
-  - it: should render service ports
+  - it: only exposes the web UI by default
     asserts:
       - isKind:
           of: Service
-      - contains:
+      - equal:
           path: spec.ports
-          content:
-            name: web
-            port: 9091
-            protocol: TCP
-            targetPort: 9091
+          value:
+            - name: web
+              port: 9091
+              protocol: TCP
+              targetPort: 9091
+
+  - it: exposes peer ports only when asked
+    set:
+      service.exposePeerPorts: true
+    asserts:
       - contains:
           path: spec.ports
           content:

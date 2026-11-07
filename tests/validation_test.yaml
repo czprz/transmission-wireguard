@@ -1,0 +1,130 @@
+suite: validation
+
+templates:
+  - templates/deployment.yaml
+  - templates/configmap-scripts.yaml
+  - templates/configmap-settings.yaml
+
+values:
+  - values/base.yaml
+
+tests:
+  - template: templates/deployment.yaml
+    it: renders with a safe config
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: requires a WireGuard config
+    set:
+      wireguard.wg0Conf: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf or wireguard.existingSecret must be set"
+
+  - template: templates/deployment.yaml
+    it: rejects firewall hooks in wg0.conf
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = 10.64.0.2/32
+        PostUp = iptables -w -P OUTPUT DROP
+        PreDown = iptables -w -P OUTPUT ACCEPT; iptables -w -F OUTPUT
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf has iptables/nft commands in PreUp/PostUp/PreDown/PostDown. The chart manages the kill switch, remove them."
+
+  - template: templates/deployment.yaml
+    it: allows firewall hooks only when opted in
+    set:
+      firewall.allowConfFirewallHooks: true
+      wireguard.wg0Conf: |
+        [Interface]
+        PostUp = iptables -w -A OUTPUT -o %i -j ACCEPT
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: rejects a split tunnel
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        [Peer]
+        AllowedIPs = 10.0.0.0/8
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel)"
+
+  - template: templates/deployment.yaml
+    it: rejects a hostname endpoint
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = vpn.example.com:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf Endpoint vpn.example.com must be an IP address because DNS is blocked until the tunnel is up"
+
+  - template: templates/deployment.yaml
+    it: needs the endpoint for the NetworkPolicy with an existing Secret
+    set:
+      wireguard.wg0Conf: ""
+      wireguard.existingSecret: wg-client
+    asserts:
+      - failedTemplate:
+          errorMessage: "networkPolicy.enabled needs the VPN endpoint. Set wireguard.endpoints (ip and port of your Endpoint), or disable networkPolicy if your CNI does not enforce it"
+
+  - template: templates/deployment.yaml
+    it: accepts an existing Secret with endpoints listed
+    set:
+      wireguard.wg0Conf: ""
+      wireguard.existingSecret: wg-client
+      wireguard.endpoints: [{ ip: 203.0.113.10, port: 51820 }]
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: refuses an exposed web UI without RPC auth
+    set:
+      ingress.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true"
+
+  - template: templates/deployment.yaml
+    it: refuses a LoadBalancer web UI without RPC auth
+    set:
+      service.type: LoadBalancer
+    asserts:
+      - failedTemplate:
+          errorMessage: "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true"
+
+  - template: templates/deployment.yaml
+    it: allows an exposed web UI with RPC auth
+    set:
+      ingress.enabled: true
+      transmission.rpcAuth.existingSecret: tx-rpc
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: allows an exposed anonymous web UI when explicitly accepted
+    set:
+      ingress.enabled: true
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - isKind:
+          of: Deployment

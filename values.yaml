@@ -7,16 +7,23 @@ images:
     # Override defaults from the chart if needed.
     repository: ""
     tag: ""
+    # Pin by digest (sha256:...). The chart pins its default tags by digest;
+    # set this when overriding repository or tag to keep pulls immutable.
+    digest: ""
     pullPolicy: IfNotPresent
   transmission:
     # Override defaults from the chart if needed.
     repository: ""
     tag: ""
+    digest: ""
     pullPolicy: IfNotPresent
 
 service:
   type: ClusterIP
   webPort: 9091
+  # Peers reach Transmission through the VPN, never through the Service.
+  # Exposing these on a NodePort/LoadBalancer would advertise the node's real IP.
+  exposePeerPorts: false
   peerPortTcp: 51413
   peerPortUdp: 51413
   annotations: {}
@@ -60,6 +67,24 @@ transmission:
     TZ: "UTC"
     PUID: "1000"
     PGID: "1000"
+
+  # Bind Transmission's peer sockets to the tunnel address read from wg0.conf
+  # (Address = ...). If the tunnel goes away, Transmission cannot fall back to
+  # another interface. An explicit bind-address-ipv4/6 in settings wins.
+  bindToTunnel: true
+
+  # RPC (web UI) credentials. Required when the UI is exposed through an
+  # ingress or a non-ClusterIP Service, unless allowAnonymous is true.
+  rpcAuth:
+    # Secret with the username/password keys below (recommended).
+    existingSecret: ""
+    usernameKey: username
+    passwordKey: password
+    # Or let the chart create the Secret (keeps credentials out of the ConfigMap).
+    username: ""
+    password: ""
+    allowAnonymous: false
+
   # Transmission settings are rendered into settings.json on startup.
   # Tip: you can generate a baseline by running Transmission once and exporting its settings.json.
   # Official docs:
@@ -80,9 +105,16 @@ transmission:
     rpc-password: ""
     rpc-whitelist: 127.0.0.1
     rpc-whitelist-enabled: false
+    # DNS-rebinding protection (applies when RPC auth is off). The Service
+    # name and ingress hosts are added automatically.
     rpc-host-whitelist: localhost
-    rpc-host-whitelist-enabled: false
+    rpc-host-whitelist-enabled: true
+    # The kill switch only accepts inbound peers on this port, via the tunnel.
+    peer-port: 51413
+    peer-port-random-on-start: false
+    # UPnP/NAT-PMP and Local Peer Discovery talk to the local network, not the VPN.
     port-forwarding-enabled: false
+    lpd-enabled: false
   securityContext:
     allowPrivilegeEscalation: false
     capabilities:
@@ -97,7 +129,11 @@ transmission:
       memory: 512Mi
 
 wireguard:
-  # Provide a FULL WireGuard CLIENT config here (wg0.conf), with an IPv4 Endpoint.
+  # Provide a FULL WireGuard CLIENT config here (wg0.conf):
+  # - Endpoint must be an IP address (DNS is blocked until the tunnel is up)
+  # - AllowedIPs must include 0.0.0.0/0 (and ::/0 for IPv6)
+  # - No iptables/nft commands in PostUp/PreDown: the chart owns the kill switch
+  # - PersistentKeepalive = 25 is recommended
   # For public charts, prefer wireguard.existingSecret and leave wg0Conf empty.
   wg0Conf: ""
 
@@ -105,26 +141,35 @@ wireguard:
   # If set, this chart will NOT create its own secret.
   existingSecret: ""
 
+  # VPN server endpoints, used for the egress NetworkPolicy. Parsed
+  # automatically from wg0Conf; list them here when using existingSecret.
+  endpoints: []
+  #  - ip: 203.0.113.10
+  #    port: 51820
+
+  # Restart the WireGuard sidecar when the newest handshake is older than this
+  # many seconds (0 disables). Needs PersistentKeepalive in wg0.conf, otherwise
+  # an idle tunnel stops handshaking. Restarts are safe: the kill switch stays up.
+  handshakeMaxAgeSeconds: 0
+
   env:
     TZ: "UTC"
     PUID: "1000"
     PGID: "1000"
 
-  # If your cluster forbids sysctls, this chart does NOT use them.
-  # For kernel WireGuard, the container needs these mounts/capabilities.
+  # Kernel WireGuard is built into Linux 5.6+, so no host mounts are needed.
   kernelMode:
     enabled: true
-    # Mount host kernel modules so wg kernel module works (common requirement).
-    mountLibModules: true
-    # Mount /dev/net/tun
-    mountTun: true
+    # Only for hosts older than 5.6 that must load the module from the host.
+    mountLibModules: false
+    # Only for userspace WireGuard implementations (wireguard-go/boringtun).
+    mountTun: false
 
-  # Pod DNS override: only needed if the DNS in wg0.conf doesn't apply at the pod level.
-  # If your wg0.conf already has a DNS = line, leave this disabled.
-  # If you change these nameservers, also update your wg0.conf `DNS = ...` line to match.
-  # Keeping them in sync avoids leaks or failed lookups when the killswitch is active.
+  # Pod DNS. The kill switch blocks cluster DNS (it would leak lookups via
+  # CoreDNS's upstream), so the pod resolves through these nameservers, which
+  # are reached through the tunnel. Prefer your VPN provider's resolver.
   dns:
-    override: false
+    override: true
     nameservers:
       - 1.1.1.1
       - 1.0.0.1
@@ -135,8 +180,42 @@ wireguard:
       memory: 64Mi
     limits:
       memory: 128Mi
+  # wg-quick writes net.ipv4.conf.all.src_valid_mark, which needs privileged
+  # (or the sysctl allowed on the kubelet and set in podSecurityContext.sysctls,
+  # then capabilities NET_ADMIN + NET_RAW with privileged: false).
   securityContext:
-    privileged: true   # simplest/most compatible; you can tighten later if your cluster supports it
+    privileged: true
+
+# Kill switch, installed in the pod network namespace before the tunnel starts.
+# It cannot be disabled: traffic leaves the pod only through WireGuard.
+firewall:
+  # Sources allowed to reach the web UI port outside the tunnel (kubelet
+  # probes, ingress controller, other pods). Replies go back out eth0; nothing
+  # else does. Narrow these to your node/pod CIDRs if you can.
+  webAllowedCIDRs:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - fc00::/7
+  # Firewall mark wg-quick puts on WireGuard's own UDP packets (its default).
+  wgFwmark: 51820
+  # Fail startup if wg0.conf contains iptables/nft hook commands.
+  allowConfFirewallHooks: false
+
+# Second layer, enforced by the CNI outside the pod: egress only to the VPN
+# endpoints. Needs a CNI that implements NetworkPolicy (Calico, Cilium, ...).
+networkPolicy:
+  enabled: true
+  # Peers allowed to reach the web UI (NetworkPolicyPeer list). Empty = any source.
+  ingressFrom: []
+  # Extra egress rules (NetworkPolicyEgressRule list).
+  extraEgress: []
+
+podSecurityContext: {}
+#  sysctls:
+#    - name: net.ipv4.conf.all.src_valid_mark
+#      value: "1"
 
 probes:
   initialDelaySeconds: 10

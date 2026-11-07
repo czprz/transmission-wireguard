@@ -13,7 +13,7 @@
     {
       "fileMatch": ["templates/_helpers\\.tpl"],
       "matchStrings": [
-        "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.transmission\\.tag"
+        "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.transmission\\.tag -}}\\n\\{\\{- \\$digest := default \"(?<currentDigest>sha256:[a-f0-9]+)\" \\.Values\\.images\\.transmission\\.digest"
       ],
       "depNameTemplate": "lscr.io/linuxserver/transmission",
       "datasourceTemplate": "docker"
@@ -21,7 +21,7 @@
     {
       "fileMatch": ["templates/_helpers\\.tpl"],
       "matchStrings": [
-        "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.wireguard\\.tag"
+        "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.wireguard\\.tag -}}\\n\\{\\{- \\$digest := default \"(?<currentDigest>sha256:[a-f0-9]+)\" \\.Values\\.images\\.wireguard\\.digest"
       ],
       "depNameTemplate": "ghcr.io/linuxserver/wireguard",
       "datasourceTemplate": "docker"

@@ -32,7 +32,7 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Lint chart
-        run: helm lint . --strict
+        run: helm lint . --strict -f ci/default-values.yaml
 
       - name: Read chart version
         id: chart

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "twg.fullname" . }}-scripts
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+data:
+  firewall.sh: |
+    {{- .Files.Get "files/firewall.sh" | nindent 4 }}
+  settings-init.sh: |
+    {{- .Files.Get "files/settings-init.sh" | nindent 4 }}

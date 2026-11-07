@@ -17,6 +17,7 @@ spec:
       port: {{ .Values.service.webPort }}
       targetPort: {{ .Values.service.webPort }}
       protocol: TCP
+    {{- if .Values.service.exposePeerPorts }}
     - name: peer-tcp
       port: {{ .Values.service.peerPortTcp }}
       targetPort: {{ .Values.service.peerPortTcp }}
@@ -25,3 +26,4 @@ spec:
       port: {{ .Values.service.peerPortUdp }}
       targetPort: {{ .Values.service.peerPortUdp }}
       protocol: UDP
+    {{- end }}

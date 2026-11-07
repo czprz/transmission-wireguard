@@ -1,0 +1,71 @@
+suite: networkpolicy
+
+templates:
+  - templates/networkpolicy.yaml
+
+values:
+  - values/base.yaml
+
+tests:
+  - it: only allows egress to the VPN endpoint parsed from wg0.conf
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.policyTypes
+          value: [Ingress, Egress]
+      - equal:
+          path: spec.egress
+          value:
+            - to: [{ ipBlock: { cidr: 203.0.113.10/32 } }]
+              ports: [{ protocol: UDP, port: 51820 }]
+
+  - it: uses listed endpoints, including IPv6
+    set:
+      wireguard.wg0Conf: ""
+      wireguard.existingSecret: wg-client
+      wireguard.endpoints:
+        - ip: 198.51.100.7
+          port: 1637
+        - ip: 2001:db8::7
+    asserts:
+      - equal:
+          path: spec.egress
+          value:
+            - to: [{ ipBlock: { cidr: 198.51.100.7/32 } }]
+              ports: [{ protocol: UDP, port: 1637 }]
+            - to: [{ ipBlock: { cidr: 2001:db8::7/128 } }]
+              ports: [{ protocol: UDP, port: 51820 }]
+
+  - it: parses bracketed IPv6 endpoints
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        [Peer]
+        AllowedIPs = 0.0.0.0/0, ::/0
+        Endpoint = [2001:db8::9]:51820
+    asserts:
+      - equal:
+          path: spec.egress[0].to[0].ipBlock.cidr
+          value: 2001:db8::9/128
+
+  - it: only allows the web port in
+    set:
+      networkPolicy.ingressFrom:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+    asserts:
+      - equal:
+          path: spec.ingress
+          value:
+            - ports: [{ protocol: TCP, port: 9091 }]
+              from:
+                - namespaceSelector:
+                    matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+
+  - it: can be disabled
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

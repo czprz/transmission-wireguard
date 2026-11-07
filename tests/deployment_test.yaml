@@ -2,24 +2,170 @@ suite: deployment
 
 templates:
   - templates/deployment.yaml
+  - templates/configmap-scripts.yaml
+  - templates/configmap-settings.yaml
+
+values:
+  - values/base.yaml
 
 tests:
-  - it: should render deployment with two containers
+  - it: runs WireGuard as a native sidecar that Transmission waits for
+    template: templates/deployment.yaml
     asserts:
       - isKind:
           of: Deployment
       - equal:
-          path: spec.template.spec.containers[0].name
+          path: spec.template.spec.initContainers[0].name
+          value: transmission-settings
+      - equal:
+          path: spec.template.spec.initContainers[1].name
           value: wireguard
       - equal:
-          path: spec.template.spec.containers[1].name
+          path: spec.template.spec.initContainers[1].restartPolicy
+          value: Always
+      - equal:
+          path: spec.template.spec.initContainers[1].startupProbe.exec.command
+          value: ["/twg/scripts/firewall.sh", "tunnel"]
+      - lengthEqual:
+          path: spec.template.spec.containers
+          count: 1
+      - equal:
+          path: spec.template.spec.containers[0].name
           value: transmission
 
-  - it: should mount settings config
+  - it: installs the kill switch before s6 starts wg-quick
+    template: templates/deployment.yaml
     asserts:
       - equal:
-          path: spec.template.spec.containers[1].volumeMounts[1].mountPath
-          value: /config/settings.json
+          path: spec.template.spec.initContainers[1].command
+          value: ["/bin/bash", "-c", "/twg/scripts/firewall.sh apply && exec /init"]
       - equal:
-          path: spec.template.spec.containers[1].volumeMounts[1].subPath
-          value: settings.json
+          path: spec.template.spec.initContainers[1].livenessProbe.exec.command
+          value: ["/twg/scripts/firewall.sh", "live"]
+      - equal:
+          path: spec.template.spec.initContainers[1].readinessProbe.exec.command
+          value: ["/twg/scripts/firewall.sh", "tunnel"]
+
+  - it: passes firewall settings to the sidecar
+    template: templates/deployment.yaml
+    set:
+      transmission:
+        settings:
+          peer-port: 6881
+      firewall.webAllowedCIDRs: ["10.42.0.0/16", "10.0.5.0/24"]
+      wireguard.handshakeMaxAgeSeconds: 300
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = 10.64.0.2/32
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_PEER_PORT, value: "6881" }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_WEB_ALLOWED_CIDRS, value: "10.42.0.0/16 10.0.5.0/24" }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_HANDSHAKE_MAX_AGE, value: "300" }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_ALLOW_CONF_FIREWALL_HOOKS, value: "false" }
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: { containerPort: 6881, protocol: UDP }
+
+  - it: fails Transmission when wg0 disappears
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.exec.command
+          value: ["sh", "-c", "test -d /sys/class/net/wg0"]
+
+  - it: resolves DNS through the tunnel by default
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: None
+      - equal:
+          path: spec.template.spec.dnsConfig.nameservers
+          value: ["1.1.1.1", "1.0.0.1"]
+
+  - it: hardens the pod
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+      - isNull:
+          path: spec.template.spec.hostNetwork
+      - equal:
+          path: spec.template.spec.volumes[0].secret.defaultMode
+          value: 0400
+
+  - it: needs no host mounts by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content: { name: lib-modules, hostPath: { path: /lib/modules, type: Directory } }
+      - notContains:
+          path: spec.template.spec.volumes
+          content: { name: dev-net-tun, hostPath: { path: /dev/net/tun, type: CharDevice } }
+
+  - it: mounts the composed settings read-only
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: settings-run
+            mountPath: /config/settings.json
+            subPath: settings.json
+            readOnly: true
+
+  - it: injects RPC credentials from a Secret
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.existingSecret: tx-rpc
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: RPC_PASSWORD
+            valueFrom: { secretKeyRef: { name: tx-rpc, key: password } }
+
+  - it: pins default images by digest
+    template: templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[1].image
+          pattern: ^ghcr\.io/linuxserver/wireguard:[^@]+@sha256:[0-9a-f]{64}$
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: ^lscr\.io/linuxserver/transmission:[^@]+@sha256:[0-9a-f]{64}$
+
+  - it: drops the default digest when the tag is overridden
+    template: templates/deployment.yaml
+    set:
+      images.transmission.tag: "4.2.0"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: lscr.io/linuxserver/transmission:4.2.0
+
+  - it: uses an explicit digest
+    template: templates/deployment.yaml
+    set:
+      images.wireguard.tag: "1.0.1"
+      images.wireguard.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[1].image
+          value: ghcr.io/linuxserver/wireguard:1.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000

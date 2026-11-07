@@ -1,3 +1,4 @@
+{{- include "twg.validate" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,17 +14,70 @@ spec:
     metadata:
       labels:
         {{- include "twg.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/scripts: {{ include (print $.Template.BasePath "/configmap-scripts.yaml") . | sha256sum }}
+        checksum/settings: {{ include (print $.Template.BasePath "/configmap-settings.yaml") . | sha256sum }}
     spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.wireguard.dns.override }}
       dnsPolicy: None
       dnsConfig:
         nameservers:
           {{- toYaml .Values.wireguard.dns.nameservers | nindent 10 }}
       {{- end }}
-      containers:
+      initContainers:
+        - name: transmission-settings
+          image: "{{ include "twg.transmissionImage" . }}"
+          imagePullPolicy: {{ .Values.images.transmission.pullPolicy }}
+          command: ["/bin/sh", "/twg/scripts/settings-init.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+          env:
+            - name: PUID
+              value: {{ .Values.transmission.env.PUID | default "1000" | quote }}
+            - name: PGID
+              value: {{ .Values.transmission.env.PGID | default "1000" | quote }}
+            - name: TWG_BIND_TO_TUNNEL
+              value: {{ .Values.transmission.bindToTunnel | quote }}
+            {{- with include "twg.rpcSecretName" . }}
+            - name: RPC_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.transmission.rpcAuth.usernameKey }}
+            - name: RPC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.transmission.rpcAuth.passwordKey }}
+            {{- end }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /twg/scripts
+            - name: transmission-settings
+              mountPath: /twg/settings
+            - name: wgconf
+              mountPath: /twg/wg
+              readOnly: true
+            - name: settings-run
+              mountPath: /twg/run
+
+        # Native sidecar (restartPolicy: Always): Transmission is not started
+        # until the startupProbe confirms the kill switch and tunnel are up.
         - name: wireguard
           image: "{{ include "twg.wireguardImage" . }}"
           imagePullPolicy: {{ .Values.images.wireguard.pullPolicy }}
+          restartPolicy: Always
+          # Install the kill switch before s6 starts wg-quick.
+          command: ["/bin/bash", "-c", "/twg/scripts/firewall.sh apply && exec /init"]
           securityContext:
             {{- toYaml .Values.wireguard.securityContext | nindent 12 }}
           env:
@@ -31,9 +85,24 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            - name: TWG_WEB_PORT
+              value: {{ .Values.service.webPort | quote }}
+            - name: TWG_PEER_PORT
+              value: {{ include "twg.peerPort" . | quote }}
+            - name: TWG_WEB_ALLOWED_CIDRS
+              value: {{ join " " .Values.firewall.webAllowedCIDRs | quote }}
+            - name: TWG_WG_FWMARK
+              value: {{ .Values.firewall.wgFwmark | quote }}
+            - name: TWG_ALLOW_CONF_FIREWALL_HOOKS
+              value: {{ .Values.firewall.allowConfFirewallHooks | quote }}
+            - name: TWG_HANDSHAKE_MAX_AGE
+              value: {{ .Values.wireguard.handshakeMaxAgeSeconds | quote }}
           volumeMounts:
+            - name: scripts
+              mountPath: /twg/scripts
             - name: wgconf
               mountPath: /config/wg_confs
+              readOnly: true
             {{- if and .Values.wireguard.kernelMode.enabled .Values.wireguard.kernelMode.mountTun }}
             - name: dev-net-tun
               mountPath: /dev/net/tun
@@ -43,23 +112,29 @@ spec:
               mountPath: /lib/modules
               readOnly: true
             {{- end }}
+          startupProbe:
+            exec:
+              command: ["/twg/scripts/firewall.sh", "tunnel"]
+            periodSeconds: 2
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
+            failureThreshold: 90
           readinessProbe:
             exec:
-              command: ["sh","-lc","wg show wg0 >/dev/null 2>&1"]
-            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+              command: ["/twg/scripts/firewall.sh", "tunnel"]
             periodSeconds: {{ .Values.probes.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.failureThreshold }}
+          # Restarts re-apply the kill switch, so a tampered firewall heals.
           livenessProbe:
             exec:
-              command: ["sh","-lc","hs=$(wg show wg0 latest-handshakes | awk '{print $2}'); [ -n \"$hs\" ] && [ $(($(date +%s) - hs)) -lt 300 ]"]
-            initialDelaySeconds: 60
+              command: ["/twg/scripts/firewall.sh", "live"]
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 3
           resources:
             {{- toYaml .Values.wireguard.resources | nindent 12 }}
 
+      containers:
         - name: transmission
           image: "{{ include "twg.transmissionImage" . }}"
           imagePullPolicy: {{ .Values.images.transmission.pullPolicy }}
@@ -73,9 +148,9 @@ spec:
           ports:
             - containerPort: {{ .Values.service.webPort }}
               protocol: TCP
-            - containerPort: {{ .Values.service.peerPortTcp }}
+            - containerPort: {{ include "twg.peerPort" . }}
               protocol: TCP
-            - containerPort: {{ .Values.service.peerPortUdp }}
+            - containerPort: {{ include "twg.peerPort" . }}
               protocol: UDP
           readinessProbe:
             tcpSocket:
@@ -84,6 +159,13 @@ spec:
             periodSeconds: {{ .Values.probes.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.failureThreshold }}
+          # The pod shares one network namespace, so wg0 is visible here.
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test -d /sys/class/net/wg0"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.transmission.resources | nindent 12 }}
           volumeMounts:
@@ -95,9 +177,10 @@ spec:
             - name: transmission-config
               mountPath: /config
             {{- end }}
-            - name: transmission-settings
+            - name: settings-run
               mountPath: /config/settings.json
               subPath: settings.json
+              readOnly: true
             {{- if .Values.persistence.enabled }}
             - name: transmission-storage
               {{- if and .Values.persistence.mounts .Values.persistence.mounts.data }}
@@ -114,6 +197,15 @@ spec:
         - name: wgconf
           secret:
             secretName: {{ include "twg.wgSecretName" . }}
+            defaultMode: 0400
+        - name: scripts
+          configMap:
+            name: {{ include "twg.fullname" . }}-scripts
+            defaultMode: 0555
+        - name: settings-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
 
         {{- if .Values.persistence.enabled }}
         - name: transmission-storage
