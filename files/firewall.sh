@@ -204,7 +204,7 @@ conf_value() {
 
 # Reject configs that would weaken or bypass the kill switch.
 preflight() {
-  local ep host port fwmark table f
+  local ep host port fwmark table f allowed
   [[ -r $CONF ]] || die "WireGuard config ${CONF} not found"
 
   # The image brings up every *.conf it finds; only wg0 is validated.
@@ -226,8 +226,10 @@ preflight() {
     is_ip "$host" || die "Endpoint ${ep} is not an IP address. DNS is blocked until the tunnel is up, so the endpoint must be a literal IP."
   done < <(conf_value Endpoint)
 
-  conf_value AllowedIPs | tr -s ',[:blank:]' '\n' | grep -qx '0\.0\.0\.0/0' ||
-    die "AllowedIPs must include 0.0.0.0/0 (full tunnel)"
+  # Captured first: grep -q exiting on the first match would SIGPIPE tr and,
+  # with pipefail, randomly refuse a valid config.
+  allowed=$(conf_value AllowedIPs | tr -s ',[:blank:]' '\n')
+  grep -qx '0\.0\.0\.0/0' <<<"$allowed" || die "AllowedIPs must include 0.0.0.0/0 (full tunnel)"
 
   table=$(conf_value Table | tail -n1)
   if [[ -n $table && ${table,,} != auto ]]; then
