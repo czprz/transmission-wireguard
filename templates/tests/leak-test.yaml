@@ -1,8 +1,10 @@
 {{- if .Values.tests.enabled -}}
 {{- $name := printf "%s-test" (include "twg.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- $hook := dict "helm.sh/hook" "test" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" -}}
+{{- $hook := dict "helm.sh/hook" "test" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded,hook-failed" -}}
 # `helm test` checks the running release for leaks from inside the pod. The
-# Role exists only while the test runs (exec into the release's pods).
+# Role exists only while the test runs (exec into the release's pods), pass
+# or fail. Off by default: `helm template` pipelines would apply the Role as
+# an ordinary, permanent resource.
 # The pod stays until the next run so `helm test --logs` can read it.
 apiVersion: v1
 kind: ServiceAccount
@@ -102,6 +104,26 @@ spec:
           in_wg() { kubectl exec "$pod" -c wireguard -- "$@"; }
           in_tx() { kubectl exec "$pod" -c transmission -- "$@"; }
           trim() { tr -d '[:space:]'; }
+          # curl bound to eth0 in the Transmission container. Prints PASS
+          # only for a refused (7) or timed-out (28) connection; any other
+          # failure (no such interface, exec failed) proves nothing.
+          eth0_blocked() {
+            rc=$(in_tx sh -c 'curl -sk -m 5 -o /dev/null --interface eth0 "$@" 2>/dev/null; echo "rc=$?"' sh "$@" | sed -n 's/^rc=//p')
+            case $rc in
+              7 | 28) return 0 ;;
+              0) return 1 ;;
+              *) echo "could not test (curl exit ${rc:-none}: exec failed or no eth0)"; return 2 ;;
+            esac
+          }
+          check_eth0() {
+            what=$1; shift
+            out=$(eth0_blocked "$@")
+            case $? in
+              0) pass "a socket bound to eth0 cannot reach $what" ;;
+              1) fail "LEAK: a socket bound to eth0 reached $what" ;;
+              *) fail "eth0 check for $what: $out" ;;
+            esac
+          }
 
           if in_wg /twg/scripts/firewall.sh live; then
             pass "kill switch rules intact and tunnel up"
@@ -115,11 +137,7 @@ spec:
           case $host in *:*) host="[$host]" ;; esac
           api="https://$host:$KUBERNETES_SERVICE_PORT/version"
           if curl -sk -m 5 -o /dev/null "$api"; then
-            if in_tx curl -sk -m 5 -o /dev/null --interface eth0 "$api"; then
-              fail "LEAK: a socket bound to eth0 reached the Kubernetes API"
-            else
-              pass "a socket bound to eth0 is rejected"
-            fi
+            check_eth0 "the Kubernetes API" "$api"
           else
             fail "this test pod cannot reach the Kubernetes API, so the eth0 check proves nothing"
           fi
@@ -155,18 +173,24 @@ spec:
                 pass "IPv6 does not leave as the cluster's address $direct6 (VPN: ${vpn6:-no IPv6})"
               fi
             fi
-            if in_tx curl -4 -sS -m 5 -o /dev/null --interface eth0 "$IP_ECHO_URL" 2>/dev/null; then
-              fail "LEAK: a socket bound to eth0 reached $IP_ECHO_URL"
-            else
-              pass "a socket bound to eth0 cannot reach $IP_ECHO_URL"
-            fi
+            check_eth0 "$IP_ECHO_URL" -4 "$IP_ECHO_URL"
           fi
 
           [ "$failed" -eq 0 ] || { echo "$failed check(s) failed"; exit 1; }
           echo "no leaks found"
+      resources:
+        {{- toYaml .Values.tests.resources | nindent 8 }}
       volumeMounts:
         - name: tmp
           mountPath: /tmp
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   volumes:
     - name: tmp
       emptyDir: {}

@@ -162,6 +162,7 @@ helm_args=(
   --set "wireguard.endpoints[0].port=51820"
   --set wireguard.handshakeMaxAgeSeconds=60
   --set persistence.enabled=false
+  --set tests.enabled=true
   --set "tests.ipEchoUrl=http://$CANARY_IP/cgi-bin/ip"
 )
 helm install $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${helm_args[@]}" --set networkPolicy.enabled=false

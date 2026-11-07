@@ -157,7 +157,7 @@ true
 {{- if index $s "peer-port-random-on-start" -}}
 {{- fail "transmission.settings peer-port-random-on-start must be false. The kill switch only accepts peers on the fixed peer-port" -}}
 {{- end -}}
-{{- if hasKey .Values.firewall "allowConfFirewallHooks" -}}
+{{- if .Values.firewall.allowConfFirewallHooks -}}
 {{- fail "firewall.allowConfFirewallHooks was renamed to firewall.allowConfHooks and now covers every PreUp/PostUp/PreDown/PostDown hook" -}}
 {{- end -}}
 {{- if .Values.service.exposePeerPorts -}}

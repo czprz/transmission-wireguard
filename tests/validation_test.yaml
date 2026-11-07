@@ -239,6 +239,14 @@ tests:
           errorMessage: "wireguard.wg0Conf has PreUp/PostUp/PreDown/PostDown hooks. They run as root and can open the kill switch, so remove them or set firewall.allowConfHooks"
 
   - template: templates/deployment.yaml
+    it: ignores the pre-1.0 hooks key when it is false
+    set:
+      firewall.allowConfFirewallHooks: false
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
     it: refuses the pre-1.0 hooks key
     set:
       firewall.allowConfFirewallHooks: true

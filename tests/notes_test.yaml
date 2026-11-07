@@ -33,13 +33,13 @@ tests:
           pattern: 'restart the pod after changing it'
 
   - it: points to helm test
+    set:
+      tests.enabled: true
     asserts:
       - matchRegexRaw:
           pattern: 'Check for leaks from inside the cluster:\n  helm test RELEASE-NAME -n NAMESPACE --logs\n\nVerify the egress IP'
 
-  - it: omits helm test when disabled
-    set:
-      tests.enabled: false
+  - it: explains how to enable helm test
     asserts:
-      - notMatchRegexRaw:
-          pattern: 'helm test'
+      - matchRegexRaw:
+          pattern: '--reuse-values --set tests.enabled=true\n  helm test RELEASE-NAME'

@@ -362,6 +362,9 @@
               "pattern": "^(sha256:[a-f0-9]{64})?$"
             }
           }
+        },
+        "resources": {
+          "type": "object"
         }
       }
     },

@@ -219,9 +219,11 @@ networkPolicy:
 # `helm test <release> --logs` checks the running pod for leaks: the kill
 # switch is intact, the tunnel is up, eth0 is blocked and DNS uses only the
 # configured nameservers. It contacts nothing outside the cluster.
-# While it runs, a Role lets the test pod exec into the release's pods.
+# While it runs, a Role lets the test pod exec into any pod in the namespace.
+# Off by default: tools that deploy with `helm template` (kustomize
+# helmCharts, some GitOps setups) would create that Role permanently.
 tests:
-  enabled: true
+  enabled: false
   # Optional: a plain-text "what is my IP" endpoint you control. The test
   # fetches it through the VPN and from an ordinary pod and requires the
   # addresses to differ. Whoever runs it sees your VPN address and your
@@ -232,6 +234,12 @@ tests:
     tag: ""
     digest: ""
     pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
 
 podSecurityContext: {}
 #  sysctls:

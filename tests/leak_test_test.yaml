@@ -5,6 +5,7 @@ templates:
 
 values:
   - values/base.yaml
+  - values/helm-test.yaml
 
 tests:
   - it: runs as a helm test hook
@@ -20,7 +21,7 @@ tests:
     asserts:
       - equal:
           path: metadata.annotations["helm.sh/hook-delete-policy"]
-          value: before-hook-creation,hook-succeeded
+          value: before-hook-creation,hook-succeeded,hook-failed
 
   - it: keeps the test pod until the next run, for helm test --logs
     documentIndex: 3
@@ -66,6 +67,7 @@ tests:
   - it: checks the configured nameservers and echo service
     documentIndex: 3
     set:
+      tests.enabled: true
       tests.ipEchoUrl: http://203.0.113.80/ip
       wireguard.dns.nameservers: [10.64.0.1]
     asserts:
@@ -92,9 +94,25 @@ tests:
           path: spec.containers[0].env
           content: { name: NAMESERVERS, value: "" }
 
-  - it: can be disabled
+  - it: is off by default
     set:
       tests.enabled: false
     asserts:
       - hasDocuments:
           count: 0
+
+  - it: sets resources and follows the chart's scheduling
+    documentIndex: 3
+    set:
+      nodeSelector: { kubernetes.io/arch: arm64 }
+      tolerations: [{ key: dedicated, operator: Exists, effect: NoSchedule }]
+    asserts:
+      - equal:
+          path: spec.containers[0].resources.requests
+          value: { cpu: 10m, memory: 32Mi }
+      - equal:
+          path: spec.nodeSelector
+          value: { kubernetes.io/arch: arm64 }
+      - equal:
+          path: spec.tolerations
+          value: [{ key: dedicated, operator: Exists, effect: NoSchedule }]

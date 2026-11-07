@@ -177,9 +177,10 @@ If you already have an issuer, leave `issuer.enabled` false and reference your i
 
 ## Verify egress IP
 
-`helm test` checks a running release from inside the cluster:
+`helm test` checks a running release from inside the cluster. It is off by default, so enable it first:
 
 ```bash
+helm upgrade <release> <chart> -n <namespace> --reuse-values --set tests.enabled=true
 helm test <release> -n <namespace> --logs
 ```
 
@@ -190,7 +191,7 @@ It checks four things:
 - the pod uses only `wireguard.dns.nameservers`;
 - optionally, that the public address the pod gets from `tests.ipEchoUrl` differs from the cluster's own, and that `eth0` can't reach it.
 
-While the test runs, a temporary Role lets the test pod exec into the release's pods; the finished test pod stays until the next run so `--logs` can read it. By default the test contacts nothing outside the cluster. `tests.ipEchoUrl` is off by default because the echo endpoint sees your VPN address and your real address side by side; only set it to one you run yourself (any endpoint that answers with the caller's IP as plain text). Set `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server (and the echo endpoint, if set).
+While the test runs, a temporary Role lets the test pod exec into pods in the namespace. Helm deletes it after the run, pass or fail. The finished test pod stays until the next run so `--logs` can read it. The test is off by default because tools that deploy with `helm template` (kustomize `helmCharts`, some GitOps setups) ignore hook annotations and would create that Role permanently. Leave it off there, or render with `--skip-tests`. By default the test contacts nothing outside the cluster. `tests.ipEchoUrl` is off by default because the echo endpoint sees your VPN address and your real address side by side; only set it to one you run yourself (any endpoint that answers with the caller's IP as plain text). Set `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server (and the echo endpoint, if set).
 
 By hand:
 

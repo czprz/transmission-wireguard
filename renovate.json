@@ -27,6 +27,14 @@
       "datasourceTemplate": "docker"
     },
     {
+      "fileMatch": ["templates/_helpers\\.tpl"],
+      "matchStrings": [
+        "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.tests\\.image\\.tag -}}\\n\\{\\{- \\$digest := default \"(?<currentDigest>sha256:[a-f0-9]+)\" \\.Values\\.tests\\.image\\.digest"
+      ],
+      "depNameTemplate": "docker.io/alpine/kubectl",
+      "datasourceTemplate": "docker"
+    },
+    {
       "fileMatch": ["Chart\\.yaml"],
       "matchStrings": [
         "image: (?<depName>[^:\\s]+):(?<currentValue>[^\\s@]+)@(?<currentDigest>sha256:[a-f0-9]+)"
