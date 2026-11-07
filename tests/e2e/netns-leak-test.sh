@@ -115,6 +115,14 @@ stage_scripts() {
 }
 
 step "setup"
+# Pull up front with retries: registries rate-limit bursts of pulls.
+for image in "$WG_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE"; do
+  for attempt in 1 2 3 4 5; do
+    docker pull -q "$image" >/dev/null && break
+    ((attempt < 5)) || { echo "cannot pull $image" >&2; exit 1; }
+    sleep $((attempt * 5))
+  done
+done
 SERVER_KEY=$(wg_tool genkey)
 CLIENT_KEY=$(wg_tool genkey)
 SERVER_PUB=$(echo "$SERVER_KEY" | wg_tool pubkey)
