@@ -217,15 +217,16 @@ networkPolicy:
   extraEgress: []
 
 # `helm test <release> --logs` checks the running pod for leaks: the kill
-# switch is intact, the tunnel is up, eth0 is blocked, DNS uses only the
-# configured nameservers, and the public address differs from the cluster's.
+# switch is intact, the tunnel is up, eth0 is blocked and DNS uses only the
+# configured nameservers. It contacts nothing outside the cluster.
 # While it runs, a Role lets the test pod exec into the release's pods.
 tests:
   enabled: true
-  # Plain-text "what is my IP" service. The test fetches it from the pod
-  # (through the VPN) and from an ordinary pod and requires different
-  # addresses. The service sees both requests. Empty skips this check.
-  ipEchoUrl: https://icanhazip.com
+  # Optional: a plain-text "what is my IP" endpoint you control. The test
+  # fetches it through the VPN and from an ordinary pod and requires the
+  # addresses to differ. Whoever runs it sees your VPN address and your
+  # real address together, so never point this at a public service.
+  ipEchoUrl: ""
   image:
     repository: ""
     tag: ""

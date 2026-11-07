@@ -76,6 +76,13 @@ tests:
           path: spec.containers[0].env
           content: { name: IP_ECHO_URL, value: "http://203.0.113.80/ip" }
 
+  - it: contacts nothing outside the cluster by default
+    documentIndex: 3
+    asserts:
+      - contains:
+          path: spec.containers[0].env
+          content: { name: IP_ECHO_URL, value: "" }
+
   - it: skips the DNS check without the DNS override
     documentIndex: 3
     set:

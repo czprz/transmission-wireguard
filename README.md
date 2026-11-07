@@ -188,9 +188,9 @@ It checks four things:
 - the kill switch rules are intact and the tunnel is up;
 - a socket bound to `eth0` can't reach the Kubernetes API, though the test pod can;
 - the pod uses only `wireguard.dns.nameservers`;
-- the public address the pod gets from `tests.ipEchoUrl` (default `https://icanhazip.com`) differs from the cluster's own, and `eth0` can't reach it.
+- optionally, that the public address the pod gets from `tests.ipEchoUrl` differs from the cluster's own, and that `eth0` can't reach it.
 
-While the test runs, a temporary Role lets the test pod exec into the release's pods; the finished test pod stays until the next run so `--logs` can read it. The echo service sees both addresses; set `tests.ipEchoUrl: ""` to skip that check, or `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server and the echo service.
+While the test runs, a temporary Role lets the test pod exec into the release's pods; the finished test pod stays until the next run so `--logs` can read it. By default the test contacts nothing outside the cluster. `tests.ipEchoUrl` is off by default because the echo endpoint sees your VPN address and your real address side by side; only set it to one you run yourself (any endpoint that answers with the caller's IP as plain text). Set `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server (and the echo endpoint, if set).
 
 By hand:
 
