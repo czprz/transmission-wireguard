@@ -36,7 +36,18 @@ cleanup() {
   kubectl delete namespace "$NS" --wait=false >/dev/null 2>&1 || true
 }
 cleanup
-trap '[[ -n ${KEEP:-} ]] || cleanup' EXIT
+# On any failure (including an aborted run) show the pod and tunnel state.
+on_exit() {
+  local rc=$?
+  if ((rc != 0)); then
+    kubectl -n "$NS" get pods -o wide || true
+    [[ -z ${POD:-} ]] || kubectl -n "$NS" describe pod "$POD" | tail -30 || true
+    [[ -z ${POD:-} ]] || kubectl -n "$NS" logs "$POD" -c wireguard --tail 40 || true
+    docker logs --tail 20 $P-server 2>&1 | sed 's/^/  server | /' || true
+  fi
+  [[ -n ${KEEP:-} ]] || cleanup
+}
+trap on_exit EXIT
 
 wg_tool() { docker run --rm -i --entrypoint wg "$WG_IMAGE" "$@"; }
 container_ip() { docker inspect -f "{{(index .NetworkSettings.Networks \"$KIND_NET\").IPAddress}}" "$1"; }
@@ -233,8 +244,6 @@ fi
 echo
 if ((FAILED)); then
   echo "$FAILED check(s) FAILED"
-  kubectl -n "$NS" describe pod "$POD" | tail -30
-  kubectl -n "$NS" logs "$POD" -c wireguard --tail 30 || true
   exit 1
 fi
 echo "all kind leak checks passed"

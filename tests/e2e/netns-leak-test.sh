@@ -53,7 +53,22 @@ cleanup() {
 }
 cleanup
 STAGE=$(mktemp -d)
-trap '[[ -n ${KEEP:-} ]] || cleanup; rm -rf "$STAGE"' EXIT
+# On any failure (including an aborted run) show what the containers said.
+dump_logs() {
+  local c
+  for c in $P-server $P-wg $P-tx; do
+    docker inspect "$c" >/dev/null 2>&1 || continue
+    echo "  --- $c ($(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' "$c"))"
+    docker logs --tail 40 "$c" 2>&1 | sed "s/^/  $c | /"
+  done
+}
+on_exit() {
+  local rc=$?
+  ((rc == 0)) || dump_logs
+  [[ -n ${KEEP:-} ]] || cleanup
+  rm -rf "$STAGE"
+}
+trap on_exit EXIT
 
 firewall_env=(
   -e "TWG_WEB_PORT=$WEB_PORT"
@@ -170,7 +185,10 @@ docker create --name $P-wg --network container:$P-pod --privileged -v /twg "${fi
 docker cp "$STAGE/wg/." $P-wg:/ >/dev/null
 docker start $P-wg >/dev/null
 wait_for "wg0 up" 60 as_root wg show wg0 || true
-wait_for "first handshake" 30 via_vpn || true
+if ! wait_for "first handshake" 30 via_vpn; then
+  fail "the tunnel never came up; nothing below would mean anything"
+  exit 1
+fi
 
 # settings-init runs in the Transmission image like the chart's init container.
 mkdir -p "$STAGE/settings/twg/settings" "$STAGE/settings/twg/wg" "$STAGE/settings/twg/run"
@@ -408,7 +426,6 @@ expect_accepted "CRLF line endings" 's/$/\r/'
 echo
 if ((FAILED)); then
   echo "$FAILED check(s) FAILED"
-  docker logs --tail 40 $P-wg 2>&1 | sed 's/^/  wg | /'
   exit 1
 fi
 echo "all leak checks passed"
