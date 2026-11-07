@@ -64,6 +64,14 @@ jobs:
       - name: Load WireGuard kernel module
         run: sudo modprobe wireguard
 
+      # The runner's AppArmor profiles attach to binaries such as wg and
+      # readlink by path, also inside privileged containers, and deny what
+      # wg-quick needs ("Permission denied"). The tests need a plain host.
+      - name: Unload host AppArmor profiles
+        run: |
+          sudo aa-status 2>/dev/null | grep -iE 'wg|wireguard|readlink|ip$' || true
+          sudo aa-teardown || sudo systemctl stop apparmor || true
+
       - name: Kill switch leak test (Docker)
         run: tests/e2e/netns-leak-test.sh
 

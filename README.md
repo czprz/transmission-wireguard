@@ -241,6 +241,8 @@ See `values.yaml` for the full list of configuration options.
   - Cluster-internal names do not resolve from this pod, by design.
 - **Multiple replicas?**
   - Not recommended unless each replica has unique storage and config.
+- **`Permission denied` from `wg`, `wg-quick` or `readlink` in the sidecar log?**
+  - Recent Ubuntu hosts ship AppArmor profiles that attach to those binaries by path, and they apply inside containers too, privileged or not. Check with `sudo aa-status` on the node; disable the offending profile (`sudo aa-disable <profile>`) or use a node image without it.
 - **PVC/hostPath issues?**
   - Check your storage class and access modes.
 
