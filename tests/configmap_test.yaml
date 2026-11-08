@@ -38,6 +38,7 @@ tests:
     template: templates/configmap-settings.yaml
     set:
       transmission.settings.rpc-host-whitelist-enabled: false
+      transmission.rpcAuth.allowAnonymous: true
     asserts:
       - matchRegex:
           path: data["settings.json"]

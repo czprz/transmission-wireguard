@@ -27,6 +27,7 @@ IN=TWG-INPUT
 OUT=TWG-OUTPUT
 PRE=TWG-PREROUTING
 MOUT=TWG-MANGLE-OUTPUT
+POST=TWG-POSTROUTING
 
 log() { echo "[twg-firewall] $*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
@@ -35,6 +36,11 @@ die() { log "FATAL: $*"; exit 1; }
 if ! [[ $WG_FWMARK =~ ^(0[xX][0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$ ]] || ((WG_FWMARK > 0xffffffff)); then
   die "firewall.wgFwmark ${WG_FWMARK} must be between 1 and 4294967295"
 fi
+# A zero mask would match every connection; shared bits would confuse the two.
+if ! [[ $LOCAL_MARK =~ ^(0[xX][0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$ ]] || ((LOCAL_MARK > 0xffffffff || (LOCAL_MARK & WG_FWMARK) != 0)); then
+  die "TWG_LOCAL_MARK ${LOCAL_MARK} must be a non-zero 32-bit mark sharing no bits with ${WG_FWMARK}"
+fi
+[[ $PEER_PORT != "$WEB_PORT" ]] || die "the peer port ${PEER_PORT} must differ from the web port"
 
 # IPv6 must be filtered whenever the namespace has it; only skip ip6tables
 # when there is no IPv6 at all.
@@ -81,7 +87,7 @@ seal_chain() {
 }
 
 apply_family() {
-  local fam=$1 ipt cidr ep
+  local fam=$1 ipt cidr host port
   ipt=$(ipt_for "$fam")
 
   "$ipt" -w -P INPUT DROP
@@ -135,12 +141,9 @@ apply_family() {
   # (and re-routed out eth0) still shows wg0 here. Only unmarked packets
   # really take the tunnel.
   "$ipt" -w -A "$OUT" -o "$WG_IFACE" -m mark --mark 0 -j ACCEPT
-  while read -r ep; do
-    split_endpoint "$ep" >/dev/null || continue
-    if [[ $fam == 4 && $EP_HOST != *:* ]] || [[ $fam == 6 && $EP_HOST == *:* ]]; then
-      "$ipt" -w -A "$OUT" -m mark --mark "$WG_FWMARK" -p udp -d "$EP_HOST" --dport "$EP_PORT" -j ACCEPT
-    fi
-  done < <([[ -r $CONF ]] && conf_value Endpoint)
+  while read -r host port; do
+    "$ipt" -w -A "$OUT" -m mark --mark "$WG_FWMARK" -p udp -d "$host" --dport "$port" -j ACCEPT
+  done < <(endpoints "$fam")
   "$ipt" -w -A "$OUT" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   seal_chain "$ipt" filter "$OUT" -j REJECT
 
@@ -158,6 +161,24 @@ apply_family() {
   "$ipt" -w -t mangle -A "$MOUT" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -j MARK --set-mark "$WG_FWMARK"
   seal_chain "$ipt" mangle "$PRE" -j RETURN
   seal_chain "$ipt" mangle "$MOUT" -j RETURN
+
+  # The final say. Filter OUTPUT sees the route chosen before mangle marks
+  # or nat rewrites re-route a packet; POSTROUTING sees the interface it
+  # really leaves on. Same allowances as filter OUTPUT, everything else is
+  # dropped, whatever other tables or nft chains did to it.
+  reset_chain "$ipt" mangle "$POST" POSTROUTING
+  "$ipt" -w -t mangle -A "$POST" -o lo -j RETURN
+  if [[ $fam == 6 ]]; then
+    for t in router-solicitation neighbour-solicitation neighbour-advertisement; do
+      "$ipt" -w -t mangle -A "$POST" ! -o "$WG_IFACE" -p ipv6-icmp --icmpv6-type "$t" -m hl --hl-eq 255 -j RETURN
+    done
+  fi
+  "$ipt" -w -t mangle -A "$POST" -o "$WG_IFACE" -m mark --mark 0 -j RETURN
+  while read -r host port; do
+    "$ipt" -w -t mangle -A "$POST" -m mark --mark "$WG_FWMARK" -p udp -d "$host" --dport "$port" -j RETURN
+  done < <(endpoints "$fam")
+  "$ipt" -w -t mangle -A "$POST" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  seal_chain "$ipt" mangle "$POST" -j DROP
 }
 
 # "via X dev Y [onlink] [mtu N]" from `ip route show default` on stdin. The
@@ -229,9 +250,21 @@ split_endpoint() {
   is_ip "$EP_HOST" || { echo "Endpoint ${ep} is not an IP address. DNS is blocked until the tunnel is up, so the endpoint must be a literal IP."; return 1; }
 }
 
+# "host port" of every usable Endpoint of IP family $1.
+endpoints() {
+  local ep
+  [[ -r $CONF ]] || return 0
+  while read -r ep; do
+    split_endpoint "$ep" >/dev/null || continue
+    if [[ $1 == 4 && $EP_HOST != *:* ]] || [[ $1 == 6 && $EP_HOST == *:* ]]; then
+      echo "$EP_HOST $EP_PORT"
+    fi
+  done < <(conf_value Endpoint)
+}
+
 # Reject configs that would weaken or bypass the kill switch.
 preflight() {
-  local ep fwmark table f allowed err
+  local ep fwmark table f allowed addrs err
   [[ -r $CONF ]] || die "WireGuard config ${CONF} not found"
 
   # The image brings up every *.conf it finds; only wg0 is validated.
@@ -255,6 +288,12 @@ preflight() {
   # Captured first: grep -q exiting on the first match would SIGPIPE tr and,
   # with pipefail, randomly refuse a valid config.
   allowed=$(conf_value AllowedIPs | tr -s ',[:blank:]' '\n')
+  # IPv6 into the tunnel without a tunnel IPv6 address would carry the pod's
+  # own (possibly global) IPv6 address to the VPN.
+  addrs=$(conf_value Address)
+  if grep -qx '::/0' <<<"$allowed" && [[ $addrs != *:* ]]; then
+    die "AllowedIPs has ::/0 but Address has no IPv6 address; add one (or drop ::/0 so IPv6 is blocked)"
+  fi
   grep -qx '0\.0\.0\.0/0' <<<"$allowed" || die "AllowedIPs must include 0.0.0.0/0 (full tunnel). Halves such as 0.0.0.0/1 + 128.0.0.0/1 do not work, because wg-quick only sets up the fwmark routing the kill switch relies on for /0"
 
   table=$(conf_value Table | tail -n1)
@@ -286,10 +325,12 @@ check_family() {
   # Nothing else may mark outgoing packets: a rule after the jump still runs.
   rules=$("$ipt" -w -t mangle -S OUTPUT)
   [[ $(sed 1d <<<"$rules") == "-A OUTPUT -j $MOUT" ]] || { log "IPv$fam mangle OUTPUT has rules besides the jump to $MOUT"; return 1; }
+  rules=$("$ipt" -w -t mangle -S POSTROUTING)
+  [[ $(sed -n 2p <<<"$rules") == "-A POSTROUTING -j $POST" ]] || { log "IPv$fam mangle POSTROUTING does not jump to $POST first"; return 1; }
   rules=$("$ipt" -w -t mangle -S PREROUTING)
   [[ $'\n'$rules$'\n' == *$'\n'"-A PREROUTING -j $PRE"$'\n'* ]] || { log "IPv$fam mangle PREROUTING does not jump to $PRE"; return 1; }
 
-  for spec in "filter $IN DROP" "filter $OUT REJECT" "mangle $PRE RETURN" "mangle $MOUT RETURN"; do
+  for spec in "filter $IN DROP" "filter $OUT REJECT" "mangle $PRE RETURN" "mangle $MOUT RETURN" "mangle $POST DROP"; do
     read -r table chain target <<<"$spec"
     rules=$("$ipt" -w -t "$table" -S "$chain")
     [[ $(tail -n1 <<<"$rules") =~ ^-A\ $chain\ -m\ comment\ --comment\ \"?twg:([0-9a-f]{16})\"?\ -j\ $target( |$) ]] ||
@@ -300,8 +341,17 @@ check_family() {
 }
 
 check() {
-  local fam
+  local fam ruleset
   for fam in "${FAMILIES[@]}"; do check_family "$fam"; done
+  # Duplicating statements (nft dup/fwd, iptables TEE) send copies of a
+  # packet past every later chain, POSTROUTING included.
+  if command -v nft >/dev/null 2>&1; then
+    ruleset=$(nft list ruleset 2>/dev/null || true)
+    if grep -Eqw 'dup|fwd|TEE' <<<"$ruleset"; then
+      log "a rule duplicates or forwards packets (nft dup/fwd or TEE)"
+      return 1
+    fi
+  fi
 }
 
 # Up means wg-quick has finished: the interface has its address and the

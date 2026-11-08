@@ -54,6 +54,8 @@ tests:
       transmission:
         settings:
           peer-port: 6881
+        rpcAuth:
+          allowAnonymous: true
       firewall.webAllowedCIDRs: ["10.42.0.0/16", "10.0.5.0/24"]
       wireguard.handshakeMaxAgeSeconds: 300
       wireguard.wg0Conf: |
@@ -230,3 +232,20 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].volumeMounts
           content: { name: transmission-storage, mountPath: /config, subPath: config }
+
+  - it: never runs two pods with the same WireGuard key
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: sets every kill switch variable itself
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_LOCAL_MARK, value: "0x10000000" }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_WG_CONF, value: /config/wg_confs/wg0.conf }

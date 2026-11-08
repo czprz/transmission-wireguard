@@ -28,7 +28,8 @@ chart_image() {
 }
 WG_IMAGE="${WG_IMAGE:-$(chart_image wireguard)}"
 TX_IMAGE="${TX_IMAGE:-$(chart_image transmission)}"
-CANARY_IMAGE="${CANARY_IMAGE:-traefik/whoami:v1.10.3}"
+CANARY_IMAGE="${CANARY_IMAGE:-traefik/whoami:v1.10.3@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c}"
+TRACKER_IMAGE="${TRACKER_IMAGE:-busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec}"
 
 P=twg-e2e
 NET=$P-net
@@ -36,6 +37,7 @@ SUBNET_PREFIX=172.31.250
 GW=$SUBNET_PREFIX.1
 CANARY_IP=$SUBNET_PREFIX.10
 DNS_CANARY_IP=$SUBNET_PREFIX.11
+TRACKER_IP=$SUBNET_PREFIX.12
 SERVER_IP=$SUBNET_PREFIX.20
 POD_IP=$SUBNET_PREFIX.30
 CLIENT_IP=$SUBNET_PREFIX.40
@@ -59,8 +61,9 @@ fail() { echo "  FAIL  $*"; FAILED=$((FAILED + 1)); }
 step() { echo; echo "== $*"; }
 
 cleanup() {
-  docker rm -f -v $P-tx $P-l4 $P-l6 $P-wg $P-pod $P-server $P-canary $P-dns $P-pre >/dev/null 2>&1 || true
+  docker rm -f -v $P-tx $P-l4 $P-l6 $P-wg $P-pod $P-server $P-canary $P-dns $P-tracker $P-pre >/dev/null 2>&1 || true
   docker network rm $NET >/dev/null 2>&1 || true
+  docker volume rm $P-torrent >/dev/null 2>&1 || true
 }
 cleanup
 STAGE=$(mktemp -d)
@@ -96,6 +99,10 @@ as_root() { docker run --rm --network container:$P-pod --privileged --volumes-fr
 on_server() { docker run --rm --network container:$P-server --entrypoint "" "$WG_IMAGE" "$@"; }
 from_cluster() { docker run --rm --network $NET --ip $CLIENT_IP --ip6 $CLIENT_IP6 --entrypoint "" "$WG_IMAGE" "$@"; }
 wg_tool() { docker run --rm -i --entrypoint wg "$WG_IMAGE" "$@"; }
+# Like as_app, but with a raw socket for ICMP: iptables still filters it.
+as_raw() { docker run --rm --network container:$P-pod --cap-drop ALL --cap-add NET_RAW --entrypoint "" "$WG_IMAGE" "$@"; }
+# transmission-remote against the daemon's RPC.
+tx_remote() { docker run --rm --network container:$P-pod --cap-drop ALL --entrypoint transmission-remote "$TX_IMAGE" 127.0.0.1:$WEB_PORT "$@"; }
 
 # Source address the canary saw for a request from the pod (empty if blocked).
 # Arguments go to curl, before the canary's URL.
@@ -105,6 +112,59 @@ fetch_seen() {
 }
 canary_seen() { fetch_seen "$@" "http://$CANARY_IP/"; }
 canary_seen6() { fetch_seen -6 "$@" "http://[$CANARY_IP6]/"; }
+# Where a request to the canary went: "vpn", "blocked" (refused, timed out,
+# or cut off mid-way), "leak <address>", or "broken <curl exit>" when the
+# probe itself failed and so proves nothing. Arguments go to curl.
+egress() {
+  local rc out seen
+  # An answer must name an address; an empty one (the docker client can
+  # lose a container's output) is retried, then counts as broken.
+  for _ in 1 2; do
+    rc=0
+    out=$(as_app curl -sS -m 3 "$@" 2>/dev/null) || rc=$?
+    [[ $rc != 0 || -n $out ]] && break
+  done
+  [[ $rc != 0 || -n $out ]] || { echo "broken empty-answer"; return; }
+  seen=$(sed -n 's/^RemoteAddr: \[\{0,1\}\([^]]*\)\]\{0,1\}:[0-9]*\r\{0,1\}$/\1/p' <<<"$out")
+  case $rc in
+    0) if [[ $seen == "$SERVER_IP" || $seen == "$SERVER_IP6" ]]; then echo vpn; else echo "leak ${seen:-unknown}"; fi ;;
+    7 | 28 | 52 | 56) echo blocked ;;
+    *) echo "broken $rc" ;;
+  esac
+}
+egress4() { egress "$@" "http://$CANARY_IP/"; }
+egress6() { egress -6 "$@" "http://[$CANARY_IP6]/"; }
+# Records probe results ($@) while traffic must not leak; result_summary
+# then reports leaks and probes that could not run.
+LEAKED="" BROKEN=""
+record() {
+  local r
+  for r in "$@"; do
+    case $r in
+      leak*) LEAKED="$LEAKED ${r#leak }" ;;
+      broken*) BROKEN="$BROKEN ${r#broken }" ;;
+    esac
+  done
+}
+result_summary() {
+  if [[ -n $LEAKED ]]; then
+    fail "LEAK $1 (canary saw$LEAKED)"
+  elif [[ -n $BROKEN ]]; then
+    fail "probes $1 could not run (curl exit$BROKEN), so they prove nothing"
+  else
+    pass "no direct egress $1"
+  fi
+  LEAKED="" BROKEN=""
+}
+expect_blocked() {
+  local what=$1 r; shift
+  r=$("$@")
+  case $r in
+    blocked) pass "$what" ;;
+    leak*) fail "LEAK: $what is not true (canary saw ${r#leak })" ;;
+    *) fail "$what: probe result '$r' proves nothing" ;;
+  esac
+}
 # A request bound to eth0 must be refused (curl exit 7) or time out (28);
 # any other failure proves nothing.
 check_eth0() {
@@ -117,12 +177,16 @@ check_eth0() {
   esac
 }
 # Send DNS-port datagrams tagged $1 over IPv${2:-4} and print the source the
-# canary saw. Three, a second apart: the listener restarts after each sender.
-# The IPv6 listener may take IPv4 datagrams too, as ::ffff:a.b.c.d.
+# canary saw. Five, a second apart: the listener restarts after each sender.
+# (Each listener binds its own address, so IPv4 and IPv6 do not race for
+# one dual-stack socket.)
+# A port other than 53 ($3) stands in for DHT and other UDP traffic.
 dns_seen() {
-  local tag=$1 fam=${2:-4} ip=$DNS_CANARY_IP
+  local tag=$1 fam=${2:-4} port=${3:-53} ip=$DNS_CANARY_IP rc=0
   [[ $fam == 4 ]] || ip=$DNS_CANARY_IP6
-  as_app sh -c "for i in 1 2 3; do echo $tag | nc -$fam -u -w1 $ip 53; done" >/dev/null 2>&1 || true
+  as_app sh -c "for i in 1 2 3 4 5; do echo $tag | nc -$fam -u -w1 $ip $port; done" >/dev/null 2>&1 || rc=$?
+  # 125-127: docker or the shell failed, so nothing was sent.
+  ((rc < 125)) || { echo "probe-broken"; return; }
   sleep 1
   docker logs $P-dns 2>&1 | grep -B1 -x "$tag" | sed -n 's/^Connection received on \(::ffff:\)\{0,1\}\([^ ]*\) .*/\2/p' | tail -n1 || true
 }
@@ -143,7 +207,7 @@ stage_scripts() {
 
 step "setup"
 # Pull up front with retries: registries rate-limit bursts of pulls.
-for image in "$WG_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE"; do
+for image in "$WG_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE" "$TRACKER_IMAGE"; do
   for attempt in 1 2 3 4 5; do
     docker pull -q "$image" >/dev/null && break
     ((attempt < 5)) || { echo "cannot pull $image" >&2; exit 1; }
@@ -161,7 +225,21 @@ docker run -d --name $P-canary --network $NET --ip $CANARY_IP --ip6 $CANARY_IP6 
 # UDP/53 canary standing in for any DNS server outside the pod (cluster DNS,
 # NodeLocal DNSCache, the ISP); logs the source of every datagram.
 docker run -d --name $P-dns --network $NET --ip $DNS_CANARY_IP --ip6 $DNS_CANARY_IP6 --entrypoint "" "$WG_IMAGE" \
-  sh -c 'while true; do nc -4 -luvn -w 1 53; done & while true; do nc -6 -luvn -w 1 53; done' >/dev/null
+  sh -c "while true; do nc -4 -luvn -w 1 $DNS_CANARY_IP 53; done & while true; do nc -6 -luvn -w 1 $DNS_CANARY_IP6 53; done &
+    while true; do nc -4 -luvn -w 1 $DNS_CANARY_IP 6881; done" >/dev/null
+# HTTP tracker canary for Transmission's own announces: logs the source of
+# each one and answers with a bencoded failure.
+docker run -d --name $P-tracker --network $NET --ip $TRACKER_IP "$TRACKER_IMAGE" sh -c '
+    mkdir -p /www/cgi-bin
+    cat > /www/cgi-bin/announce <<"CGI"
+#!/bin/sh
+a=${REMOTE_ADDR#[}; a=${a%]}; a=${a#::ffff:}
+echo "ANNOUNCE $a" >/proc/1/fd/2
+printf "Content-Type: text/plain\r\n\r\nd14:failure reason4:teste"
+CGI
+    chmod +x /www/cgi-bin/announce
+    exec httpd -f -p 80 -h /www' >/dev/null
+announces() { docker logs $P-tracker 2>&1 | sed -n 's/^ANNOUNCE //p'; }
 
 # VPN server: terminates the tunnel and NATs to the "internet" (the canary).
 docker run -d --name $P-server --network $NET --ip $SERVER_IP --ip6 $SERVER_IP6 --privileged \
@@ -210,7 +288,9 @@ chmod 0600 "$STAGE/wg/config/wg_confs/wg0.conf"
 # The eth0-bound requests are the positive control for the eth0 checks below.
 if [[ $(canary_seen) == "$POD_IP" && $(canary_seen6) == "$POD_IP6" &&
   $(canary_seen --interface eth0) == "$POD_IP" && $(canary_seen6 --interface eth0) == "$POD_IP6" &&
-  $(dns_seen BASELINE) == "$POD_IP" && $(dns_seen BASELINE6 6) == "$POD_IP6" ]]; then
+  $(dns_seen BASELINE) == "$POD_IP" && $(dns_seen BASELINE6 6) == "$POD_IP6" &&
+  $(dns_seen BASELINEDHT 4 6881) == "$POD_IP" ]] &&
+  as_raw ping -c1 -W2 -I eth0 $CANARY_IP >/dev/null 2>&1; then
   pass "baseline: without the kill switch the pod reaches the canaries directly (as $POD_IP and $POD_IP6)"
 else
   fail "baseline: pod cannot reach the canary even without the kill switch (harness broken)"
@@ -247,7 +327,9 @@ jq 'del(.["rpc-username"], .["rpc-password"]) | .["rpc-authentication-required"]
   "$STAGE/settings.json" >"$STAGE/tx-settings.json"
 mkdir -p "$STAGE/tx/config"
 cp "$STAGE/tx-settings.json" "$STAGE/tx/config/settings.json"
-docker create --name $P-tx --network container:$P-pod -e PUID=1000 -e PGID=1000 "$TX_IMAGE" >/dev/null
+# Capabilities as the chart allows them: everything dropped but these.
+docker create --name $P-tx --network container:$P-pod --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+  -e PUID=1000 -e PGID=1000 "$TX_IMAGE" >/dev/null
 docker cp "$STAGE/tx/." $P-tx:/ >/dev/null
 docker start $P-tx >/dev/null
 wait_for "transmission listening" 90 as_app nc -z 127.0.0.1 $WEB_PORT
@@ -296,6 +378,38 @@ if [[ $seen == "$SERVER_IP6" ]]; then
 else
   fail "IPv6 DNS-port traffic did not go through the VPN (canary saw '${seen:-nothing}')"
 fi
+seen=$(dns_seen TUNNELEDDHT 4 6881)
+if [[ $seen == "$SERVER_IP" ]]; then
+  pass "UDP to another port leaves through the VPN (canary saw $seen)"
+else
+  fail "UDP to another port did not go through the VPN (canary saw '${seen:-nothing}')"
+fi
+if as_raw ping -c1 -W3 $CANARY_IP >/dev/null 2>&1; then
+  pass "ICMP leaves through the VPN"
+else
+  fail "ICMP does not get through the VPN"
+fi
+if as_raw ping -c1 -W2 -I eth0 $CANARY_IP >/dev/null 2>&1; then
+  fail "LEAK: ICMP bound to eth0 reached the canary"
+else
+  pass "ICMP bound to eth0 is blocked"
+fi
+# Transmission's own traffic: a torrent whose tracker is the canary. Its
+# announces must come from the VPN server, never from the pod.
+docker run --rm --network none --entrypoint sh -v $P-torrent:/t "$TX_IMAGE" -c \
+  "echo leak-test >/t/payload && transmission-create -o /t/test.torrent -t http://$TRACKER_IP/cgi-bin/announce /t/payload" >/dev/null 2>&1
+docker run --rm --network container:$P-pod --cap-drop ALL -v $P-torrent:/t --entrypoint transmission-remote "$TX_IMAGE" \
+  127.0.0.1:$WEB_PORT -a /t/test.torrent >/dev/null
+if wait_for "an announce" 60 sh -c "docker logs $P-tracker 2>&1 | grep -q '^ANNOUNCE '"; then
+  sources=$(announces | sort -u | tr '\n' ' ')
+  if [[ $sources == "$SERVER_IP " ]]; then
+    pass "Transmission announces to its tracker through the VPN (tracker saw $sources)"
+  else
+    fail "LEAK: Transmission's announces came from ${sources}(want only $SERVER_IP)"
+  fi
+else
+  fail "Transmission never announced to the tracker canary (test broken)"
+fi
 code=$(from_cluster curl -sS -m 4 -o /dev/null -w '%{http_code}' "http://$POD_IP:$WEB_PORT/transmission/web/" 2>/dev/null || true)
 if [[ $code =~ ^(200|301|401|409)$ ]]; then
   pass "web UI reachable from the cluster network (HTTP $code, reply routed back out eth0)"
@@ -338,15 +452,11 @@ fi
 step "sidecar restart with the tunnel up (s6 runs wg-quick down; kill switch must stay)"
 docker restart -t 10 $P-wg >/dev/null &
 restart_pid=$!
-leaked=""
 for _ in $(seq 10); do
-  seen=$(canary_seen)
-  [[ -n $seen && $seen != "$SERVER_IP" ]] && leaked=$seen
-  seen=$(canary_seen6)
-  [[ -n $seen && $seen != "$SERVER_IP6" ]] && leaked=$seen
+  record "$(egress4)" "$(egress6)"
 done
 wait $restart_pid
-if [[ -z $leaked ]]; then pass "no direct egress during the restart"; else fail "LEAK during restart (canary saw $leaked)"; fi
+result_summary "during the restart"
 if wait_for "wg0 back" 60 as_root wg show wg0 && wait_for "traffic via VPN" 30 via_vpn; then
   pass "tunnel recovers after restart"
 else
@@ -355,14 +465,27 @@ fi
 
 step "tunnel interface deleted"
 as_root ip link del wg0
-seen=$(canary_seen)
-if [[ -z $seen ]]; then pass "no TCP egress without wg0"; else fail "LEAK: canary reached without wg0 (saw $seen)"; fi
-seen=$(canary_seen6)
-if [[ -z $seen ]]; then pass "no IPv6 egress without wg0"; else fail "LEAK: canary reached over IPv6 without wg0 (saw $seen)"; fi
+expect_blocked "no TCP egress without wg0" egress4
+expect_blocked "no IPv6 egress without wg0" egress6
 seen=$(dns_seen NOTUNNEL)
 if [[ -z $seen ]]; then pass "no DNS/UDP egress without wg0"; else fail "LEAK: DNS canary reached without wg0 (saw $seen)"; fi
 seen=$(dns_seen NOTUNNEL6 6)
 if [[ -z $seen ]]; then pass "no IPv6 DNS/UDP egress without wg0"; else fail "LEAK: DNS canary reached over IPv6 without wg0 (saw $seen)"; fi
+seen=$(dns_seen NOTUNNELDHT 4 6881)
+if [[ -z $seen ]]; then pass "no UDP egress to another port without wg0"; else fail "LEAK: UDP canary reached without wg0 (saw $seen)"; fi
+if as_raw ping -c1 -W2 $CANARY_IP >/dev/null 2>&1; then
+  fail "LEAK: ICMP reached the canary without wg0"
+else
+  pass "no ICMP egress without wg0"
+fi
+before=$(announces | wc -l)
+tx_remote -t all --reannounce >/dev/null 2>&1 || true
+sleep 10
+if (($(announces | wc -l) == before)); then
+  pass "Transmission's re-announce does not get out without wg0"
+else
+  fail "LEAK: Transmission announced without wg0 (tracker saw $(announces | tail -n +$((before + 1)) | sort -u | tr '\n' ' '))"
+fi
 if as_root /twg/scripts/firewall.sh tunnel 2>/dev/null; then
   fail "probe did not notice the missing tunnel"
 else
@@ -373,13 +496,10 @@ step "sidecar SIGKILL (wg0, its routes and rules left behind)"
 docker restart -t 10 $P-wg >/dev/null
 wait_for "tunnel back" 60 as_root /twg/scripts/firewall.sh tunnel || true
 docker kill $P-wg >/dev/null 2>&1 || true
-leaked=""
 for _ in 1 2 3; do
-  for seen in "$(canary_seen)" "$(canary_seen6)" "$(canary_seen --interface eth0)" "$(canary_seen6 --interface eth0)"; do
-    [[ -z $seen || $seen == "$SERVER_IP" || $seen == "$SERVER_IP6" ]] || leaked=$seen
-  done
+  record "$(egress4)" "$(egress6)" "$(egress4 --interface eth0)" "$(egress6 --interface eth0)"
 done
-if [[ -z $leaked ]]; then pass "no direct egress while the sidecar is dead"; else fail "LEAK while the sidecar is dead (canary saw $leaked)"; fi
+result_summary "while the sidecar is dead"
 # The image deletes the default route when wg-quick fails; recovery must
 # bring both families back.
 as_root sh -c 'ip route del default; ip -6 route del default'
@@ -410,16 +530,37 @@ else
 fi
 # A rule after the kill switch's jump that gives every packet WireGuard's
 # mark: marked packets must still only reach the VPN endpoint.
-as_root iptables -t mangle -A OUTPUT -j MARK --set-mark 51820
-seen=$(canary_seen)
-if [[ -z $seen ]]; then pass "marking every packet does not open eth0"; else fail "LEAK: marked packets reached the canary (saw $seen)"; fi
+as_root sh -c 'iptables -t mangle -A OUTPUT -j MARK --set-mark 51820; ip6tables -t mangle -A OUTPUT -j MARK --set-mark 51820'
+expect_blocked "marking every packet does not open eth0" egress4
+expect_blocked "marking every IPv6 packet does not open eth0" egress6
 if as_root /twg/scripts/firewall.sh check 2>/dev/null; then
   fail "probe did not notice a rule appended to mangle OUTPUT"
 else
   pass "probe notices a rule appended to mangle OUTPUT"
 fi
-as_root iptables -t mangle -D OUTPUT -j MARK --set-mark 51820
+as_root sh -c 'iptables -t mangle -D OUTPUT -j MARK --set-mark 51820; ip6tables -t mangle -D OUTPUT -j MARK --set-mark 51820'
+# A nat rule re-routes a packet out eth0 after filter OUTPUT accepted it as
+# going to wg0. Only the POSTROUTING decision can stop it.
+as_root sh -c "ip route add $CANARY_IP/32 via $GW dev eth0 &&
+  iptables -t nat -A OUTPUT -p tcp -d 198.51.100.7 --dport 80 -j DNAT --to-destination $CANARY_IP"
+expect_blocked "a nat rule re-routing out eth0 does not leak" egress http://198.51.100.7/
+as_root sh -c "iptables -t nat -D OUTPUT -p tcp -d 198.51.100.7 --dport 80 -j DNAT --to-destination $CANARY_IP;
+  ip route del $CANARY_IP/32 via $GW dev eth0"
+# Duplicated packets skip every later chain, so check must refuse them.
+if as_root nft add table ip twgtest 2>/dev/null &&
+  as_root nft add chain ip twgtest out '{ type filter hook output priority 0; }' &&
+  as_root nft add rule ip twgtest out ip daddr 198.51.100.8 dup to $GW device eth0 2>/dev/null; then
+  if as_root /twg/scripts/firewall.sh check 2>/dev/null; then
+    fail "probe did not notice an nft rule duplicating packets"
+  else
+    pass "probe notices an nft rule duplicating packets"
+  fi
+else
+  fail "could not add an nft dup rule (kernel without nf_dup?), so the dup check is untested"
+fi
+as_root nft delete table ip twgtest 2>/dev/null || true
 as_root sh -c 'iptables -F OUTPUT; iptables -P OUTPUT ACCEPT'
+expect_blocked "with filter OUTPUT flushed, POSTROUTING still blocks eth0" egress4 --interface eth0
 if as_root /twg/scripts/firewall.sh live 2>/dev/null; then
   fail "liveness probe did not notice the flushed firewall"
 else

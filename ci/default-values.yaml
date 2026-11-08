@@ -10,3 +10,8 @@ wireguard:
     AllowedIPs = 0.0.0.0/0, ::/0
     Endpoint = 203.0.113.10:51820
     PersistentKeepalive = 25
+
+transmission:
+  rpcAuth:
+    username: admin
+    password: ci-dummy-password

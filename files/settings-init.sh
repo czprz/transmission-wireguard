@@ -11,31 +11,32 @@ BIND_TO_TUNNEL="${TWG_BIND_TO_TUNNEL:-true}"
 
 v4=""
 v6=""
-if [ "$BIND_TO_TUNNEL" = "true" ]; then
-  [ -r "$CONF" ] || { echo "[twg-settings] FATAL: ${CONF} not readable" >&2; exit 1; }
-  for addr in $(tr -d '\r' <"$CONF" | sed -nE 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*([^#]*).*/\1/Ip' | tr ',' ' '); do
-    addr=${addr%%/*}
-    if printf '%s' "$addr" | grep -Eqx '([0-9]{1,3}\.){3}[0-9]{1,3}'; then
-      [ -n "$v4" ] || v4=$addr
-    elif printf '%s' "$addr" | grep -Eqx '[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*'; then
-      [ -n "$v6" ] || v6=$addr
-    else
-      echo "[twg-settings] FATAL: Address ${addr} in ${CONF} is not an IP address" >&2
-      exit 1
-    fi
-  done
-  # Without a tunnel address for a family, bind it to loopback so that
-  # family cannot reach the network at all.
-  v4=${v4:-127.0.0.1}
-  v6=${v6:-::1}
-fi
+# Unbound peer sockets could learn the pod's own (possibly global) IPv6
+# address and announce it, so binding is not optional.
+[ "$BIND_TO_TUNNEL" = "true" ] || { echo "[twg-settings] FATAL: transmission.bindToTunnel must be true" >&2; exit 1; }
+[ -r "$CONF" ] || { echo "[twg-settings] FATAL: ${CONF} not readable" >&2; exit 1; }
+for addr in $(tr -d '\r' <"$CONF" | sed -nE 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*([^#]*).*/\1/Ip' | tr ',' ' '); do
+  addr=${addr%%/*}
+  if printf '%s' "$addr" | grep -Eqx '([0-9]{1,3}\.){3}[0-9]{1,3}'; then
+    [ -n "$v4" ] || v4=$addr
+  elif printf '%s' "$addr" | grep -Eqx '[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*'; then
+    [ -n "$v6" ] || v6=$addr
+  else
+    echo "[twg-settings] FATAL: Address ${addr} in ${CONF} is not an IP address" >&2
+    exit 1
+  fi
+done
+# Without a tunnel address for a family, bind it to loopback so that
+# family cannot reach the network at all.
+v4=${v4:-127.0.0.1}
+v6=${v6:-::1}
 
 umask 077
 jq \
   --arg v4 "$v4" --arg v6 "$v6" \
   --arg user "${RPC_USERNAME:-}" --arg pass "${RPC_PASSWORD:-}" '
-  (if $v4 != "" and (has("bind-address-ipv4") | not) then .["bind-address-ipv4"] = $v4 else . end)
-  | (if $v6 != "" and (has("bind-address-ipv6") | not) then .["bind-address-ipv6"] = $v6 else . end)
+  .["bind-address-ipv4"] = $v4
+  | .["bind-address-ipv6"] = $v6
   | (if $user != "" and $pass != "" then
        .["rpc-authentication-required"] = true | .["rpc-username"] = $user | .["rpc-password"] = $pass
      else . end)

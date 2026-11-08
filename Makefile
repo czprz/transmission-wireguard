@@ -4,7 +4,8 @@
 
 lint:
 	helm lint . --strict -f ci/default-values.yaml
-	docker run --rm -v "$(PWD):/apps" helmunittest/helm-unittest:3.11.1-0.3.0 .
+	docker run --rm -v "$(PWD):/apps" helmunittest/helm-unittest:3.11.1-0.3.0@sha256:97f1d07dad520c9af52e090198469515b7b194622b5085302e40b11a8a930613 .
+	tests/schema-test.sh
 
 validate:
 	ct lint --charts . --validate-maintainers=false

@@ -142,6 +142,13 @@ true
 {{- range regexFindAll "(?mi)^[ \\t]*AllowedIPs[ \\t]*=[^#\\r\\n]*" . -1 -}}
 {{- $allowed = concat $allowed (regexSplit "[ \\t,]+" (regexReplaceAll "(?i)^[ \\t]*AllowedIPs[ \\t]*=" . "") -1) -}}
 {{- end -}}
+{{- if has "::/0" $allowed -}}
+{{- $addrs := list -}}
+{{- range regexFindAll "(?mi)^[ \\t]*Address[ \\t]*=[^#\\r\\n]*" . -1 }}{{ $addrs = append $addrs . }}{{ end -}}
+{{- if not (contains ":" (regexReplaceAll "(?i)Address[ \\t]*=" (join "," $addrs) "")) -}}
+{{- fail "wireguard.wg0Conf AllowedIPs has ::/0 but Address has no IPv6 address. Add one, or drop ::/0 so IPv6 is blocked (otherwise the pod's own IPv6 address would reach the VPN)" -}}
+{{- end -}}
+{{- end -}}
 {{- if not (has "0.0.0.0/0" $allowed) -}}
 {{- fail "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel). Halves such as 0.0.0.0/1 + 128.0.0.0/1 do not work, because wg-quick only sets up the fwmark routing the kill switch relies on for /0" -}}
 {{- end -}}
@@ -172,13 +179,31 @@ true
 {{- fail "transmission.rpcAuth needs both username and password (or existingSecret)" -}}
 {{- end -}}
 {{- end -}}
-{{- $exposed := or .Values.ingress.enabled (ne .Values.service.type "ClusterIP") -}}
-{{- if and $exposed (not (include "twg.rpcAuthConfigured" .)) (not .Values.transmission.rpcAuth.allowAnonymous) -}}
-{{- fail "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth" -}}
-{{- end -}}
 {{- $s := .Values.transmission.settings -}}
 {{- if and (hasKey $s "rpc-port") (ne (int (index $s "rpc-port")) (int .Values.service.webPort)) -}}
 {{- fail (printf "transmission.settings rpc-port (%v) must equal service.webPort (%v), the only port the kill switch opens to the cluster" (index $s "rpc-port") .Values.service.webPort) -}}
+{{- end -}}
+{{- if eq (include "twg.peerPort" .) (toString (int .Values.service.webPort)) -}}
+{{- fail "transmission.settings peer-port must differ from service.webPort. The kill switch opens the peer port to the VPN side" -}}
+{{- end -}}
+{{- if or (hasKey $s "bind-address-ipv4") (hasKey $s "bind-address-ipv6") -}}
+{{- fail "transmission.settings must not set bind-address-ipv4/ipv6. The chart binds peer sockets to the tunnel address so they cannot use another interface" -}}
+{{- end -}}
+{{- if not .Values.transmission.bindToTunnel -}}
+{{- fail "transmission.bindToTunnel must be true. Unbound peer sockets can learn and announce the pod's own IPv6 address" -}}
+{{- end -}}
+{{- range $k, $_ := .Values.wireguard.env -}}
+{{- if hasPrefix "TWG_" $k -}}
+{{- fail (printf "wireguard.env must not set %s. The chart sets every TWG_ variable of the kill switch itself" $k) -}}
+{{- end -}}
+{{- if has $k (list "PEERS" "SERVERURL" "SERVERPORT" "PEERDNS" "INTERNAL_SUBNET" "ALLOWEDIPS" "PERSISTENTKEEPALIVE_PEERS") -}}
+{{- fail (printf "wireguard.env must not set %s. It switches the image to server mode, which is not supported" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- range $k, $_ := .Values.transmission.env -}}
+{{- if hasPrefix "TWG_" $k -}}
+{{- fail (printf "transmission.env must not set %s. The chart sets every TWG_ variable itself" $k) -}}
+{{- end -}}
 {{- end -}}
 {{- if index $s "peer-port-random-on-start" -}}
 {{- fail "transmission.settings peer-port-random-on-start must be false. The kill switch only accepts peers on the fixed peer-port" -}}
@@ -222,5 +247,8 @@ NET_RAW, would apply.
 {{- end -}}
 {{- if and .Values.persistence.enabled (eq .Values.persistence.type "hostPath") (not (dig "hostPath" "path" "" .Values.persistence)) -}}
 {{- fail "persistence.type=hostPath needs persistence.hostPath.path" -}}
+{{- end -}}
+{{- if and (not (include "twg.rpcAuthConfigured" .)) (not .Values.transmission.rpcAuth.allowAnonymous) -}}
+{{- fail "The web UI needs RPC auth. Without it any pod that can reach it can add torrents (linking trackers it controls to your VPN address) and run scripts. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth" -}}
 {{- end -}}
 {{- end -}}

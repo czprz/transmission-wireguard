@@ -117,3 +117,20 @@ tests:
       - equal:
           path: spec.tolerations
           value: [{ key: dedicated, operator: Exists, effect: NoSchedule }]
+
+  - it: runs on the release pod's node
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels
+          value: { app.kubernetes.io/name: transmission-wireguard, app.kubernetes.io/instance: RELEASE-NAME }
+
+  - it: checks the Transmission container's capabilities at runtime
+    documentIndex: 3
+    asserts:
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: 'CapBnd'

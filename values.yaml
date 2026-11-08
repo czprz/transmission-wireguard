@@ -65,13 +65,14 @@ transmission:
     PUID: "1000"
     PGID: "1000"
 
-  # Bind Transmission's peer sockets to the tunnel address read from wg0.conf
-  # (Address = ...). If the tunnel goes away, Transmission cannot fall back to
-  # another interface. An explicit bind-address-ipv4/6 in settings wins.
+  # Transmission's peer sockets are bound to the tunnel address read from
+  # wg0.conf (Address = ...), or to loopback for a family the tunnel lacks, so
+  # they cannot use another interface or learn the pod's own address. Must
+  # stay true; bind-address-ipv4/6 in settings are refused.
   bindToTunnel: true
 
-  # RPC (web UI) credentials. Required when the UI is exposed through an
-  # ingress or a non-ClusterIP Service, unless allowAnonymous is true.
+  # RPC (web UI) credentials. Required unless allowAnonymous is true: without
+  # them any pod that reaches the UI can add torrents and run scripts.
   rpcAuth:
     # Secret with the username/password keys below (recommended).
     existingSecret: ""

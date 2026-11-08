@@ -98,20 +98,21 @@ tests:
           of: Deployment
 
   - template: templates/deployment.yaml
-    it: refuses an exposed web UI without RPC auth
+    it: refuses anonymous RPC by default
     set:
-      ingress.enabled: true
+      transmission.rpcAuth.allowAnonymous: false
     asserts:
       - failedTemplate:
-          errorMessage: "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth"
+          errorMessage: "The web UI needs RPC auth. Without it any pod that can reach it can add torrents (linking trackers it controls to your VPN address) and run scripts. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth"
 
   - template: templates/deployment.yaml
     it: refuses a LoadBalancer web UI without RPC auth
     set:
       service.type: LoadBalancer
+      transmission.rpcAuth.allowAnonymous: false
     asserts:
       - failedTemplate:
-          errorMessage: "The web UI is exposed (ingress or non-ClusterIP Service) without RPC auth. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth"
+          errorMessage: "The web UI needs RPC auth. Without it any pod that can reach it can add torrents (linking trackers it controls to your VPN address) and run scripts. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth"
 
   - template: templates/deployment.yaml
     it: allows an exposed web UI with RPC auth
@@ -205,7 +206,7 @@ tests:
   - template: templates/deployment.yaml
     it: accepts a full tunnel with CRLF line endings and several AllowedIPs lines
     set:
-      wireguard.wg0Conf: "[Interface]\r\nPrivateKey = x\r\n[Peer]\r\nAllowedIPs = ::/0\r\nAllowedIPs = 0.0.0.0/0\r\nEndpoint = 203.0.113.10:51820\r\n"
+      wireguard.wg0Conf: "[Interface]\r\nPrivateKey = x\r\n[Peer]\r\nAddress = 10.64.0.2/32, fd00::2/128\r\nAllowedIPs = ::/0\r\nAllowedIPs = 0.0.0.0/0\r\nEndpoint = 203.0.113.10:51820\r\n"
     asserts:
       - isKind:
           of: Deployment
@@ -298,6 +299,7 @@ tests:
     it: accepts lowercase harmless capabilities
     set:
       transmission.securityContext.capabilities: { drop: [all], add: [setuid, CAP_SETGID, chown] }
+      transmission.rpcAuth.allowAnonymous: true
     asserts:
       - isKind:
           of: Deployment
@@ -410,3 +412,62 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "persistence.type=hostPath needs persistence.hostPath.path"
+
+  - template: templates/deployment.yaml
+    it: refuses kill switch variables in wireguard.env
+    set:
+      wireguard.env.TWG_LOCAL_MARK: "0"
+      wireguard.existingSecret: wg
+      networkPolicy.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.env must not set TWG_LOCAL_MARK. The chart sets every TWG_ variable of the kill switch itself"
+
+  - template: templates/deployment.yaml
+    it: refuses kill switch variables in transmission.env
+    set:
+      transmission.env.TWG_WG_CONF: /tmp/other.conf
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.env must not set TWG_WG_CONF. The chart sets every TWG_ variable itself"
+
+  - template: templates/deployment.yaml
+    it: refuses the image's server mode
+    set:
+      wireguard.env.PEERS: "1"
+      wireguard.existingSecret: wg
+      networkPolicy.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.env must not set PEERS. It switches the image to server mode, which is not supported"
+
+  - template: templates/deployment.yaml
+    it: refuses a peer port equal to the web port
+    set:
+      transmission.settings.peer-port: 9091
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.settings peer-port must differ from service.webPort. The kill switch opens the peer port to the VPN side"
+
+  - template: templates/deployment.yaml
+    it: refuses bind addresses in settings
+    set:
+      transmission.settings.bind-address-ipv6: "::"
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.settings must not set bind-address-ipv4/ipv6. The chart binds peer sockets to the tunnel address so they cannot use another interface"
+
+  - template: templates/deployment.yaml
+    it: refuses IPv6 into the tunnel without a tunnel IPv6 address
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = 10.64.0.2/32
+        [Peer]
+        AllowedIPs = 0.0.0.0/0, ::/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf AllowedIPs has ::/0 but Address has no IPv6 address. Add one, or drop ::/0 so IPv6 is blocked (otherwise the pod's own IPv6 address would reach the VPN)"

@@ -51,7 +51,10 @@ jobs:
           docker run --rm \
             -u "$(id -u):$(id -g)" \
             -v "${GITHUB_WORKSPACE}:/apps" \
-            helmunittest/helm-unittest:3.11.1-0.3.0 .
+            helmunittest/helm-unittest:3.11.1-0.3.0@sha256:97f1d07dad520c9af52e090198469515b7b194622b5085302e40b11a8a930613 .
+
+      - name: Schema test
+        run: tests/schema-test.sh
 
 
   # Leak tests: try to make traffic escape the tunnel and fail if it does.

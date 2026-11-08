@@ -67,6 +67,15 @@ metadata:
 spec:
   serviceAccountName: {{ $name }}
   restartPolicy: Never
+  # On the release pod's node, so "the cluster's own address" below is the
+  # one that pod would leak with (egress IPs can differ per node).
+  affinity:
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              {{- include "twg.selectorLabels" . | nindent 14 }}
   securityContext:
     runAsNonRoot: true
     runAsUser: 65534
@@ -133,6 +142,23 @@ spec:
               pass "kill switch rules intact and tunnel up"
             else
               fail "kill switch or tunnel check failed (see the wireguard container log)"
+            fi
+
+            # Raw and packet sockets bypass iptables: nothing in the Transmission
+            # container may hold NET_RAW (13), NET_ADMIN (12) or SYS_ADMIN (21),
+            # whatever a webhook or runtime added.
+            # shellcheck disable=SC2016 # expanded in the Transmission container
+            caps=$(in_tx sh -c 'for p in 1 $(pgrep -x transmission-daemon); do sed -n "s/^CapBnd:[[:space:]]*//p" /proc/$p/status; done' || true)
+            bad=""
+            for c in $caps; do
+              [ $((0x$c & 0x203000)) -eq 0 ] || bad="$bad $c"
+            done
+            if [ -z "$caps" ]; then
+              fail "could not read the Transmission container's capabilities"
+            elif [ -n "$bad" ]; then
+              fail "LEAK RISK: the Transmission container can use raw sockets or change the network (CapBnd$bad)"
+            else
+              pass "the Transmission container holds no network capabilities"
             fi
 
             # The API server is reachable from every pod, so it shows whether

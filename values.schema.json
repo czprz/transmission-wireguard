@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "replicaCount": {
       "type": "integer",
@@ -26,7 +26,8 @@
               "type": "string",
               "pattern": "^(sha256:[a-f0-9]{64})?$"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "transmission": {
           "type": "object",
@@ -44,9 +45,11 @@
               "type": "string",
               "pattern": "^(sha256:[a-f0-9]{64})?$"
             }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "service": {
       "type": "object",
@@ -64,8 +67,18 @@
         },
         "annotations": {
           "type": "object"
+        },
+        "peerPortTcp": {
+          "description": "Removed in 1.0: peers only connect through the VPN"
+        },
+        "peerPortUdp": {
+          "description": "Removed in 1.0: peers only connect through the VPN"
+        },
+        "exposePeerPorts": {
+          "description": "Removed in 1.0: peers only connect through the VPN"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ingress": {
       "type": "object",
@@ -85,7 +98,8 @@
         "tls": {
           "type": "array"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "issuer": {
       "type": "object",
@@ -108,7 +122,8 @@
         "privateKeySecretName": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "persistence": {
       "type": "object",
@@ -143,7 +158,8 @@
             "type": {
               "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "mounts": {
           "type": "object",
@@ -157,11 +173,14 @@
                 "subPath": {
                   "type": "string"
                 }
-              }
+              },
+              "additionalProperties": false
             }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "transmission": {
       "type": "object",
@@ -183,7 +202,8 @@
           "type": "object"
         },
         "bindToTunnel": {
-          "type": "boolean"
+          "const": true,
+          "description": "Must stay true: peer sockets are always bound to the tunnel address"
         },
         "rpcAuth": {
           "type": "object",
@@ -214,7 +234,8 @@
         "resources": {
           "type": "object"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "wireguard": {
       "type": "object",
@@ -240,7 +261,8 @@
             "mountTun": {
               "type": "boolean"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "dns": {
           "type": "object",
@@ -251,10 +273,12 @@
             "nameservers": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "string",
+                "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*$"
               }
             }
-          }
+          },
+          "additionalProperties": false
         },
         "resources": {
           "type": "object"
@@ -287,7 +311,8 @@
           "type": "integer",
           "minimum": 0
         }
-      }
+      },
+      "additionalProperties": false
     },
     "firewall": {
       "type": "object",
@@ -296,7 +321,8 @@
         "webAllowedCIDRs": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])/([0-9]|[12][0-9]|3[0-2])$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"
           }
         },
         "wgFwmark": {
@@ -364,7 +390,8 @@
               "type": "string",
               "pattern": "^(sha256:[a-f0-9]{64})?$"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "resources": {
           "type": "object"
@@ -389,7 +416,8 @@
         "failureThreshold": {
           "type": "integer"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "nodeSelector": {
       "type": "object"
@@ -402,6 +430,10 @@
       "items": {
         "type": "object"
       }
+    },
+    "global": {
+      "type": "object",
+      "description": "Set by parent charts; unused"
     }
   }
 }

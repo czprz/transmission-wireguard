@@ -7,6 +7,9 @@ metadata:
     {{- include "twg.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  # One WireGuard key: never run the old and the new pod side by side.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "twg.selectorLabels" . | nindent 6 }}
@@ -87,6 +90,16 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            # Every TWG_ variable is set here (wireguard.env may not), so
+            # none can be overridden.
+            - name: TWG_WG_IFACE
+              value: wg0
+            - name: TWG_WG_CONF
+              value: /config/wg_confs/wg0.conf
+            - name: TWG_LOCAL_MARK
+              value: "0x10000000"
+            - name: TWG_SAVED_ROUTE_TABLE
+              value: "1000"
             - name: TWG_WEB_PORT
               value: {{ .Values.service.webPort | quote }}
             - name: TWG_PEER_PORT
