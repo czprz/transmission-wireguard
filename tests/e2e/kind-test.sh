@@ -582,7 +582,8 @@ step "pod termination"
 # A loop inside the Transmission container probes until the container is
 # gone; the canaries' counters see whatever it sent.
 term_log=$(mktemp)
-kx transmission sh -c "while :; do curl -sS -m 2 http://$CANARY_IP/cgi-bin/ip 2>/dev/null || echo blocked; sleep 0.5; done" >"$term_log" 2>&1 &
+# Only stdout: kubectl reports the container's end on stderr.
+kx transmission sh -c "while :; do curl -sS -m 2 http://$CANARY_IP/cgi-bin/ip 2>/dev/null || echo blocked; sleep 0.5; done" >"$term_log" 2>/dev/null &
 probe_pid=$!
 sleep 3
 hits_mark
@@ -595,8 +596,8 @@ while read -r line; do
   case $line in
     blocked) record blocked ;;
     "$SERVER_IP") record vpn ;;
-    "") ;;
-    *) record "leak $line" ;;
+    *[0-9].*[0-9] | *:*) record "leak $line" ;; # an address
+    *) ;; # a line cut off when the container was killed
   esac
 done < <(tail -n +$((started + 1)) "$term_log")
 rm -f "$term_log"

@@ -505,9 +505,10 @@ docker run --rm --network none --entrypoint sh -v $P-torrent:/t "$TX_IMAGE" -c \
   "echo leak-test >/t/payload && transmission-create -o /t/test.torrent -t http://$TRACKER_IP/cgi-bin/announce \
     -t http://[$TRACKER_IP6]/cgi-bin/announce /t/payload" >/dev/null 2>&1
 docker run --rm --network container:$P-pod --cap-drop ALL -v $P-torrent:/t --entrypoint transmission-remote "$TX_IMAGE" \
-  127.0.0.1:$WEB_PORT -a /t/test.torrent >/dev/null
-# At least two, so the re-announce every 10 seconds is shown to work.
-if wait_for "two announces" 60 sh -c "[ \$(docker logs $P-tracker 2>&1 | grep -c '^ANNOUNCE ') -ge 2 ]"; then
+  127.0.0.1:$WEB_PORT -a /t/test.torrent >/dev/null || fail "could not add the test torrent"
+# A first announce, then a forced one: re-announcing is shown to work.
+if wait_for "an announce" 60 announced_since 0 && first=$(announces | wc -l) &&
+  wait_for "a forced re-announce" 20 reannounced_since "$first"; then
   sources=$(announces | sort -u | tr '\n' ' ')
   if announces_via_vpn; then
     pass "Transmission announces to its tracker through the VPN, every 10 s (tracker saw $sources)"
@@ -515,7 +516,8 @@ if wait_for "two announces" 60 sh -c "[ \$(docker logs $P-tracker 2>&1 | grep -c
     fail "LEAK: Transmission's announces came from ${sources}(want only $SERVER_IP / $SERVER_IP6)"
   fi
 else
-  fail "Transmission did not announce to the tracker canary twice (test broken)"
+  fail "Transmission did not announce to the tracker canary twice (test broken; tracker saw: $(announces | tr '\n' ' '))"
+  tx_remote -t all -it 2>&1 | sed 's/^/        /' | head -20 || true
 fi
 code=$(from_cluster curl -sS -m 4 -o /dev/null -w '%{http_code}' "http://$POD_IP:$WEB_PORT/transmission/web/" 2>/dev/null || true)
 if [[ $code =~ ^(200|301|401|409)$ ]]; then
