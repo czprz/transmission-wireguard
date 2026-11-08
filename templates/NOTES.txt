@@ -8,6 +8,9 @@ Transmission is running behind a WireGuard sidecar with a chart-managed kill swi
 {{- else }}
 - WARNING: networkPolicy is disabled. Only the in-pod kill switch protects against leaks.
 {{- end }}
+{{- if not (include "twg.rpcAuthConfigured" .) }}
+- WARNING: the web UI has no RPC auth (rpcAuth.allowAnonymous). Any pod that reaches it can add torrents and run scripts.
+{{- end }}
 - DNS: {{ join ", " .Values.wireguard.dns.nameservers }} through the tunnel
 {{- $s := .Values.transmission.settings }}
 {{- if index $s "rpc-host-whitelist-enabled" }}

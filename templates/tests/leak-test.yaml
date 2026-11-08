@@ -67,15 +67,19 @@ metadata:
 spec:
   serviceAccountName: {{ $name }}
   restartPolicy: Never
-  # On the release pod's node, so "the cluster's own address" below is the
-  # one that pod would leak with (egress IPs can differ per node).
+  # Preferably on the release pod's node, so "the cluster's own address"
+  # below is the one that pod would leak with (egress IPs can differ per
+  # node). The script checks it; only preferred, so a missing pod fails
+  # clearly instead of leaving the test Pending.
   affinity:
     podAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - topologyKey: kubernetes.io/hostname
-          labelSelector:
-            matchLabels:
-              {{- include "twg.selectorLabels" . | nindent 14 }}
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                {{- include "twg.selectorLabels" . | nindent 16 }}
   securityContext:
     runAsNonRoot: true
     runAsUser: 65534
@@ -98,6 +102,12 @@ spec:
           value: {{ printf "app.kubernetes.io/name=%s,app.kubernetes.io/instance=%s" .Chart.Name .Release.Name | quote }}
         - name: IP_ECHO_URL
           value: {{ .Values.tests.ipEchoUrl | quote }}
+        - name: VPN_EGRESS_IPS
+          value: {{ join " " .Values.tests.vpnEgressIPs | quote }}
+        - name: MY_NODE
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         - name: NAMESERVERS
           value: {{ join " " .Values.wireguard.dns.nameservers | quote }}
       command:
@@ -115,6 +125,11 @@ spec:
           in_wg() { kubectl exec "$pod" -c wireguard -- "$@"; }
           in_tx() { kubectl exec "$pod" -c transmission -- "$@"; }
           trim() { tr -d '[:space:]'; }
+          in_list() { want=$1; shift; for x in "$@"; do [ "$x" = "$want" ] && return 0; done; return 1; }
+          # shellcheck disable=SC2086 # lists of addresses
+          is_own() { in_list "$1" $own; }
+          # shellcheck disable=SC2086
+          is_vpn() { in_list "$1" $VPN_EGRESS_IPS; }
           # curl bound to eth0 in the Transmission container. Prints PASS
           # only for a refused (7) or timed-out (28) connection; any other
           # failure (no such interface, exec failed) proves nothing.
@@ -138,6 +153,10 @@ spec:
 
           for pod in $pods; do
             echo "testing pod $pod"
+            # The pod's and its node's own addresses: without SNAT (IPv6,
+            # routable pod IPs) a leak would show one of these.
+            node=$(kubectl get pod "$pod" -o jsonpath='{.spec.nodeName}')
+            own=$(kubectl get pod "$pod" -o jsonpath='{range .status.podIPs[*]}{.ip} {end}{range .status.hostIPs[*]}{.ip} {end}{.status.hostIP}')
             if in_wg /twg/scripts/firewall.sh live; then
               pass "kill switch rules intact and tunnel up"
             else
@@ -187,15 +206,19 @@ spec:
                 fail "this test pod cannot reach $IP_ECHO_URL, so the egress address cannot be compared"
               elif [ -z "$vpn" ]; then
                 fail "the pod cannot reach $IP_ECHO_URL through the VPN"
-              elif [ "$vpn" = "$direct" ]; then
+              elif [ "$vpn" = "$direct" ] || is_own "$vpn"; then
                 fail "LEAK: the pod's IPv4 egress address $vpn is the cluster's own"
+              elif [ -n "$VPN_EGRESS_IPS" ] && ! is_vpn "$vpn"; then
+                fail "the pod's IPv4 egress address $vpn is not one of tests.vpnEgressIPs ($VPN_EGRESS_IPS)"
+              elif [ "$node" != "$MY_NODE" ] && [ -z "$VPN_EGRESS_IPS" ]; then
+                fail "the test pod runs on $MY_NODE, not on the pod's node $node, so its address proves nothing; set tests.vpnEgressIPs"
               else
                 pass "IPv4 egress leaves through the VPN as $vpn (the cluster egresses as $direct)"
               fi
               direct6=$(curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
               if [ -n "$direct6" ]; then
                 vpn6=$(in_tx curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
-                if [ "$vpn6" = "$direct6" ]; then
+                if [ -n "$vpn6" ] && { [ "$vpn6" = "$direct6" ] || is_own "$vpn6"; }; then
                   fail "LEAK: the pod's IPv6 egress address $vpn6 is the cluster's own"
                 else
                   pass "IPv6 does not leave as the cluster's address $direct6 (VPN: ${vpn6:-no IPv6})"

@@ -118,15 +118,31 @@ tests:
           path: spec.tolerations
           value: [{ key: dedicated, operator: Exists, effect: NoSchedule }]
 
-  - it: runs on the release pod's node
+  - it: prefers the release pod's node and checks it
     documentIndex: 3
     asserts:
       - equal:
-          path: spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey
+          path: spec.affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.topologyKey
           value: kubernetes.io/hostname
       - equal:
-          path: spec.affinity.podAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].labelSelector.matchLabels
+          path: spec.affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.labelSelector.matchLabels
           value: { app.kubernetes.io/name: transmission-wireguard, app.kubernetes.io/instance: RELEASE-NAME }
+      - contains:
+          path: spec.containers[0].env
+          content: { name: MY_NODE, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+
+  - it: compares the egress address with the pod's and node's own and the expected VPN exits
+    documentIndex: 3
+    set:
+      tests.enabled: true
+      tests.vpnEgressIPs: [198.51.100.20]
+    asserts:
+      - contains:
+          path: spec.containers[0].env
+          content: { name: VPN_EGRESS_IPS, value: "198.51.100.20" }
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: "status.podIPs"
 
   - it: checks the Transmission container's capabilities at runtime
     documentIndex: 3

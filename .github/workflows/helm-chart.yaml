@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# A pull request from dev also pushes to dev: run the suite once per commit.
+concurrency:
+  group: helm-chart-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest

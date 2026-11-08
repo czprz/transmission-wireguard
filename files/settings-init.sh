@@ -31,6 +31,13 @@ done
 v4=${v4:-127.0.0.1}
 v6=${v6:-::1}
 
+# Credentials from a Secret must both be set: an empty one would leave RPC
+# open without a word.
+if [ -n "${RPC_USERNAME+x}${RPC_PASSWORD+x}" ] && { [ -z "${RPC_USERNAME:-}" ] || [ -z "${RPC_PASSWORD:-}" ]; }; then
+  echo "[twg-settings] FATAL: the RPC credentials Secret has an empty username or password" >&2
+  exit 1
+fi
+
 umask 077
 jq \
   --arg v4 "$v4" --arg v6 "$v6" \

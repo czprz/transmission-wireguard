@@ -359,11 +359,11 @@ tests:
   - template: templates/deployment.yaml
     it: passes the fwmark to the sidecar in decimal
     set:
-      firewall.wgFwmark: 4294967295
+      firewall.wgFwmark: 4026531839
     asserts:
       - contains:
           path: spec.template.spec.initContainers[1].env
-          content: { name: TWG_WG_FWMARK, value: "4294967295" }
+          content: { name: TWG_WG_FWMARK, value: "4026531839" }
 
   - template: templates/deployment.yaml
     it: accepts a FwMark equal to wgFwmark, also in hex
@@ -470,4 +470,33 @@ tests:
         Endpoint = 203.0.113.10:51820
     asserts:
       - failedTemplate:
-          errorMessage: "wireguard.wg0Conf AllowedIPs has ::/0 but Address has no IPv6 address. Add one, or drop ::/0 so IPv6 is blocked (otherwise the pod's own IPv6 address would reach the VPN)"
+          errorMessage: "wireguard.wg0Conf AllowedIPs has IPv6 ranges but Address has no IPv6 address. Add one, or drop the IPv6 ranges so IPv6 is blocked (otherwise the pod's own IPv6 address would reach the VPN)"
+
+  - template: templates/deployment.yaml
+    it: refuses IPv6 ranges however written without a tunnel IPv6 address
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = 10.64.0.2/32
+        [Peer]
+        AllowedIPs = 0.0.0.0/0, 2000::/3
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf AllowedIPs has IPv6 ranges but Address has no IPv6 address. Add one, or drop the IPv6 ranges so IPv6 is blocked (otherwise the pod's own IPv6 address would reach the VPN)"
+
+  - template: templates/deployment.yaml
+    it: refuses a fwmark sharing the cluster connection bit
+    set:
+      firewall.wgFwmark: "0x10000000"
+    asserts:
+      - failedTemplate:
+          errorMessage: "firewall.wgFwmark 0x10000000 must not set bit 0x10000000, which marks connections from the cluster"
+
+  - template: templates/deployment.yaml
+    it: refuses the removed peer port Service keys
+    set:
+      service.peerPortTcp: 6881
+    asserts:
+      - failedTemplate:
+          errorMessage: "service.peerPortTcp/peerPortUdp were removed. Peers connect through the VPN to transmission.settings.peer-port (forward it at your provider)"

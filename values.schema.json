@@ -5,7 +5,9 @@
   "properties": {
     "replicaCount": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 1,
+      "description": "One pod per WireGuard key"
     },
     "images": {
       "type": "object",
@@ -69,10 +71,10 @@
           "type": "object"
         },
         "peerPortTcp": {
-          "description": "Removed in 1.0: peers only connect through the VPN"
+          "description": "Removed in 1.0: peers connect through the VPN to transmission.settings.peer-port"
         },
         "peerPortUdp": {
-          "description": "Removed in 1.0: peers only connect through the VPN"
+          "description": "Removed in 1.0: peers connect through the VPN to transmission.settings.peer-port"
         },
         "exposePeerPorts": {
           "description": "Removed in 1.0: peers only connect through the VPN"
@@ -274,8 +276,9 @@
               "type": "array",
               "items": {
                 "type": "string",
-                "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*$"
-              }
+                "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$"
+              },
+              "maxItems": 3
             }
           },
           "additionalProperties": false
@@ -297,7 +300,7 @@
             "properties": {
               "ip": {
                 "type": "string",
-                "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*$"
+                "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$"
               },
               "port": {
                 "type": "integer",
@@ -322,7 +325,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])/([0-9]|[12][0-9]|3[0-2])$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"
+            "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])/([0-9]|[12][0-9]|3[0-2])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"
           }
         },
         "wgFwmark": {
@@ -395,6 +398,14 @@
         },
         "resources": {
           "type": "object"
+        },
+        "vpnEgressIPs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$"
+          },
+          "description": "Your VPN's exit addresses; when set, helm test requires the pod's egress to be one of them"
         }
       }
     },

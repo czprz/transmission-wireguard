@@ -1,5 +1,6 @@
 # Running more than 1 replica is not recommended unless each replica has
 # its own unique storage and WireGuard config.
+# Must stay 1: every replica would use the same WireGuard key.
 replicaCount: 1
 
 images:
@@ -231,6 +232,9 @@ tests:
   # addresses to differ. Whoever runs it sees your VPN address and your
   # real address together, so never point this at a public service.
   ipEchoUrl: ""
+  # Optional: your VPN's exit addresses. With ipEchoUrl set, the pod's egress
+  # address must then be one of them.
+  vpnEgressIPs: []
   image:
     repository: ""
     tag: ""

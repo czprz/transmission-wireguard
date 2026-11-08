@@ -82,7 +82,7 @@ always wins, and overriding repository or tag drops the default digest.
 {{- end -}}
 
 {{- define "twg.ipPattern" -}}
-^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*$
+^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$
 {{- end -}}
 
 {{/*
@@ -142,11 +142,11 @@ true
 {{- range regexFindAll "(?mi)^[ \\t]*AllowedIPs[ \\t]*=[^#\\r\\n]*" . -1 -}}
 {{- $allowed = concat $allowed (regexSplit "[ \\t,]+" (regexReplaceAll "(?i)^[ \\t]*AllowedIPs[ \\t]*=" . "") -1) -}}
 {{- end -}}
-{{- if has "::/0" $allowed -}}
+{{- if contains ":" (join "," $allowed) -}}
 {{- $addrs := list -}}
 {{- range regexFindAll "(?mi)^[ \\t]*Address[ \\t]*=[^#\\r\\n]*" . -1 }}{{ $addrs = append $addrs . }}{{ end -}}
 {{- if not (contains ":" (regexReplaceAll "(?i)Address[ \\t]*=" (join "," $addrs) "")) -}}
-{{- fail "wireguard.wg0Conf AllowedIPs has ::/0 but Address has no IPv6 address. Add one, or drop ::/0 so IPv6 is blocked (otherwise the pod's own IPv6 address would reach the VPN)" -}}
+{{- fail "wireguard.wg0Conf AllowedIPs has IPv6 ranges but Address has no IPv6 address. Add one, or drop the IPv6 ranges so IPv6 is blocked (otherwise the pod's own IPv6 address would reach the VPN)" -}}
 {{- end -}}
 {{- end -}}
 {{- if not (has "0.0.0.0/0" $allowed) -}}
@@ -168,6 +168,9 @@ true
 {{- $mark := include "twg.markValue" .Values.firewall.wgFwmark -}}
 {{- if or (not $mark) (gt (int64 $mark) 4294967295) -}}
 {{- fail (printf "firewall.wgFwmark %v must be between 1 and 4294967295" .Values.firewall.wgFwmark) -}}
+{{- end -}}
+{{- if eq (mod (div (int64 $mark) 268435456) 2) 1 -}}
+{{- fail (printf "firewall.wgFwmark %v must not set bit 0x10000000, which marks connections from the cluster" .Values.firewall.wgFwmark) -}}
 {{- end -}}
 {{- /* Parsed even without the NetworkPolicy: a bad Endpoint fails here, not at runtime. */ -}}
 {{- $endpoints := include "twg.vpnEndpoints" . | fromJsonArray -}}
@@ -210,6 +213,9 @@ true
 {{- end -}}
 {{- if .Values.firewall.allowConfFirewallHooks -}}
 {{- fail "firewall.allowConfFirewallHooks was renamed to firewall.allowConfHooks and now covers every PreUp/PostUp/PreDown/PostDown hook" -}}
+{{- end -}}
+{{- if or (hasKey .Values.service "peerPortTcp") (hasKey .Values.service "peerPortUdp") -}}
+{{- fail "service.peerPortTcp/peerPortUdp were removed. Peers connect through the VPN to transmission.settings.peer-port (forward it at your provider)" -}}
 {{- end -}}
 {{- if .Values.service.exposePeerPorts -}}
 {{- fail "service.exposePeerPorts was removed. Peers can only reach Transmission through the VPN, never through the Service" -}}

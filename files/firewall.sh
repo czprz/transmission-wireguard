@@ -32,15 +32,26 @@ POST=TWG-POSTROUTING
 log() { echo "[twg-firewall] $*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 
+# Settings the rules cannot be built safely from. apply first closes every
+# family (policies DROP), so the pod still fails closed.
+refuse_setting() {
+  local ipt c
+  if [[ ${1:-} == apply ]]; then
+    for ipt in iptables ip6tables; do
+      for c in INPUT FORWARD OUTPUT; do "$ipt" -w -P "$c" DROP 2>/dev/null || true; done
+    done
+  fi
+  die "$2"
+}
 # Mark 0 would match every unmarked packet and table 0 every routing rule.
 if ! [[ $WG_FWMARK =~ ^(0[xX][0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$ ]] || ((WG_FWMARK > 0xffffffff)); then
-  die "firewall.wgFwmark ${WG_FWMARK} must be between 1 and 4294967295"
+  refuse_setting "${1:-}" "firewall.wgFwmark ${WG_FWMARK} must be between 1 and 4294967295"
 fi
 # A zero mask would match every connection; shared bits would confuse the two.
 if ! [[ $LOCAL_MARK =~ ^(0[xX][0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$ ]] || ((LOCAL_MARK > 0xffffffff || (LOCAL_MARK & WG_FWMARK) != 0)); then
-  die "TWG_LOCAL_MARK ${LOCAL_MARK} must be a non-zero 32-bit mark sharing no bits with ${WG_FWMARK}"
+  refuse_setting "${1:-}" "TWG_LOCAL_MARK ${LOCAL_MARK} must be a non-zero 32-bit mark sharing no bits with ${WG_FWMARK}"
 fi
-[[ $PEER_PORT != "$WEB_PORT" ]] || die "the peer port ${PEER_PORT} must differ from the web port"
+[[ $PEER_PORT != "$WEB_PORT" ]] || refuse_setting "${1:-}" "the peer port ${PEER_PORT} must differ from the web port"
 
 # IPv6 must be filtered whenever the namespace has it; only skip ip6tables
 # when there is no IPv6 at all.
@@ -288,11 +299,11 @@ preflight() {
   # Captured first: grep -q exiting on the first match would SIGPIPE tr and,
   # with pipefail, randomly refuse a valid config.
   allowed=$(conf_value AllowedIPs | tr -s ',[:blank:]' '\n')
-  # IPv6 into the tunnel without a tunnel IPv6 address would carry the pod's
-  # own (possibly global) IPv6 address to the VPN.
+  # IPv6 into the tunnel (any IPv6 range, however written) without a tunnel
+  # IPv6 address would carry the pod's own IPv6 address to the VPN.
   addrs=$(conf_value Address)
-  if grep -qx '::/0' <<<"$allowed" && [[ $addrs != *:* ]]; then
-    die "AllowedIPs has ::/0 but Address has no IPv6 address; add one (or drop ::/0 so IPv6 is blocked)"
+  if [[ $allowed == *:* && $addrs != *:* ]]; then
+    die "AllowedIPs has IPv6 ranges but Address has no IPv6 address; add one (or drop the IPv6 ranges so IPv6 is blocked)"
   fi
   grep -qx '0\.0\.0\.0/0' <<<"$allowed" || die "AllowedIPs must include 0.0.0.0/0 (full tunnel). Halves such as 0.0.0.0/1 + 128.0.0.0/1 do not work, because wg-quick only sets up the fwmark routing the kill switch relies on for /0"
 

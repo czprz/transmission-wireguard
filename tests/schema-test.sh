@@ -24,6 +24,8 @@ expect_schema_error "a nameserver that is not an IP" --set 'wireguard.dns.namese
 expect_schema_error "a web CIDR without a prefix length" --set 'firewall.webAllowedCIDRs={10.0.0.1}'
 expect_schema_error "transmission.bindToTunnel=false" --set transmission.bindToTunnel=false
 expect_schema_error "firewall.wgFwmark=0" --set firewall.wgFwmark=0
+expect_schema_error "replicaCount=2 (one WireGuard key)" --set replicaCount=2
+expect_schema_error "a nameserver that is just a colon" --set 'wireguard.dns.nameservers={:}'
 
 if helm template t "$ROOT" -f "$ROOT/ci/default-values.yaml" >/dev/null; then
   echo "PASS  the CI values render"

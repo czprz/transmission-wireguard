@@ -99,23 +99,29 @@ egress6() { egress -6 "$@" "http://[$CANARY_IP6]/cgi-bin/ip"; }
 # source the canary saw (empty if none arrived). IPv6 uses its own port so
 # the two listeners do not race for one dual-stack socket.
 udp_seen() {
-  local tag=$1 fam=${2:-4} ip=$UDP_IP port=6881
+  local tag=$1 fam=${2:-4} ip=$UDP_IP port=6881 out
   [[ $fam == 4 ]] || { ip=$UDP_IP6 port=6882; }
-  kx transmission sh -c "for i in 1 2 3 4 5; do echo $tag | nc -$fam -u -w1 $ip $port; done" >/dev/null 2>&1 || true
+  out=$(kx transmission sh -c "for i in 1 2 3 4 5; do echo $tag | nc -$fam -u -w1 $ip $port; done; echo SENT" 2>/dev/null || true)
+  [[ $out == *SENT* ]] || { echo "broken udp-exec"; return; }
   sleep 1
-  docker logs $P-udp 2>&1 | grep -B1 -x "$tag" | sed -n 's/^Connection received on \(::ffff:\)\{0,1\}\([^ ]*\) .*/\2/p' | tail -n1 || true
+  # Every source that sent the tag, not just the last.
+  docker logs $P-udp 2>&1 | grep -B1 -x "$tag" | sed -n 's/^Connection received on \(::ffff:\)\{0,1\}\([^ ]*\) .*/\2/p' |
+    sort -u | paste -sd' ' - || true
 }
 # Records probe results while traffic must not leak; result_summary then
-# reports leaks and probes that could not run.
-LEAKED="" BROKEN=""
+# reports leaks, probes that could not run, too few probes, and (with
+# need-blocked as $2) probes that never overlapped the outage.
+LEAKED="" BROKEN="" PROBES=0 BLOCKED=0
 record() {
   local r
   for r in "$@"; do
+    PROBES=$((PROBES + 1))
     case $r in
       leak*) LEAKED="$LEAKED ${r#leak }" ;;
       broken*) BROKEN="$BROKEN ${r#broken }" ;;
-      vpn | blocked | "") ;;
-      *) LEAKED="$LEAKED $r" ;; # a UDP source address
+      blocked | "") BLOCKED=$((BLOCKED + 1)) ;; # "": no UDP datagram arrived
+      vpn) ;;
+      *) LEAKED="$LEAKED $r" ;; # UDP source addresses
     esac
   done
 }
@@ -123,11 +129,58 @@ result_summary() {
   if [[ -n $LEAKED ]]; then
     fail "LEAK $1 (canary saw$LEAKED)"
   elif [[ -n $BROKEN ]]; then
-    fail "probes $1 could not run (curl exit$BROKEN), so they prove nothing"
+    fail "probes $1 could not run ($BROKEN), so they prove nothing"
+  elif ((PROBES < 2)); then
+    fail "only $PROBES probe(s) ran $1, which proves nothing"
+  elif [[ ${2:-} == need-blocked ]] && ((BLOCKED == 0)); then
+    fail "none of the $PROBES probes $1 hit the outage, so they prove nothing"
   else
-    pass "no direct egress $1"
+    pass "no direct egress $1 ($PROBES probes, $BLOCKED blocked)"
   fi
-  LEAKED="" BROKEN=""
+  LEAKED="" BROKEN="" PROBES=0 BLOCKED=0
+}
+# The canaries count every packet that does not come from the VPN server:
+# a leak however the client saw it. Only read around windows in which no
+# ordinary pod or helm test talks to them. (IPv6: TCP, UDP and echo only,
+# not neighbour discovery.)
+count_rules() {
+  docker run --rm --network "container:$1" --cap-add NET_ADMIN --entrypoint "" "$WG_IMAGE" sh -c "
+    iptables -w -I INPUT ! -s $SERVER_IP -m comment --comment twg-count
+    if [ -n '${SERVER_IP6:-}' ]; then
+      for m in '-p tcp' '-p udp' '-p ipv6-icmp --icmpv6-type echo-request'; do
+        ip6tables -w -I INPUT ! -s '${SERVER_IP6:-}' \$m -m comment --comment twg-count
+      done
+    fi"
+}
+canary_hits() {
+  local c n out total=0
+  for c in $P-canary $P-udp; do
+    out=""
+    for _ in 1 2 3; do
+      out=$(docker run --rm --network "container:$c" --cap-add NET_ADMIN --entrypoint "" "$WG_IMAGE" \
+        sh -c 'iptables-save -c -t filter && ip6tables-save -c -t filter && echo END' 2>/dev/null || true)
+      [[ $out == *END* ]] && break
+    done
+    [[ $out == *END* ]] || { echo unreadable; return; }
+    while read -r n; do
+      total=$((total + n))
+    done < <(sed -n 's/^\[\([0-9]*\):[0-9]*\] .*twg-count.*/\1/p' <<<"$out")
+  done
+  echo "$total"
+}
+HITS=unreadable
+hits_mark() { HITS=$(canary_hits); }
+hits_check() {
+  local now
+  now=$(canary_hits)
+  if [[ $HITS == unreadable || $now == unreadable ]]; then
+    fail "could not read the canaries' packet counters $1"
+  elif ((now > HITS)); then
+    fail "LEAK: $((now - HITS)) packet(s) not from the VPN server reached the canaries $1"
+  else
+    pass "the canaries received nothing but VPN traffic $1"
+  fi
+  HITS=$now
 }
 # TCP connect check: telnet:// never ends on its own, so curl always times
 # out; time_connect is non-zero once the connection was established.
@@ -229,6 +282,7 @@ docker run -d --name $P-server --network "$KIND_NET" --privileged \
 CANARY_IP=$(container_ip $P-canary)
 SERVER_IP=$(container_ip $P-server)
 UDP_IP=$(container_ip $P-udp)
+SERVER_IP6=""
 echo "  node $NODE_IP, VPN server $SERVER_IP, canary $CANARY_IP"
 if ((IPV6)); then
   CANARY_IP6=$(container_ip6 $P-canary)
@@ -237,6 +291,8 @@ if ((IPV6)); then
   [[ -n $CANARY_IP6 && -n $SERVER_IP6 ]] || { echo "IPV6=1 but the $KIND_NET network has no IPv6" >&2; exit 1; }
   echo "  VPN server $SERVER_IP6, canary $CANARY_IP6"
 fi
+count_rules $P-canary
+count_rules $P-udp
 
 kubectl create namespace "$NS" >/dev/null
 kubectl -n "$NS" create secret generic wg-client --from-file=wg0.conf=/dev/stdin >/dev/null <<EOF
@@ -288,12 +344,28 @@ else
 fi
 
 step "egress (in-pod kill switch only, NetworkPolicy off)"
+hits_mark
 baseline=$(ordinary_pod curl -sS -m 5 "http://$CANARY_IP/cgi-bin/ip" | remote_addr || true)
 if [[ -n $baseline && $baseline != "$SERVER_IP" ]]; then
   pass "baseline: an ordinary pod reaches the canary directly (as $baseline)"
 else
   fail "baseline: an ordinary pod cannot reach the canary directly (harness broken)"
 fi
+if ((IPV6)); then
+  baseline6=$(ordinary_pod curl -6 -sS -m 5 "http://[$CANARY_IP6]/cgi-bin/ip" | remote_addr || true)
+  if [[ -n $baseline6 && $baseline6 != "$SERVER_IP6" ]]; then
+    pass "baseline: an ordinary pod reaches the canary directly over IPv6 (as $baseline6)"
+  else
+    fail "baseline: an ordinary pod cannot reach the canary over IPv6 (harness broken)"
+  fi
+fi
+baseline_hits=$(canary_hits)
+if [[ $HITS != unreadable && $baseline_hits != unreadable ]] && ((baseline_hits > HITS)); then
+  pass "baseline: the canaries count direct traffic ($((baseline_hits - HITS)) packets)"
+else
+  fail "baseline: the canaries' packet counters do not work (harness broken)"
+fi
+hits_mark
 seen=$(canary_seen)
 if [[ $seen == "$SERVER_IP" ]]; then
   pass "egress exits through the VPN (canary saw $seen, node is $NODE_IP)"
@@ -302,12 +374,6 @@ else
 fi
 check_eth0 "the canary" "http://$CANARY_IP/cgi-bin/ip"
 if ((IPV6)); then
-  baseline6=$(ordinary_pod curl -6 -sS -m 5 "http://[$CANARY_IP6]/cgi-bin/ip" | remote_addr || true)
-  if [[ -n $baseline6 && $baseline6 != "$SERVER_IP6" ]]; then
-    pass "baseline: an ordinary pod reaches the canary directly over IPv6 (as $baseline6)"
-  else
-    fail "baseline: an ordinary pod cannot reach the canary over IPv6 (harness broken)"
-  fi
   seen=$(canary_seen6)
   if [[ $seen == "$SERVER_IP6" ]]; then
     pass "IPv6 egress exits through the VPN (canary saw $seen)"
@@ -330,6 +396,7 @@ if ((IPV6)); then
     fail "IPv6 UDP did not go through the VPN (canary saw '${seen:-nothing}')"
   fi
 fi
+hits_check "from the release pod"
 nameservers=$(kx transmission sed -n 's/^nameserver[[:space:]]*//p' /etc/resolv.conf | sort | tr '\n' ' ' || true)
 if [[ $nameservers == "1.0.0.1 1.1.1.1 " ]]; then
   pass "pod DNS uses the configured nameservers only"
@@ -390,18 +457,36 @@ wait_for "kill switch intact" 15 kx wireguard /twg/scripts/firewall.sh check || 
 
 step "sidecar restart with the tunnel up"
 before=$(sidecar_restarts)
+hits_mark
 kx wireguard sh -c 'kill 1' || true
-for _ in $(seq 10); do
+# Probe until the sidecar has restarted and at least one probe hit the outage.
+for _ in $(seq 30); do
   record "$(egress4)" "$(egress4 --interface eth0)"
   if ((IPV6)); then record "$(egress6)" "$(egress6 --interface eth0)"; fi
+  if restarted_since "$before" && ((BLOCKED > 0)); then break; fi
   sleep 1
 done
-result_summary "during the restart"
+result_summary "during the restart" need-blocked
+hits_check "during the restart"
 if wait_for "sidecar restarted" 30 restarted_since "$before" && wait_for "traffic via VPN" 45 via_vpn; then
   pass "tunnel recovers after restart"
 else
   fail "tunnel did not recover after restart"
 fi
+
+step "packets marked by a stray mangle rule"
+# Marked packets are re-routed out eth0 after filter OUTPUT; the POSTROUTING
+# decision must still drop them.
+wait_for "kill switch intact" 30 kx wireguard /twg/scripts/firewall.sh check || true
+hits_mark
+kx wireguard sh -c 'iptables -t mangle -A OUTPUT -j MARK --set-mark 51820'
+for _ in 1 2; do
+  record "$(egress4)" "$(egress4 --interface eth0)" "$(udp_seen MARKED$RANDOM)"
+done
+kx wireguard sh -c 'iptables -t mangle -D OUTPUT -j MARK --set-mark 51820' || true
+result_summary "with every packet marked"
+hits_check "with every packet marked"
+wait_for "traffic via VPN" 45 via_vpn || true
 
 step "in-pod firewall flushed and tunnel deleted (NetworkPolicy must hold)"
 # Only adds the NetworkPolicy; the pod spec is unchanged, so no rollout.
@@ -418,16 +503,24 @@ kx wireguard sh -c 'set -e; for t in iptables ip6tables; do $t -P OUTPUT ACCEPT;
   fail "flushing the in-pod kill switch failed"
 # Prove the in-pod kill switch is really gone, so only the NetworkPolicy
 # can be what blocks the probes below.
-if ! kx wireguard /twg/scripts/firewall.sh check 2>/dev/null &&
-  [[ $(kx wireguard iptables -S OUTPUT | head -n1) == "-P OUTPUT ACCEPT" &&
-  -z $(kx wireguard iptables -t mangle -S POSTROUTING | sed 1d) ]]; then
-  pass "in-pod kill switch flushed (filter OUTPUT open, no POSTROUTING decision)"
+flushed() {
+  local t
+  kx wireguard /twg/scripts/firewall.sh check 2>/dev/null && return 1
+  for t in iptables ip6tables; do
+    [[ $(kx wireguard $t -S OUTPUT | head -n1) == "-P OUTPUT ACCEPT" &&
+      -z $(kx wireguard $t -t mangle -S POSTROUTING | sed 1d) ]] || return 1
+  done
+}
+if flushed; then
+  pass "in-pod kill switch flushed (IPv4 and IPv6 filter OUTPUT open, no POSTROUTING decision)"
 else
   fail "the in-pod kill switch is still in place, so the NetworkPolicy check proves nothing"
 fi
+hits_mark
 record "$(egress4)" "$(egress4 --interface eth0)" "$(udp_seen NOFIREWALL)"
 if ((IPV6)); then record "$(egress6)" "$(udp_seen NOFIREWALL6 6)"; fi
 result_summary "with the in-pod kill switch gone (NetworkPolicy holds)"
+hits_check "with the in-pod kill switch gone"
 # Liveness needs 3 failures 30s apart, plus the restart itself.
 if wait_for "liveness restart" 90 restarted_since "$before"; then
   pass "liveness probe restarted the sidecar"
@@ -466,10 +559,14 @@ helm install twg-bad "$ROOT" -n "$NS" --set wireguard.existingSecret=wg-hook \
   --set networkPolicy.enabled=false --set transmission.rpcAuth.allowAnonymous=true >/dev/null
 bad_log() { kubectl -n "$NS" logs -l app.kubernetes.io/instance=twg-bad -c wireguard --tail=-1 2>/dev/null || true; }
 bad_refused() { bad_log | grep -q 'FATAL.*hooks'; }
+# Transmission's state, now and in any earlier run: empty if it never ran.
+tx_ran() {
+  kubectl -n "$NS" get pod -l app.kubernetes.io/instance=twg-bad -o jsonpath='{range .items[*].status.containerStatuses[?(@.name=="transmission")]}{.state.running}{.state.terminated}{.lastState.running}{.lastState.terminated}{end}'
+}
 if wait_for "the hook to be refused" 45 bad_refused; then
-  started=$(kubectl -n "$NS" get pod -l app.kubernetes.io/instance=twg-bad \
-    -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="transmission")].state.running}')
-  if [[ -z $started ]]; then
+  first=$(tx_ran)
+  sleep 20 # the sidecar keeps restarting; Transmission must stay waiting
+  if [[ -z $first && -z $(tx_ran) ]]; then
     pass "a Secret with a PostUp hook is refused and Transmission never starts"
   else
     fail "Transmission started although the sidecar refused its config"
@@ -482,13 +579,29 @@ helm uninstall twg-bad -n "$NS" >/dev/null
 step "pod termination"
 # Transmission stops before its sidecar, and the rules live as long as the
 # pod's network namespace: nothing may leak while the pod shuts down.
+# A loop inside the Transmission container probes until the container is
+# gone; the canaries' counters see whatever it sent.
+term_log=$(mktemp)
+kx transmission sh -c "while :; do curl -sS -m 2 http://$CANARY_IP/cgi-bin/ip 2>/dev/null || echo blocked; sleep 0.5; done" >"$term_log" 2>&1 &
+probe_pid=$!
+sleep 3
+hits_mark
+started=$(wc -l <"$term_log")
 kubectl -n "$NS" delete pod "$POD" --wait=false >/dev/null
-for _ in $(seq 15); do
-  r=$(egress4)
-  [[ $r == "broken exec" ]] && break # the Transmission container is gone
-  record "$r" "$(egress4 --interface eth0)"
-done
+for _ in $(seq 60); do kill -0 $probe_pid 2>/dev/null || break; sleep 1; done
+kill $probe_pid 2>/dev/null || true
+while read -r line; do
+  line=$(tr -d '[:space:]' <<<"$line")
+  case $line in
+    blocked) record blocked ;;
+    "$SERVER_IP") record vpn ;;
+    "") ;;
+    *) record "leak $line" ;;
+  esac
+done < <(tail -n +$((started + 1)) "$term_log")
+rm -f "$term_log"
 result_summary "while the pod terminates"
+hits_check "while the pod terminates"
 
 echo
 if ((FAILED)); then
