@@ -312,7 +312,15 @@
         },
         "handshakeMaxAgeSeconds": {
           "type": "integer",
-          "minimum": 0
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 180
+            }
+          ],
+          "description": "0 disables; otherwise at least 180, since WireGuard only re-handshakes every 2 minutes"
         }
       },
       "additionalProperties": false

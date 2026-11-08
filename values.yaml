@@ -148,8 +148,9 @@ wireguard:
   #    port: 51820
 
   # Restart the WireGuard sidecar when the newest handshake is older than this
-  # many seconds (0 disables). Needs PersistentKeepalive in wg0.conf, otherwise
-  # an idle tunnel stops handshaking. Restarts are safe: the kill switch stays up.
+  # many seconds (0 disables, else at least 180: WireGuard re-handshakes only
+  # every 2 minutes). Needs PersistentKeepalive in wg0.conf, otherwise an idle
+  # tunnel stops handshaking. Restarts are safe: the kill switch stays up.
   handshakeMaxAgeSeconds: 0
 
   env:

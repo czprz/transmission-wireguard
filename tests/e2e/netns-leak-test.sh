@@ -311,24 +311,27 @@ docker run -d --name $P-canary --network $NET --ip $CANARY_IP --ip6 $CANARY_IP6 
 docker run -d --name $P-dns --network $NET --ip $DNS_CANARY_IP --ip6 $DNS_CANARY_IP6 --entrypoint "" "$WG_IMAGE" \
   sh -c "while true; do nc -4 -luvn -w 1 $DNS_CANARY_IP 53; done & while true; do nc -6 -luvn -w 1 $DNS_CANARY_IP6 53; done &
     while true; do nc -4 -luvn -w 1 $DNS_CANARY_IP 6881; done" >/dev/null
-# HTTP tracker canary for Transmission's own announces: logs the source of
-# each one and asks for the next announce in 10 seconds.
+# HTTP tracker canary for Transmission's own announces: httpd logs the source
+# of each request and the CGI asks for the next announce in 10 seconds.
 docker run -d --name $P-tracker --network $NET --ip $TRACKER_IP --ip6 "$TRACKER_IP6" "$TRACKER_IMAGE" sh -c '
     mkdir -p /www/cgi-bin
     cat > /www/cgi-bin/announce <<"CGI"
 #!/bin/sh
-a=${REMOTE_ADDR#[}; a=${a%]}; a=${a#::ffff:}
-echo "ANNOUNCE $a" >/proc/1/fd/2
 printf "Content-Type: text/plain\r\n\r\nd8:intervali10e12:min intervali5e5:peers0:e"
 CGI
     chmod +x /www/cgi-bin/announce
-    exec httpd -f -p 80 -h /www' >/dev/null
-announces() { docker logs $P-tracker 2>&1 | sed -n 's/^ANNOUNCE //p'; }
+    exec httpd -f -vv -p 80 -h /www' >/dev/null
+# "[::ffff:a.b.c.d]:port: url:/cgi-bin/announce..." -> a.b.c.d
+announces() {
+  docker logs $P-tracker 2>&1 | sed -n 's|^\[\(::ffff:\)\{0,1\}\([^]]*\)\]:[0-9]*: url:/cgi-bin/announce.*|\2|p'
+}
 # More announces than $1 so far, and every one through the VPN.
 announced_since() { (($(announces | wc -l) > $1)) && announces_via_vpn; }
-# Transmission backs off after failed announces, so ask for one.
+# Transmission backs off after failed announces (and may ignore a manual
+# re-announce), but starting a torrent always announces.
 reannounced_since() {
-  tx_remote -t all --reannounce >/dev/null 2>&1 || true
+  tx_remote -t all --stop >/dev/null 2>&1 || true
+  tx_remote -t all --start >/dev/null 2>&1 || true
   sleep 4
   announced_since "$1"
 }
