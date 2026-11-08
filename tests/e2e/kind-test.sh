@@ -19,7 +19,16 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-WG_IMAGE="${WG_IMAGE:-ghcr.io/linuxserver/wireguard:1.0.20250521-r1-ls102}"
+# The chart's default image for $1, so the test follows Renovate's bumps.
+chart_image() {
+  local tpl=$ROOT/templates/_helpers.tpl repo tag digest
+  repo=$(sed -n "s/.*\.Values\.images\.$1 \"repo\" \"\([^\"]*\)\".*/\1/p" "$tpl")
+  tag=$(sed -n "s/.*default \"\([^\"]*\)\" \.Values\.images\.$1\.tag.*/\1/p" "$tpl")
+  digest=$(sed -n "s/.*default \"\([^\"]*\)\" \.Values\.images\.$1\.digest.*/\1/p" "$tpl")
+  [[ -n $repo && -n $tag && -n $digest ]] || { echo "cannot read the $1 image from $tpl" >&2; return 1; }
+  echo "$repo:$tag@$digest"
+}
+WG_IMAGE="${WG_IMAGE:-$(chart_image wireguard)}"
 CANARY_IMAGE="${CANARY_IMAGE:-busybox:1.37.0}"
 KIND_NET="${KIND_NET:-kind}"
 NS="${NS:-twg-e2e}"
@@ -36,11 +45,12 @@ pass() { echo "  PASS  $*"; }
 fail() { echo "  FAIL  $*"; FAILED=$((FAILED + 1)); }
 step() { echo; echo "== $*"; }
 
+# $1=wait: block until the namespace is gone, so a rerun can recreate it.
 cleanup() {
   docker rm -f $P-server $P-canary >/dev/null 2>&1 || true
-  kubectl delete namespace "$NS" --wait=false >/dev/null 2>&1 || true
+  kubectl delete namespace "$NS" --ignore-not-found --wait="${1:-false}" --timeout=3m >/dev/null 2>&1 || true
 }
-cleanup
+cleanup true
 # On any failure (including an aborted run) show the pod and tunnel state.
 on_exit() {
   local rc=$?
@@ -68,8 +78,20 @@ canary_seen6() {
   kx transmission curl -6 -sS -m 3 "$@" "http://[$CANARY_IP6]/cgi-bin/ip" 2>/dev/null | remote_addr || true
 }
 # TCP connect check: telnet:// never ends on its own, so curl always times
-# out; time_connect says whether the connection was established.
-tcp_open() { [[ $("$@" -s -o /dev/null -m 2 -w '%{time_connect}' 2>/dev/null </dev/null) =~ ^0*[.,]0*[1-9] ]]; }
+# out; time_connect is non-zero once the connection was established.
+tcp_open() { [[ $("$@" -s -o /dev/null -m 2 -w '%{time_connect}' 2>/dev/null </dev/null) =~ [1-9] ]]; }
+# A request bound to eth0 must be refused (curl exit 7) or time out (28);
+# any other failure (exec failed, no eth0) proves nothing.
+check_eth0() {
+  local what=$1 rc; shift
+  rc=$(kx transmission sh -c 'curl -sk -m 4 -o /dev/null --interface eth0 "$@" 2>/dev/null; echo "rc=$?"' sh "$@" |
+    sed -n 's/^rc=//p' || true)
+  case $rc in
+    7 | 28) pass "a socket bound to eth0 cannot reach $what" ;;
+    0) fail "LEAK: a socket bound to eth0 reached $what" ;;
+    *) fail "eth0 check for $what proves nothing (curl exit ${rc:-none})" ;;
+  esac
+}
 # The same request from an ordinary pod in the namespace.
 ordinary_pod() {
   kubectl -n "$NS" run "probe-$RANDOM" --rm -i --restart=Never --quiet --image=curlimages/curl:8.11.1 --command -- "$@" 2>/dev/null
@@ -204,12 +226,7 @@ if [[ $seen == "$SERVER_IP" ]]; then
 else
   fail "egress did not go through the VPN (canary saw '${seen:-nothing}')"
 fi
-seen=$(canary_seen --interface eth0)
-if [[ -z $seen ]]; then
-  pass "a socket bound to eth0 is rejected"
-else
-  fail "LEAK: a socket bound to eth0 reached the canary (saw $seen)"
-fi
+check_eth0 "the canary" "http://$CANARY_IP/cgi-bin/ip"
 if ((IPV6)); then
   baseline6=$(ordinary_pod curl -6 -sS -m 5 "http://[$CANARY_IP6]/cgi-bin/ip" | remote_addr || true)
   if [[ -n $baseline6 && $baseline6 != "$SERVER_IP6" ]]; then
@@ -223,17 +240,13 @@ if ((IPV6)); then
   else
     fail "IPv6 egress did not go through the VPN (canary saw '${seen:-nothing}')"
   fi
-  seen=$(canary_seen6 --interface eth0)
-  if [[ -z $seen ]]; then
-    pass "an IPv6 socket bound to eth0 is rejected"
-  else
-    fail "LEAK: an IPv6 socket bound to eth0 reached the canary (saw $seen)"
-  fi
+  check_eth0 "the canary over IPv6" -6 "http://[$CANARY_IP6]/cgi-bin/ip"
 fi
-if kx transmission sh -c 'grep "^nameserver" /etc/resolv.conf' | grep -qvx 'nameserver 1\.[01]\.[01]\.1'; then
-  fail "pod resolv.conf has nameservers other than the configured ones"
-else
+nameservers=$(kx transmission sed -n 's/^nameserver[[:space:]]*//p' /etc/resolv.conf | sort | tr '\n' ' ' || true)
+if [[ $nameservers == "1.0.0.1 1.1.1.1 " ]]; then
   pass "pod DNS uses the configured nameservers only"
+else
+  fail "pod nameservers are '${nameservers:-none}', want the configured 1.1.1.1 and 1.0.0.1"
 fi
 dns_ip=$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')
 # Bound to eth0, so a pass means the kill switch blocked it, not that the
@@ -248,10 +261,10 @@ else
   fail "baseline: cluster DNS not reachable from an ordinary pod (test broken)"
 fi
 api_ip=$(kubectl get svc kubernetes -o jsonpath='{.spec.clusterIP}')
-if kx transmission curl -sS -m 4 -k --interface eth0 "https://$api_ip/version" >/dev/null 2>&1; then
-  fail "the Kubernetes API is reachable from the pod via eth0"
+if ordinary_pod curl -sk -m 4 -o /dev/null "https://$api_ip/version"; then
+  check_eth0 "the Kubernetes API (reachable from an ordinary pod)" "https://$api_ip/version"
 else
-  pass "the Kubernetes API is unreachable from the pod via eth0"
+  fail "baseline: the Kubernetes API is not reachable from an ordinary pod (test broken)"
 fi
 
 step "web UI"

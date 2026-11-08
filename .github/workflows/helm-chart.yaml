@@ -1,11 +1,12 @@
 name: Helm Chart
 
+# main runs it through helm-main.yml, which releases only if it passes.
 on:
   pull_request:
   push:
     branches:
       - dev
-      - main
+  workflow_call:
 
 permissions:
   contents: read

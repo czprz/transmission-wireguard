@@ -90,7 +90,7 @@ spec:
         - name: IP_ECHO_URL
           value: {{ .Values.tests.ipEchoUrl | quote }}
         - name: NAMESERVERS
-          value: {{ if .Values.wireguard.dns.override }}{{ join " " .Values.wireguard.dns.nameservers | quote }}{{ else }}""{{ end }}
+          value: {{ join " " .Values.wireguard.dns.nameservers | quote }}
       command:
         - sh
         - -c
@@ -98,9 +98,11 @@ spec:
           failed=0
           pass() { echo "PASS  $*"; }
           fail() { echo "FAIL  $*"; failed=$((failed + 1)); }
-          pod=$(kubectl get pod -l "$SELECTOR" --field-selector status.phase=Running -o jsonpath='{.items[0].metadata.name}')
-          [ -n "$pod" ] || { echo "FAIL  no running pod matches $SELECTOR"; exit 1; }
-          echo "testing pod $pod"
+          # Every running pod that is not shutting down (a rollout can leave
+          # the old one Running for a while).
+          pods=$(kubectl get pod -l "$SELECTOR" --field-selector status.phase=Running \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.deletionTimestamp}{"\n"}{end}' | awk 'NF == 1')
+          [ -n "$pods" ] || { echo "FAIL  no running pod matches $SELECTOR"; exit 1; }
           in_wg() { kubectl exec "$pod" -c wireguard -- "$@"; }
           in_tx() { kubectl exec "$pod" -c transmission -- "$@"; }
           trim() { tr -d '[:space:]'; }
@@ -125,56 +127,58 @@ spec:
             esac
           }
 
-          if in_wg /twg/scripts/firewall.sh live; then
-            pass "kill switch rules intact and tunnel up"
-          else
-            fail "kill switch or tunnel check failed (see the wireguard container log)"
-          fi
+          for pod in $pods; do
+            echo "testing pod $pod"
+            if in_wg /twg/scripts/firewall.sh live; then
+              pass "kill switch rules intact and tunnel up"
+            else
+              fail "kill switch or tunnel check failed (see the wireguard container log)"
+            fi
 
-          # The API server is reachable from every pod, so it shows whether
-          # the pod's own interface is blocked rather than merely unrouted.
-          host=$KUBERNETES_SERVICE_HOST
-          case $host in *:*) host="[$host]" ;; esac
-          api="https://$host:$KUBERNETES_SERVICE_PORT/version"
-          if curl -sk -m 5 -o /dev/null "$api"; then
-            check_eth0 "the Kubernetes API" "$api"
-          else
-            fail "this test pod cannot reach the Kubernetes API, so the eth0 check proves nothing"
-          fi
+            # The API server is reachable from every pod, so it shows whether
+            # the pod's own interface is blocked rather than merely unrouted.
+            host=$KUBERNETES_SERVICE_HOST
+            case $host in *:*) host="[$host]" ;; esac
+            api="https://$host:$KUBERNETES_SERVICE_PORT/version"
+            if curl -sk -m 5 -o /dev/null "$api"; then
+              check_eth0 "the Kubernetes API" "$api"
+            else
+              fail "this test pod cannot reach the Kubernetes API, so the eth0 check proves nothing"
+            fi
 
-          if [ -n "$NAMESERVERS" ]; then
             want=$(echo "$NAMESERVERS" | tr ' ' '\n' | sort | tr '\n' ' ')
             got=$(in_tx sed -n 's/^nameserver[[:space:]]*//p' /etc/resolv.conf | sort | tr '\n' ' ')
             if [ "$got" = "$want" ]; then
               pass "pod DNS uses only the configured nameservers ($want)"
             else
-              fail "pod nameservers are '$got', expected '$want'"
+              fail "pod nameservers are '${got:-none}', expected '$want'"
             fi
-          fi
 
-          if [ -n "$IP_ECHO_URL" ]; then
-            direct=$(curl -4 -fsS -m 10 "$IP_ECHO_URL" | trim)
-            vpn=$(in_tx curl -4 -fsS -m 10 "$IP_ECHO_URL" | trim)
-            if [ -z "$direct" ]; then
-              fail "this test pod cannot reach $IP_ECHO_URL, so the egress address cannot be compared"
-            elif [ -z "$vpn" ]; then
-              fail "the pod cannot reach $IP_ECHO_URL through the VPN"
-            elif [ "$vpn" = "$direct" ]; then
-              fail "LEAK: the pod's IPv4 egress address $vpn is the cluster's own"
-            else
-              pass "IPv4 egress leaves through the VPN as $vpn (the cluster egresses as $direct)"
-            fi
-            direct6=$(curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
-            if [ -n "$direct6" ]; then
-              vpn6=$(in_tx curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
-              if [ "$vpn6" = "$direct6" ]; then
-                fail "LEAK: the pod's IPv6 egress address $vpn6 is the cluster's own"
+            if [ -n "$IP_ECHO_URL" ]; then
+              direct=$(curl -4 -fsS -m 10 "$IP_ECHO_URL" | trim)
+              vpn=$(in_tx curl -4 -fsS -m 10 "$IP_ECHO_URL" | trim)
+              if [ -z "$direct" ]; then
+                fail "this test pod cannot reach $IP_ECHO_URL, so the egress address cannot be compared"
+              elif [ -z "$vpn" ]; then
+                fail "the pod cannot reach $IP_ECHO_URL through the VPN"
+              elif [ "$vpn" = "$direct" ]; then
+                fail "LEAK: the pod's IPv4 egress address $vpn is the cluster's own"
               else
-                pass "IPv6 does not leave as the cluster's address $direct6 (VPN: ${vpn6:-no IPv6})"
+                pass "IPv4 egress leaves through the VPN as $vpn (the cluster egresses as $direct)"
               fi
+              direct6=$(curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
+              if [ -n "$direct6" ]; then
+                vpn6=$(in_tx curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
+                if [ "$vpn6" = "$direct6" ]; then
+                  fail "LEAK: the pod's IPv6 egress address $vpn6 is the cluster's own"
+                else
+                  pass "IPv6 does not leave as the cluster's address $direct6 (VPN: ${vpn6:-no IPv6})"
+                fi
+                check_eth0 "$IP_ECHO_URL over IPv6" -6 "$IP_ECHO_URL"
+              fi
+              check_eth0 "$IP_ECHO_URL" -4 "$IP_ECHO_URL"
             fi
-            check_eth0 "$IP_ECHO_URL" -4 "$IP_ECHO_URL"
-          fi
+          done
 
           [ "$failed" -eq 0 ] || { echo "$failed check(s) failed"; exit 1; }
           echo "no leaks found"

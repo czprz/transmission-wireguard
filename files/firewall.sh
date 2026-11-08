@@ -31,6 +31,11 @@ MOUT=TWG-MANGLE-OUTPUT
 log() { echo "[twg-firewall] $*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 
+# Mark 0 would match every unmarked packet and table 0 every routing rule.
+if ! [[ $WG_FWMARK =~ ^(0[xX][0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$ ]] || ((WG_FWMARK > 0xffffffff)); then
+  die "firewall.wgFwmark ${WG_FWMARK} must be between 1 and 4294967295"
+fi
+
 # IPv6 must be filtered whenever the namespace has it; only skip ip6tables
 # when there is no IPv6 at all.
 detect_families() {
@@ -76,7 +81,7 @@ seal_chain() {
 }
 
 apply_family() {
-  local fam=$1 ipt cidr
+  local fam=$1 ipt cidr ep
   ipt=$(ipt_for "$fam")
 
   "$ipt" -w -P INPUT DROP
@@ -109,6 +114,10 @@ apply_family() {
   # Outbound: only the tunnel, WireGuard's own encrypted packets (identified
   # by the fwmark wg-quick sets on its socket; unprivileged processes cannot
   # set marks) and replies on connections that arrived from the cluster.
+  # The mark alone is not enough: anything that marks packets (a stray mangle
+  # rule, CAP_NET_RAW's SO_MARK) could then reach any host via eth0. So marked
+  # packets only pass as UDP to the configured endpoints, and a server that
+  # roams to another address fails closed.
   "$ipt" -w -A "$OUT" -o lo -j ACCEPT
   if [[ $fam == 6 ]]; then
     for t in router-solicitation neighbour-solicitation neighbour-advertisement; do
@@ -122,8 +131,16 @@ apply_family() {
   # cannot use -o: in OUTPUT it names the interface chosen before the mangle
   # mark re-routed the packet.
   "$ipt" -w -A "$OUT" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -m mark ! --mark "$WG_FWMARK" -j REJECT
-  "$ipt" -w -A "$OUT" -o "$WG_IFACE" -j ACCEPT
-  "$ipt" -w -A "$OUT" -m mark --mark "$WG_FWMARK" -j ACCEPT
+  # -o is again the pre-mangle choice, so a packet a mangle rule marked
+  # (and re-routed out eth0) still shows wg0 here. Only unmarked packets
+  # really take the tunnel.
+  "$ipt" -w -A "$OUT" -o "$WG_IFACE" -m mark --mark 0 -j ACCEPT
+  while read -r ep; do
+    split_endpoint "$ep" >/dev/null || continue
+    if [[ $fam == 4 && $EP_HOST != *:* ]] || [[ $fam == 6 && $EP_HOST == *:* ]]; then
+      "$ipt" -w -A "$OUT" -m mark --mark "$WG_FWMARK" -p udp -d "$EP_HOST" --dport "$EP_PORT" -j ACCEPT
+    fi
+  done < <([[ -r $CONF ]] && conf_value Endpoint)
   "$ipt" -w -A "$OUT" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   seal_chain "$ipt" filter "$OUT" -j REJECT
 
@@ -202,9 +219,19 @@ conf_value() {
   sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*([^#]*[^#[:space:]]).*/\\1/Ip" "$CONF"
 }
 
+# Splits an Endpoint value into EP_HOST and EP_PORT, or prints why it is unusable.
+split_endpoint() {
+  local ep=$1
+  EP_PORT=0
+  [[ $ep =~ :([0-9]{1,5})$ ]] && EP_PORT=$((10#${BASH_REMATCH[1]}))
+  ((EP_PORT >= 1 && EP_PORT <= 65535)) || { echo "Endpoint ${ep} needs a port between 1 and 65535"; return 1; }
+  if [[ $ep == \[* ]]; then EP_HOST=${ep#[}; EP_HOST=${EP_HOST%%]*}; else EP_HOST=${ep%:*}; fi
+  is_ip "$EP_HOST" || { echo "Endpoint ${ep} is not an IP address. DNS is blocked until the tunnel is up, so the endpoint must be a literal IP."; return 1; }
+}
+
 # Reject configs that would weaken or bypass the kill switch.
 preflight() {
-  local ep host port fwmark table f allowed
+  local ep fwmark table f allowed err
   [[ -r $CONF ]] || die "WireGuard config ${CONF} not found"
 
   # The image brings up every *.conf it finds; only wg0 is validated.
@@ -222,17 +249,13 @@ preflight() {
 
   while read -r ep; do
     [[ -n $ep ]] || continue
-    port=0
-    [[ $ep =~ :([0-9]{1,5})$ ]] && port=$((10#${BASH_REMATCH[1]}))
-    ((port >= 1 && port <= 65535)) || die "Endpoint ${ep} needs a port between 1 and 65535"
-    if [[ $ep == \[* ]]; then host=${ep#[}; host=${host%%]*}; else host=${ep%:*}; fi
-    is_ip "$host" || die "Endpoint ${ep} is not an IP address. DNS is blocked until the tunnel is up, so the endpoint must be a literal IP."
+    err=$(split_endpoint "$ep") || die "$err"
   done < <(conf_value Endpoint)
 
   # Captured first: grep -q exiting on the first match would SIGPIPE tr and,
   # with pipefail, randomly refuse a valid config.
   allowed=$(conf_value AllowedIPs | tr -s ',[:blank:]' '\n')
-  grep -qx '0\.0\.0\.0/0' <<<"$allowed" || die "AllowedIPs must include 0.0.0.0/0 (full tunnel)"
+  grep -qx '0\.0\.0\.0/0' <<<"$allowed" || die "AllowedIPs must include 0.0.0.0/0 (full tunnel). Halves such as 0.0.0.0/1 + 128.0.0.0/1 do not work, because wg-quick only sets up the fwmark routing the kill switch relies on for /0"
 
   table=$(conf_value Table | tail -n1)
   if [[ -n $table && ${table,,} != auto ]]; then
@@ -260,8 +283,9 @@ check_family() {
       [[ $(sed -n 2p <<<"$dump") == "-A $chain -j $want" ]] || { log "IPv$fam $chain does not jump to $want first"; return 1; }
     fi
   done
+  # Nothing else may mark outgoing packets: a rule after the jump still runs.
   rules=$("$ipt" -w -t mangle -S OUTPUT)
-  [[ $(sed -n 2p <<<"$rules") == "-A OUTPUT -j $MOUT" ]] || { log "IPv$fam mangle OUTPUT does not jump to $MOUT first"; return 1; }
+  [[ $(sed 1d <<<"$rules") == "-A OUTPUT -j $MOUT" ]] || { log "IPv$fam mangle OUTPUT has rules besides the jump to $MOUT"; return 1; }
   rules=$("$ipt" -w -t mangle -S PREROUTING)
   [[ $'\n'$rules$'\n' == *$'\n'"-A PREROUTING -j $PRE"$'\n'* ]] || { log "IPv$fam mangle PREROUTING does not jump to $PRE"; return 1; }
 

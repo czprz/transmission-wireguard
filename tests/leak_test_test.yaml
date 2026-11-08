@@ -85,14 +85,15 @@ tests:
           path: spec.containers[0].env
           content: { name: IP_ECHO_URL, value: "" }
 
-  - it: skips the DNS check without the DNS override
+  - it: tests every running pod that is not shutting down
     documentIndex: 3
-    set:
-      wireguard.dns.override: false
     asserts:
-      - contains:
-          path: spec.containers[0].env
-          content: { name: NAMESERVERS, value: "" }
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: "deletionTimestamp.*awk 'NF == 1'"
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: 'for pod in \$pods; do'
 
   - it: is off by default
     set:

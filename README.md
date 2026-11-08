@@ -77,12 +77,14 @@ helm install transmission ./transmission-wireguard -f values.yaml
 
 ## WireGuard config notes
 
-The sidecar refuses to start (and the chart refuses to render an inline `wg0Conf`) unless:
+The sidecar refuses to start unless the following hold. The chart checks the same rules when it renders an inline `wg0Conf`; with `existingSecret` it can't see the config, so only the sidecar checks it.
 
 - `Endpoint` is an IP address with a port. DNS is blocked until the tunnel is up.
-- `AllowedIPs` includes `0.0.0.0/0` (add `::/0` for IPv6): full tunnel only.
+- `AllowedIPs` includes `0.0.0.0/0` (add `::/0` for IPv6): full tunnel only. Splitting it into `0.0.0.0/1, 128.0.0.0/1` doesn't count, because `wg-quick` only sets up its fwmark routing for `/0`.
 - There is no `Table =` line, and `FwMark`, if set, equals `firewall.wgFwmark` (51820). The kill switch relies on `wg-quick`'s fwmark routing.
 - There are **no** `PreUp`/`PostUp`/`PreDown`/`PostDown` hooks. The chart owns the kill switch. Hooks run as root with `NET_ADMIN`, so any of them, directly or through a script, could open it. The old recommended `PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT` opened the firewall on every tunnel restart while Transmission kept running. If you really need a hook, set `firewall.allowConfHooks: true` and make sure it never touches the firewall or routing.
+
+The kill switch lets WireGuard's own packets out only as UDP to the `Endpoint` addresses in `wg0.conf`. If the server moves to another address mid-session ("roaming", which VPN providers practically never do), the tunnel stops working instead of following it; restart the pod.
 
 `PersistentKeepalive = 25` is recommended. A `DNS =` line is optional; the pod uses `wireguard.dns.nameservers`, so copy your provider's resolver there. The default (Cloudflare `1.1.1.1`) is reached through the tunnel but means Cloudflare sees your lookups.
 
@@ -106,7 +108,7 @@ PersistentKeepalive = 25
 
 | Layer | What it does |
 |---|---|
-| Kill switch (`files/firewall.sh`) | Runs in the WireGuard sidecar before `wg-quick`. IPv4 and IPv6 default to DROP; only `wg0`, WireGuard's own encrypted packets (by fwmark) and replies to connections that arrived from the cluster may leave. Inbound: peers on `peer-port` via `wg0`, the web UI from `firewall.webAllowedCIDRs` outside the tunnel. Nothing in the tunnel lifecycle removes these rules. |
+| Kill switch (`files/firewall.sh`) | Runs in the WireGuard sidecar before `wg-quick`. IPv4 and IPv6 default to DROP; only `wg0`, WireGuard's own encrypted packets (by fwmark, and only as UDP to the `Endpoint` addresses) and replies to connections that arrived from the cluster may leave. Inbound: peers on `peer-port` via `wg0`, the web UI from `firewall.webAllowedCIDRs` outside the tunnel. Nothing in the tunnel lifecycle removes these rules. |
 | Start order | WireGuard is a native sidecar with a startup probe; Transmission is not started until the kill switch and `wg0` are up. |
 | Probes | Sidecar liveness fails if the rules are altered or `wg0` is gone, and a restart re-applies the rules. Optional handshake-age check (`wireguard.handshakeMaxAgeSeconds`). Transmission's liveness fails if `wg0` disappears. |
 | NetworkPolicy | Egress only to `wireguard.endpoints` on UDP. Enforced by the CNI outside the pod. |
@@ -115,12 +117,14 @@ PersistentKeepalive = 25
 
 ## Upgrading to 1.0
 
-1.0 turns the kill switch on unconditionally and changes several defaults. Before upgrading:
+1.0 turns the kill switch on unconditionally and changes several defaults. Upgrade with `--reset-then-reuse-values` (Helm 3.14+) or your values file. `--reuse-values` keeps only your old values and drops the new defaults, so the upgrade fails with a nil pointer error. Before upgrading:
 
 - **Kubernetes 1.29+** is required (native sidecars).
 - **Remove hooks from `wg0.conf`.** `PreUp`/`PostUp`/`PreDown`/`PostDown` lines (earlier versions of this README recommended `iptables` ones) are refused. `firewall.allowConfFirewallHooks` is now `firewall.allowConfHooks`.
 - **Set `wireguard.endpoints`** when using `existingSecret`. The egress NetworkPolicy needs the VPN server's IP and port. If your CNI doesn't enforce NetworkPolicy, set `networkPolicy.enabled: false` instead.
-- **DNS** now goes through the tunnel to `wireguard.dns.nameservers` (`dns.override: true`). Set your VPN provider's resolver.
+- **DNS** now goes through the tunnel to `wireguard.dns.nameservers`. Set your VPN provider's resolver. `dns.override: false` is refused: cluster DNS can't be reached through the tunnel.
+- **`transmission.securityContext` must drop `ALL` capabilities.** Only harmless ones may be added back (the default `SETUID`, `SETGID`, `CHOWN` are fine). A `null` securityContext is refused, since the runtime's defaults include `NET_RAW`.
+- **`firewall.wgFwmark`** must be between 1 and 4294967295.
 - **RPC auth** is required when the web UI is exposed (ingress or a non-ClusterIP Service). Move `rpc-username`/`rpc-password` from `transmission.settings` to `transmission.rpcAuth` (settings still work); or set `rpcAuth.allowAnonymous: true`.
 - **`rpc-host-whitelist-enabled` is now `true`.** The Service name and ingress hosts are allowed automatically. If you reach the UI under another name (Gateway API, an external proxy, a Tailscale name), add it to `transmission.settings.rpc-host-whitelist` or you get HTTP 421.
 - **`transmission.settings.rpc-port` must equal `service.webPort`**, and `peer-port-random-on-start` must be `false`.
@@ -171,7 +175,8 @@ If you already have an issuer, leave `issuer.enabled` false and reference your i
 - Keep `wg0.conf` in a Secret, not in Git.
 - The web UI requires RPC credentials (`transmission.rpcAuth`) when exposed through an ingress or a non-ClusterIP Service. They are read from a Secret into a read-only `settings.json`, never stored in the ConfigMap.
 - The WireGuard sidecar is privileged by default because `wg-quick` sets `net.ipv4.conf.all.src_valid_mark`. If your kubelet allows that sysctl, set it in `podSecurityContext.sysctls` and use `wireguard.securityContext: {privileged: false, capabilities: {add: [NET_ADMIN, NET_RAW]}}`.
-- Transmission runs without network capabilities. The chart refuses a `transmission.securityContext` that is privileged or adds `NET_ADMIN`, `NET_RAW`, `SYS_ADMIN` or `ALL`, since those could bypass the kill switch.
+- Transmission runs without network capabilities. The chart refuses a `transmission.securityContext` that is missing, privileged, doesn't drop `ALL`, or adds anything beyond file and user capabilities (`CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`, ...). Root in that container (the image's init, `kubectl exec`) could otherwise bypass the kill switch: `NET_RAW` alone allows `SO_MARK` and raw sockets on `eth0`.
+- Anyone who can `kubectl exec` into the WireGuard sidecar is root with `NET_ADMIN` there and can open the kill switch. Limit `pods/exec` in the namespace.
 - Default images are pinned by digest. Overriding `images.*.repository` or `tag` drops the default digest; set `images.*.digest` to keep pulls immutable.
 - Inline `rpcAuth` credentials are hashed into a pod annotation (so changes roll the pod). Use a strong password, or `rpcAuth.existingSecret`.
 
@@ -180,18 +185,18 @@ If you already have an issuer, leave `issuer.enabled` false and reference your i
 `helm test` checks a running release from inside the cluster. It is off by default, so enable it first:
 
 ```bash
-helm upgrade <release> <chart> -n <namespace> --reuse-values --set tests.enabled=true
+helm upgrade <release> <chart> -n <namespace> --reset-then-reuse-values --set tests.enabled=true
 helm test <release> -n <namespace> --logs
 ```
 
 It checks four things:
 
-- the kill switch rules are intact and the tunnel is up;
+- the kill switch rules are intact and the tunnel is up (in every running pod of the release);
 - a socket bound to `eth0` can't reach the Kubernetes API, though the test pod can;
 - the pod uses only `wireguard.dns.nameservers`;
-- optionally, that the public address the pod gets from `tests.ipEchoUrl` differs from the cluster's own, and that `eth0` can't reach it.
+- optionally, that the public address the pod gets from `tests.ipEchoUrl` differs from the cluster's own (IPv4, and IPv6 where the cluster has it), and that `eth0` can't reach it.
 
-While the test runs, a temporary Role lets the test pod exec into pods in the namespace. Helm deletes it after the run, pass or fail. The finished test pod stays until the next run so `--logs` can read it. The test is off by default because tools that deploy with `helm template` (kustomize `helmCharts`, some GitOps setups) ignore hook annotations and would create that Role permanently. Leave it off there, or render with `--skip-tests`. By default the test contacts nothing outside the cluster. `tests.ipEchoUrl` is off by default because the echo endpoint sees your VPN address and your real address side by side; only set it to one you run yourself (any endpoint that answers with the caller's IP as plain text). Set `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server (and the echo endpoint, if set).
+While the test runs, a temporary Role lets the test pod exec into pods in the namespace. Helm deletes it after the run, pass or fail. The finished test pod stays until the next run so `--logs` can read it; `helm uninstall` leaves it behind, so delete it afterwards with `kubectl delete pod <release>-transmission-wireguard-test`. The test is off by default because tools that deploy with `helm template` (kustomize `helmCharts`, some GitOps setups) ignore hook annotations and would create that Role permanently. Leave it off there, or render with `--skip-tests`. By default the test contacts nothing outside the cluster. `tests.ipEchoUrl` is off by default because the echo endpoint sees your VPN address and your real address side by side; only set it to one you run yourself (any endpoint that answers with the caller's IP as plain text). Set `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server (and the echo endpoint, if set).
 
 By hand:
 
@@ -211,7 +216,7 @@ kubectl exec deploy/<release>-transmission-wireguard -c transmission -- \
 ## Testing
 
 - `make lint`: `helm lint` and the helm-unittest suites in `tests/`.
-- `make e2e-docker`: builds a dual-stack Pod-like network namespace in Docker with the chart's images and scripts, a WireGuard server and a canary, then tries to leak over IPv4 and IPv6: sockets bound to `eth0`, DNS-port traffic, a deleted `wg0`, sidecar restarts and SIGKILL, tampered and flushed rules, unsafe configs. Needs Docker with kernel WireGuard.
+- `make e2e-docker`: builds a dual-stack Pod-like network namespace in Docker with the chart's images and scripts, a WireGuard server and a canary, then tries to leak over IPv4 and IPv6: sockets bound to `eth0`, DNS-port traffic, a deleted `wg0`, sidecar restarts and SIGKILL, tampered and flushed rules, packets marked by a stray mangle rule, unsafe configs. Needs Docker with kernel WireGuard.
 - `make e2e-kind CNI=kindnet|calico|cilium`: creates a kind cluster with that CNI (kindnet dual-stack, with IPv6 checks) and runs the same idea there. It adds start order, kubelet probes, pod DNS, the Service, `helm test` against a healthy and a tampered pod, and the NetworkPolicy holding with the in-pod kill switch flushed. The leak checks run first without the NetworkPolicy, so they test the in-pod kill switch alone. Delete the cluster afterwards with `kind delete cluster`.
 
 CI runs the Docker test on amd64 and arm64 and the kind test with each CNI, on every pull request and on pushes to `dev` and `main`.

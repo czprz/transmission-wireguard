@@ -42,4 +42,4 @@ tests:
   - it: explains how to enable helm test
     asserts:
       - matchRegexRaw:
-          pattern: '--reuse-values --set tests.enabled=true\n  helm test RELEASE-NAME'
+          pattern: '--reset-then-reuse-values --set tests.enabled=true\n  helm test RELEASE-NAME'

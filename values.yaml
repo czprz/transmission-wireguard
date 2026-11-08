@@ -168,6 +168,7 @@ wireguard:
   # are reached through the tunnel. The defaults are Cloudflare: lookups are
   # hidden from your network but visible to Cloudflare. Set your VPN
   # provider's resolver (usually the DNS = line of its config) instead.
+  # override must stay true; false (cluster DNS) is refused.
   dns:
     override: true
     nameservers:

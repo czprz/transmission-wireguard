@@ -28,12 +28,10 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.wireguard.dns.override }}
       dnsPolicy: None
       dnsConfig:
         nameservers:
           {{- toYaml .Values.wireguard.dns.nameservers | nindent 10 }}
-      {{- end }}
       initContainers:
         - name: transmission-settings
           image: "{{ include "twg.transmissionImage" . }}"
@@ -96,7 +94,7 @@ spec:
             - name: TWG_WEB_ALLOWED_CIDRS
               value: {{ join " " .Values.firewall.webAllowedCIDRs | quote }}
             - name: TWG_WG_FWMARK
-              value: {{ .Values.firewall.wgFwmark | quote }}
+              value: {{ include "twg.markValue" .Values.firewall.wgFwmark | quote }}
             - name: TWG_ALLOW_CONF_HOOKS
               value: {{ .Values.firewall.allowConfHooks | quote }}
             - name: TWG_HANDSHAKE_MAX_AGE
@@ -128,7 +126,9 @@ spec:
             periodSeconds: {{ .Values.probes.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.failureThreshold }}
-          # Restarts re-apply the kill switch, so a tampered firewall heals.
+          # Restarts re-apply the kill switch, so altered rules heal. (Root in
+          # the pod can still change routing or nftables beyond what check sees;
+          # marked packets only ever pass as UDP to the VPN endpoints.)
           livenessProbe:
             exec:
               command: ["/twg/scripts/firewall.sh", "live"]

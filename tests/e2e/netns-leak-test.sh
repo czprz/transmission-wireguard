@@ -16,8 +16,18 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-WG_IMAGE="${WG_IMAGE:-ghcr.io/linuxserver/wireguard:1.0.20250521-r1-ls102}"
-TX_IMAGE="${TX_IMAGE:-ghcr.io/linuxserver/transmission:4.1.1-r1-ls343}"
+# The chart's default image for $1 (wireguard, transmission), so the test
+# follows Renovate's bumps of _helpers.tpl.
+chart_image() {
+  local tpl=$ROOT/templates/_helpers.tpl repo tag digest
+  repo=$(sed -n "s/.*\.Values\.images\.$1 \"repo\" \"\([^\"]*\)\".*/\1/p" "$tpl")
+  tag=$(sed -n "s/.*default \"\([^\"]*\)\" \.Values\.images\.$1\.tag.*/\1/p" "$tpl")
+  digest=$(sed -n "s/.*default \"\([^\"]*\)\" \.Values\.images\.$1\.digest.*/\1/p" "$tpl")
+  [[ -n $repo && -n $tag && -n $digest ]] || { echo "cannot read the $1 image from $tpl" >&2; return 1; }
+  echo "$repo:$tag@$digest"
+}
+WG_IMAGE="${WG_IMAGE:-$(chart_image wireguard)}"
+TX_IMAGE="${TX_IMAGE:-$(chart_image transmission)}"
 CANARY_IMAGE="${CANARY_IMAGE:-traefik/whoami:v1.10.3}"
 
 P=twg-e2e
@@ -32,6 +42,7 @@ CLIENT_IP=$SUBNET_PREFIX.40
 SUBNET6_PREFIX=fd31:250:
 GW6=$SUBNET6_PREFIX:1
 CANARY_IP6=$SUBNET6_PREFIX:10
+DNS_CANARY_IP6=$SUBNET6_PREFIX:11
 SERVER_IP6=$SUBNET6_PREFIX:20
 POD_IP6=$SUBNET6_PREFIX:30
 CLIENT_IP6=$SUBNET6_PREFIX:40
@@ -48,7 +59,7 @@ fail() { echo "  FAIL  $*"; FAILED=$((FAILED + 1)); }
 step() { echo; echo "== $*"; }
 
 cleanup() {
-  docker rm -f -v $P-tx $P-l6 $P-wg $P-pod $P-server $P-canary $P-dns $P-pre >/dev/null 2>&1 || true
+  docker rm -f -v $P-tx $P-l4 $P-l6 $P-wg $P-pod $P-server $P-canary $P-dns $P-pre >/dev/null 2>&1 || true
   docker network rm $NET >/dev/null 2>&1 || true
 }
 cleanup
@@ -87,17 +98,33 @@ from_cluster() { docker run --rm --network $NET --ip $CLIENT_IP --ip6 $CLIENT_IP
 wg_tool() { docker run --rm -i --entrypoint wg "$WG_IMAGE" "$@"; }
 
 # Source address the canary saw for a request from the pod (empty if blocked).
-# Extra arguments go to curl.
-canary_seen() {
-  as_app curl -sS -m 3 "${@:-http://$CANARY_IP/}" 2>/dev/null |
+# Arguments go to curl, before the canary's URL.
+fetch_seen() {
+  as_app curl -sS -m 3 "$@" 2>/dev/null |
     sed -n 's/^RemoteAddr: \[\{0,1\}\([^]]*\)\]\{0,1\}:[0-9]*\r\{0,1\}$/\1/p' || true
 }
-canary_seen6() { canary_seen -6 "$@" "http://[$CANARY_IP6]/"; }
-# Send a DNS-port datagram tagged $1 and print the source the canary saw.
+canary_seen() { fetch_seen "$@" "http://$CANARY_IP/"; }
+canary_seen6() { fetch_seen -6 "$@" "http://[$CANARY_IP6]/"; }
+# A request bound to eth0 must be refused (curl exit 7) or time out (28);
+# any other failure proves nothing.
+check_eth0() {
+  local what=$1 rc=0; shift
+  as_app curl -sS -m 3 -o /dev/null --interface eth0 "$@" >/dev/null 2>&1 || rc=$?
+  case $rc in
+    7 | 28) pass "a socket bound to eth0 cannot reach $what" ;;
+    0) fail "LEAK: a socket bound to eth0 reached $what" ;;
+    *) fail "eth0 check for $what proves nothing (curl exit $rc)" ;;
+  esac
+}
+# Send DNS-port datagrams tagged $1 over IPv${2:-4} and print the source the
+# canary saw. Three, a second apart: the listener restarts after each sender.
+# The IPv6 listener may take IPv4 datagrams too, as ::ffff:a.b.c.d.
 dns_seen() {
-  as_app sh -c "echo $1 | nc -u -w1 $DNS_CANARY_IP 53" >/dev/null 2>&1 || true
-  sleep 2
-  docker logs $P-dns 2>&1 | grep -C1 -x "$1" | sed -n 's/^Connection received on \([^ ]*\) .*/\1/p' | tail -n1 || true
+  local tag=$1 fam=${2:-4} ip=$DNS_CANARY_IP
+  [[ $fam == 4 ]] || ip=$DNS_CANARY_IP6
+  as_app sh -c "for i in 1 2 3; do echo $tag | nc -$fam -u -w1 $ip 53; done" >/dev/null 2>&1 || true
+  sleep 1
+  docker logs $P-dns 2>&1 | grep -B1 -x "$tag" | sed -n 's/^Connection received on \(::ffff:\)\{0,1\}\([^ ]*\) .*/\2/p' | tail -n1 || true
 }
 via_vpn() { [[ $(canary_seen) == "$SERVER_IP" && $(canary_seen6) == "$SERVER_IP6" ]]; }
 
@@ -133,8 +160,8 @@ docker network create --subnet $SUBNET_PREFIX.0/24 --gateway $GW \
 docker run -d --name $P-canary --network $NET --ip $CANARY_IP --ip6 $CANARY_IP6 "$CANARY_IMAGE" >/dev/null
 # UDP/53 canary standing in for any DNS server outside the pod (cluster DNS,
 # NodeLocal DNSCache, the ISP); logs the source of every datagram.
-docker run -d --name $P-dns --network $NET --ip $DNS_CANARY_IP --entrypoint "" "$WG_IMAGE" \
-  sh -c 'while true; do nc -luvn -w 1 53; done' >/dev/null
+docker run -d --name $P-dns --network $NET --ip $DNS_CANARY_IP --ip6 $DNS_CANARY_IP6 --entrypoint "" "$WG_IMAGE" \
+  sh -c 'while true; do nc -4 -luvn -w 1 53; done & while true; do nc -6 -luvn -w 1 53; done' >/dev/null
 
 # VPN server: terminates the tunnel and NATs to the "internet" (the canary).
 docker run -d --name $P-server --network $NET --ip $SERVER_IP --ip6 $SERVER_IP6 --privileged \
@@ -180,7 +207,10 @@ chmod 0600 "$STAGE/wg/config/wg_confs/wg0.conf"
 
 # Baseline: before any firewall, the pod reaches the canary directly. If this
 # fails the harness is broken and later "blocked" results would mean nothing.
-if [[ $(canary_seen) == "$POD_IP" && $(canary_seen6) == "$POD_IP6" && $(dns_seen BASELINE) == "$POD_IP" ]]; then
+# The eth0-bound requests are the positive control for the eth0 checks below.
+if [[ $(canary_seen) == "$POD_IP" && $(canary_seen6) == "$POD_IP6" &&
+  $(canary_seen --interface eth0) == "$POD_IP" && $(canary_seen6 --interface eth0) == "$POD_IP6" &&
+  $(dns_seen BASELINE) == "$POD_IP" && $(dns_seen BASELINE6 6) == "$POD_IP6" ]]; then
   pass "baseline: without the kill switch the pod reaches the canaries directly (as $POD_IP and $POD_IP6)"
 else
   fail "baseline: pod cannot reach the canary even without the kill switch (harness broken)"
@@ -252,21 +282,19 @@ if [[ $seen == "$SERVER_IP6" ]]; then
 else
   fail "IPv6 egress did not go through the VPN (canary saw '${seen:-nothing}', want $SERVER_IP6)"
 fi
-if as_app curl -sS -m 3 --interface eth0 "http://$CANARY_IP/" >/dev/null 2>&1; then
-  fail "LEAK: a socket bound to eth0 reached the canary directly"
-else
-  pass "a socket bound to eth0 is rejected"
-fi
-if as_app curl -6 -sS -m 3 --interface eth0 "http://[$CANARY_IP6]/" >/dev/null 2>&1; then
-  fail "LEAK: an IPv6 socket bound to eth0 reached the canary directly"
-else
-  pass "an IPv6 socket bound to eth0 is rejected"
-fi
+check_eth0 "the canary" "http://$CANARY_IP/"
+check_eth0 "the canary over IPv6" -6 "http://[$CANARY_IP6]/"
 seen=$(dns_seen TUNNELED)
 if [[ $seen == "$SERVER_IP" ]]; then
   pass "DNS-port traffic leaves through the VPN (canary saw $seen)"
 else
   fail "DNS-port traffic did not go through the VPN (canary saw '${seen:-nothing}')"
+fi
+seen=$(dns_seen TUNNELED6 6)
+if [[ $seen == "$SERVER_IP6" ]]; then
+  pass "IPv6 DNS-port traffic leaves through the VPN (canary saw $seen)"
+else
+  fail "IPv6 DNS-port traffic did not go through the VPN (canary saw '${seen:-nothing}')"
 fi
 code=$(from_cluster curl -sS -m 4 -o /dev/null -w '%{http_code}' "http://$POD_IP:$WEB_PORT/transmission/web/" 2>/dev/null || true)
 if [[ $code =~ ^(200|301|401|409)$ ]]; then
@@ -282,11 +310,20 @@ if from_cluster nc -6 -z -w 3 $POD_IP6 $WEB_PORT 2>/dev/null; then
 else
   fail "web port not reachable from the cluster over IPv6"
 fi
-if from_cluster nc -z -w 3 $POD_IP $PEER_PORT 2>/dev/null; then
+# Transmission binds the peer port to the tunnel address, so probing POD_IP
+# would prove nothing. An unprivileged listener on POD_IP stands in for it
+# (bindToTunnel off); it answers locally, so a closed port from the cluster
+# means the kill switch.
+docker run -d --name $P-l4 --network container:$P-pod --cap-drop ALL --user 1000:1000 --entrypoint "" "$WG_IMAGE" \
+  nc -lk $POD_IP $PEER_PORT >/dev/null
+if ! wait_for "peer port stand-in listening" 10 as_app nc -z -w 2 $POD_IP $PEER_PORT; then
+  fail "the peer port stand-in on $POD_IP does not answer locally (test broken)"
+elif from_cluster nc -z -w 3 $POD_IP $PEER_PORT 2>/dev/null; then
   fail "peer port reachable outside the tunnel"
 else
-  pass "peer port not reachable outside the tunnel"
+  pass "peer port not reachable outside the tunnel (a listener on the pod address answers only locally)"
 fi
+docker rm -f $P-l4 >/dev/null
 if on_server nc -z -w 3 $TUN_CLIENT $PEER_PORT; then
   pass "peer port reachable through the tunnel"
 else
@@ -324,6 +361,8 @@ seen=$(canary_seen6)
 if [[ -z $seen ]]; then pass "no IPv6 egress without wg0"; else fail "LEAK: canary reached over IPv6 without wg0 (saw $seen)"; fi
 seen=$(dns_seen NOTUNNEL)
 if [[ -z $seen ]]; then pass "no DNS/UDP egress without wg0"; else fail "LEAK: DNS canary reached without wg0 (saw $seen)"; fi
+seen=$(dns_seen NOTUNNEL6 6)
+if [[ -z $seen ]]; then pass "no IPv6 DNS/UDP egress without wg0"; else fail "LEAK: DNS canary reached over IPv6 without wg0 (saw $seen)"; fi
 if as_root /twg/scripts/firewall.sh tunnel 2>/dev/null; then
   fail "probe did not notice the missing tunnel"
 else
@@ -369,6 +408,17 @@ if as_root /twg/scripts/firewall.sh check; then
 else
   fail "probe still fails after removing the inserted rule"
 fi
+# A rule after the kill switch's jump that gives every packet WireGuard's
+# mark: marked packets must still only reach the VPN endpoint.
+as_root iptables -t mangle -A OUTPUT -j MARK --set-mark 51820
+seen=$(canary_seen)
+if [[ -z $seen ]]; then pass "marking every packet does not open eth0"; else fail "LEAK: marked packets reached the canary (saw $seen)"; fi
+if as_root /twg/scripts/firewall.sh check 2>/dev/null; then
+  fail "probe did not notice a rule appended to mangle OUTPUT"
+else
+  pass "probe notices a rule appended to mangle OUTPUT"
+fi
+as_root iptables -t mangle -D OUTPUT -j MARK --set-mark 51820
 as_root sh -c 'iptables -F OUTPUT; iptables -P OUTPUT ACCEPT'
 if as_root /twg/scripts/firewall.sh live 2>/dev/null; then
   fail "liveness probe did not notice the flushed firewall"
@@ -425,6 +475,7 @@ expect_refused "hook that runs a script" '/^\[Interface\]/a PostUp = /config/up.
 expect_refused "hostname endpoint" "s/^Endpoint = .*/Endpoint = vpn.example.com:51820/"
 expect_refused "endpoint without a port" "s/^Endpoint = .*/Endpoint = $SERVER_IP/"
 expect_refused "split tunnel" "s|^AllowedIPs = .*|AllowedIPs = 10.0.0.0/8|"
+expect_refused "full tunnel split in halves" "s|^AllowedIPs = .*|AllowedIPs = 0.0.0.0/1, 128.0.0.0/1|"
 expect_refused "IPv6-only tunnel" "s|^AllowedIPs = .*|AllowedIPs = ::/0|"
 expect_refused "Table = off" '/^\[Interface\]/a Table = off'
 expect_refused "Table = 1234" '/^\[Interface\]/a Table = 1234'

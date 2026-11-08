@@ -64,6 +64,19 @@ always wins, and overriding repository or tag drops the default digest.
 {{- include "twg.image" (dict "img" .Values.images.transmission "repo" "lscr.io/linuxserver/transmission" "tag" $tag "digest" $digest) -}}
 {{- end -}}
 
+{{/* A mark in decimal or 0x hex as a decimal string, or "" if it is not one. */}}
+{{- define "twg.markValue" -}}
+{{- $m := ternary (int64 .) . (kindIs "float64" .) | toString | lower -}}
+{{- if regexMatch "^[1-9][0-9]{0,9}$" $m -}}
+{{- int64 $m -}}
+{{- else if regexMatch "^0x[0-9a-f]{1,8}$" $m -}}
+{{- $digits := dict "0" 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7 "8" 8 "9" 9 "a" 10 "b" 11 "c" 12 "d" 13 "e" 14 "f" 15 -}}
+{{- $v := 0 -}}
+{{- range splitList "" (trimPrefix "0x" $m) }}{{ $v = add (mul $v 16) (index $digits .) }}{{ end -}}
+{{- if $v }}{{ $v }}{{ end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "twg.peerPort" -}}
 {{- index .Values.transmission.settings "peer-port" | default 51413 | int -}}
 {{- end -}}
@@ -130,15 +143,28 @@ true
 {{- $allowed = concat $allowed (regexSplit "[ \\t,]+" (regexReplaceAll "(?i)^[ \\t]*AllowedIPs[ \\t]*=" . "") -1) -}}
 {{- end -}}
 {{- if not (has "0.0.0.0/0" $allowed) -}}
-{{- fail "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel)" -}}
+{{- fail "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel). Halves such as 0.0.0.0/1 + 128.0.0.0/1 do not work, because wg-quick only sets up the fwmark routing the kill switch relies on for /0" -}}
 {{- end -}}
 {{- range regexFindAll "(?mi)^[ \\t]*Table[ \\t]*=[ \\t]*[^ \\t\\r\\n#]+" . -1 -}}
 {{- if not (regexMatch "(?i)=[ \\t]*auto$" .) -}}
 {{- fail "wireguard.wg0Conf sets Table, which turns off the fwmark routing the kill switch relies on. Remove it." -}}
 {{- end -}}
 {{- end -}}
+{{- $want := include "twg.markValue" $.Values.firewall.wgFwmark -}}
+{{- range regexFindAll "(?mi)^[ \\t]*FwMark[ \\t]*=[ \\t]*[^ \\t\\r\\n#]+" . -1 -}}
+{{- $mark := regexReplaceAll "(?i)^[ \\t]*FwMark[ \\t]*=[ \\t]*" . "" -}}
+{{- if ne (include "twg.markValue" $mark) $want -}}
+{{- fail (printf "wireguard.wg0Conf FwMark %s differs from firewall.wgFwmark (%v). Remove it or make them equal" $mark $.Values.firewall.wgFwmark) -}}
 {{- end -}}
-{{- if and .Values.networkPolicy.enabled (eq (include "twg.vpnEndpoints" . | fromJsonArray | len) 0) -}}
+{{- end -}}
+{{- end -}}
+{{- $mark := include "twg.markValue" .Values.firewall.wgFwmark -}}
+{{- if or (not $mark) (gt (int64 $mark) 4294967295) -}}
+{{- fail (printf "firewall.wgFwmark %v must be between 1 and 4294967295" .Values.firewall.wgFwmark) -}}
+{{- end -}}
+{{- /* Parsed even without the NetworkPolicy: a bad Endpoint fails here, not at runtime. */ -}}
+{{- $endpoints := include "twg.vpnEndpoints" . | fromJsonArray -}}
+{{- if and .Values.networkPolicy.enabled (eq (len $endpoints) 0) -}}
 {{- fail "networkPolicy.enabled needs the VPN endpoint. Set wireguard.endpoints (ip and port of your Endpoint), or disable networkPolicy if your CNI does not enforce it" -}}
 {{- end -}}
 {{- with .Values.transmission.rpcAuth -}}
@@ -163,14 +189,38 @@ true
 {{- if .Values.service.exposePeerPorts -}}
 {{- fail "service.exposePeerPorts was removed. Peers can only reach Transmission through the VPN, never through the Service" -}}
 {{- end -}}
-{{- with .Values.transmission.securityContext -}}
-{{- $caps := list -}}
-{{- with .capabilities }}{{ $caps = default list .add }}{{ end -}}
-{{- if or .privileged (has "NET_ADMIN" $caps) (has "NET_RAW" $caps) (has "SYS_ADMIN" $caps) (has "ALL" $caps) -}}
-{{- fail "transmission.securityContext must not be privileged or add NET_ADMIN, NET_RAW, SYS_ADMIN or ALL. These would let Transmission bypass the kill switch" -}}
+{{- /*
+Root in the Transmission container (s6 init, kubectl exec) must not be able to
+mark packets or touch the network: NET_RAW alone allows SO_MARK and raw
+sockets on eth0. So the container drops every capability and adds back only
+harmless ones. Without a securityContext the runtime's defaults, which include
+NET_RAW, would apply.
+*/ -}}
+{{- $sc := .Values.transmission.securityContext -}}
+{{- if not (kindIs "map" $sc) -}}
+{{- fail "transmission.securityContext must be set and drop ALL capabilities. Without it the runtime's default capabilities, including NET_RAW, let root in the container bypass the kill switch" -}}
+{{- end -}}
+{{- $caps := default dict $sc.capabilities -}}
+{{- $drop := list -}}
+{{- range default list $caps.drop }}{{ $drop = append $drop (toString . | upper | trimPrefix "CAP_") }}{{ end -}}
+{{- $added := list -}}
+{{- range default list $caps.add }}{{ $added = append $added (toString . | upper | trimPrefix "CAP_") }}{{ end -}}
+{{- $safe := list "CHOWN" "DAC_OVERRIDE" "DAC_READ_SEARCH" "FOWNER" "FSETID" "KILL" "SETGID" "SETUID" "SETPCAP" "SETFCAP" "NET_BIND_SERVICE" "SYS_CHROOT" "SYS_NICE" "MKNOD" "AUDIT_WRITE" -}}
+{{- if or $sc.privileged (not (has "ALL" $drop)) -}}
+{{- fail "transmission.securityContext must drop ALL capabilities and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch" -}}
+{{- end -}}
+{{- range $added -}}
+{{- if not (has . $safe) -}}
+{{- fail (printf "transmission.securityContext adds capability %s. Only %s may be added; others (NET_RAW, NET_ADMIN, SYS_ADMIN, ...) can bypass the kill switch" . (join ", " $safe)) -}}
 {{- end -}}
 {{- end -}}
-{{- if and .Values.wireguard.dns.override (not .Values.wireguard.dns.nameservers) -}}
+{{- if not .Values.wireguard.dns.override -}}
+{{- fail "wireguard.dns.override=false is no longer supported. Cluster DNS is unreachable through the tunnel and its upstream would see every lookup; set wireguard.dns.nameservers to your VPN's resolvers instead" -}}
+{{- end -}}
+{{- if not .Values.wireguard.dns.nameservers -}}
 {{- fail "wireguard.dns.override needs at least one entry in wireguard.dns.nameservers" -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (eq .Values.persistence.type "hostPath") (not (dig "hostPath" "path" "" .Values.persistence)) -}}
+{{- fail "persistence.type=hostPath needs persistence.hostPath.path" -}}
 {{- end -}}
 {{- end -}}

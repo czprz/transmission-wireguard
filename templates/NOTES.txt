@@ -3,12 +3,12 @@ Transmission is running behind a WireGuard sidecar with a chart-managed kill swi
 - Traffic can only leave the pod through the tunnel; if the tunnel goes down, it is blocked.
 - Transmission starts only after the kill switch and the tunnel are up.
 {{- if .Values.networkPolicy.enabled }}
-- Egress NetworkPolicy allows only:{{ range include "twg.vpnEndpoints" . | fromJsonArray }} {{ .ip }}:{{ .port }}/udp{{ end }}
+- Egress NetworkPolicy allows only:{{ range include "twg.vpnEndpoints" . | fromJsonArray }} {{ .ip }}:{{ .port }}/udp{{ end }}{{ if .Values.networkPolicy.extraEgress }} and networkPolicy.extraEgress{{ end }}
   (needs a CNI that enforces NetworkPolicy)
 {{- else }}
 - WARNING: networkPolicy is disabled. Only the in-pod kill switch protects against leaks.
 {{- end }}
-- DNS: {{ if .Values.wireguard.dns.override }}{{ join ", " .Values.wireguard.dns.nameservers }} through the tunnel{{ else }}WARNING: cluster DNS (lookups leak via CoreDNS's upstream and fail behind the kill switch){{ end }}
+- DNS: {{ join ", " .Values.wireguard.dns.nameservers }} through the tunnel
 {{- $s := .Values.transmission.settings }}
 {{- if index $s "rpc-host-whitelist-enabled" }}
 - Web UI hostnames allowed without RPC auth: the Service name{{ if .Values.ingress.enabled }}, the ingress hosts{{ end }} and {{ index $s "rpc-host-whitelist" | default "nothing else" }}.
@@ -23,7 +23,7 @@ Check for leaks from inside the cluster:
 {{- if .Values.tests.enabled }}
   helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
 {{- else }}
-  helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} --reuse-values --set tests.enabled=true
+  helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} --reset-then-reuse-values --set tests.enabled=true
   helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
 {{- end }}
 

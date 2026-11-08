@@ -11,8 +11,10 @@ spec:
       name: {{ default (printf "%s-issuer" (include "twg.fullname" .)) .Values.issuer.privateKeySecretName }}
     solvers:
       - http01:
+          {{- if .Values.ingress.className }}
           ingress:
-            {{- if .Values.ingress.className }}
             class: {{ .Values.ingress.className | quote }}
-            {{- end }}
+          {{- else }}
+          ingress: {}
+          {{- end }}
 {{- end }}

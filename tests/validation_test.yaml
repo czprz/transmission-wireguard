@@ -64,7 +64,7 @@ tests:
         Endpoint = 203.0.113.10:51820
     asserts:
       - failedTemplate:
-          errorMessage: "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel)"
+          errorMessage: "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel). Halves such as 0.0.0.0/1 + 128.0.0.0/1 do not work, because wg-quick only sets up the fwmark routing the kill switch relies on for /0"
 
   - template: templates/deployment.yaml
     it: rejects a hostname endpoint
@@ -200,7 +200,7 @@ tests:
         Endpoint = 203.0.113.10:51820
     asserts:
       - failedTemplate:
-          errorMessage: "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel)"
+          errorMessage: "wireguard.wg0Conf AllowedIPs must include 0.0.0.0/0 (full tunnel). Halves such as 0.0.0.0/1 + 128.0.0.0/1 do not work, because wg-quick only sets up the fwmark routing the kill switch relies on for /0"
 
   - template: templates/deployment.yaml
     it: accepts a full tunnel with CRLF line endings and several AllowedIPs lines
@@ -284,7 +284,39 @@ tests:
       transmission.securityContext.capabilities.add: [NET_ADMIN]
     asserts:
       - failedTemplate:
-          errorMessage: "transmission.securityContext must not be privileged or add NET_ADMIN, NET_RAW, SYS_ADMIN or ALL. These would let Transmission bypass the kill switch"
+          errorMessage: "transmission.securityContext adds capability NET_ADMIN. Only CHOWN, DAC_OVERRIDE, DAC_READ_SEARCH, FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, SETFCAP, NET_BIND_SERVICE, SYS_CHROOT, SYS_NICE, MKNOD, AUDIT_WRITE may be added; others (NET_RAW, NET_ADMIN, SYS_ADMIN, ...) can bypass the kill switch"
+
+  - template: templates/deployment.yaml
+    it: refuses NET_RAW whatever its spelling
+    set:
+      transmission.securityContext.capabilities.add: [CHOWN, cap_net_raw]
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.securityContext adds capability NET_RAW. Only CHOWN, DAC_OVERRIDE, DAC_READ_SEARCH, FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, SETFCAP, NET_BIND_SERVICE, SYS_CHROOT, SYS_NICE, MKNOD, AUDIT_WRITE may be added; others (NET_RAW, NET_ADMIN, SYS_ADMIN, ...) can bypass the kill switch"
+
+  - template: templates/deployment.yaml
+    it: accepts lowercase harmless capabilities
+    set:
+      transmission.securityContext.capabilities: { drop: [all], add: [setuid, CAP_SETGID, chown] }
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: refuses a Transmission container that keeps the runtime's default capabilities
+    set:
+      transmission.securityContext.capabilities.drop: [NET_ADMIN]
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.securityContext must drop ALL capabilities and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch"
+
+  - template: templates/deployment.yaml
+    it: refuses a missing Transmission securityContext
+    set:
+      transmission.securityContext: null
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.securityContext must be set and drop ALL capabilities. Without it the runtime's default capabilities, including NET_RAW, let root in the container bypass the kill switch"
 
   - template: templates/deployment.yaml
     it: refuses a privileged Transmission container
@@ -292,7 +324,7 @@ tests:
       transmission.securityContext.privileged: true
     asserts:
       - failedTemplate:
-          errorMessage: "transmission.securityContext must not be privileged or add NET_ADMIN, NET_RAW, SYS_ADMIN or ALL. These would let Transmission bypass the kill switch"
+          errorMessage: "transmission.securityContext must drop ALL capabilities and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch"
 
   - template: templates/deployment.yaml
     it: refuses a DNS override without nameservers
@@ -303,3 +335,78 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "wireguard.dns.override needs at least one entry in wireguard.dns.nameservers"
+
+  - template: templates/deployment.yaml
+    it: refuses cluster DNS
+    set:
+      wireguard.dns.override: false
+      wireguard.existingSecret: wg
+      networkPolicy.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.dns.override=false is no longer supported. Cluster DNS is unreachable through the tunnel and its upstream would see every lookup; set wireguard.dns.nameservers to your VPN's resolvers instead"
+
+  - template: templates/deployment.yaml
+    it: refuses a zero fwmark
+    set:
+      firewall.wgFwmark: "0x0"
+    asserts:
+      - failedTemplate:
+          errorMessage: "firewall.wgFwmark 0x0 must be between 1 and 4294967295"
+
+  - template: templates/deployment.yaml
+    it: passes the fwmark to the sidecar in decimal
+    set:
+      firewall.wgFwmark: 4294967295
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_WG_FWMARK, value: "4294967295" }
+
+  - template: templates/deployment.yaml
+    it: accepts a FwMark equal to wgFwmark, also in hex
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        FwMark = 0xCA6C
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: refuses a FwMark that differs from wgFwmark
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        FwMark = 1234
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf FwMark 1234 differs from firewall.wgFwmark (51820). Remove it or make them equal"
+
+  - template: templates/deployment.yaml
+    it: refuses a hostname endpoint without the NetworkPolicy too
+    set:
+      networkPolicy.enabled: false
+      wireguard.wg0Conf: |
+        [Interface]
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = vpn.example.com:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf Endpoint vpn.example.com must be an IP address because DNS is blocked until the tunnel is up"
+
+  - template: templates/deployment.yaml
+    it: refuses hostPath persistence without a path
+    set:
+      persistence.enabled: true
+      persistence.type: hostPath
+    asserts:
+      - failedTemplate:
+          errorMessage: "persistence.type=hostPath needs persistence.hostPath.path"
