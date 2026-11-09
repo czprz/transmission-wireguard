@@ -149,7 +149,7 @@ PersistentKeepalive = 25
 - **The web UI listens on `::`** (IPv4 and IPv6), falling back to `0.0.0.0` in pods without IPv6. Set `transmission.settings.rpc-bind-address` to keep the old behaviour.
 - **The PVC is kept on `helm uninstall`** (`persistence.keepOnUninstall: true`), so downloads survive it; delete the PVC yourself, or set it to `false`.
 - **The pod opts out of Istio and Linkerd** (injection annotations, and the ambient label `istio.io/dataplane-mode: none`): a mesh proxy can't reach its control plane through the kill switch. Override them in `podAnnotations`/`podLabels` if you must.
-- **`terminationGracePeriodSeconds` is 60** (was Kubernetes' 30), so Transmission can save resume data and send its "stopped" announces.
+- **Transmission now stops cleanly.** The image stops it through its RPC with `USER`/`PASS`, which the chart never set, so with RPC auth every shutdown waited out the grace period and ended in a kill (exit 137) without Transmission saving its state. The chart now sets them from `transmission.rpcAuth` (so they can't be set in `transmission.env`), and `terminationGracePeriodSeconds` is 60 (was Kubernetes' 30) for a slow shutdown with many torrents.
 - **The chart is published at `oci://ghcr.io/czprz/transmission-wireguard`** (the repository moved from `dever-labs`).
 
 ## Transmission settings

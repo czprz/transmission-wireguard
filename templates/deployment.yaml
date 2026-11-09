@@ -184,6 +184,28 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            # The image stops Transmission through its RPC (transmission-remote
+            # --exit) with these credentials, then waits for it. Without them
+            # the call fails and the pod is killed at the end of its grace
+            # period, before Transmission saves its state.
+            {{- $rpcSecret := include "twg.rpcSecretName" . }}
+            {{- if $rpcSecret }}
+            - name: USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $rpcSecret }}
+                  key: {{ .Values.transmission.rpcAuth.usernameKey }}
+            - name: PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $rpcSecret }}
+                  key: {{ .Values.transmission.rpcAuth.passwordKey }}
+            {{- else if include "twg.rpcAuthConfigured" . }}
+            - name: USER
+              value: {{ index .Values.transmission.settings "rpc-username" | quote }}
+            - name: PASS
+              value: {{ index .Values.transmission.settings "rpc-password" | quote }}
+            {{- end }}
           ports:
             - containerPort: {{ .Values.service.webPort }}
               protocol: TCP

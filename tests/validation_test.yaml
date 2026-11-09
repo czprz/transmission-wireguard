@@ -441,6 +441,14 @@ tests:
           errorMessage: "transmission.env must not set TWG_WG_CONF. The chart sets every TWG_ variable itself"
 
   - template: templates/deployment.yaml
+    it: refuses USER and PASS in transmission.env
+    set:
+      transmission.env.USER: someone
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.env must not set USER. The chart sets USER and PASS from transmission.rpcAuth, so the image can stop Transmission cleanly"
+
+  - template: templates/deployment.yaml
     it: refuses the image's server mode
     set:
       wireguard.env.PEERS: "1"

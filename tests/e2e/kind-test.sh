@@ -705,7 +705,7 @@ for c in transmission wireguard; do started[$c]=$(wc -l <"${term_log[$c]}"); don
 # When each container ended, to see what a slow shutdown waited for.
 grace=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.terminationGracePeriodSeconds}')
 term_states=$(mktemp)
-kubectl -n "$NS" get pod "$POD" -w -o jsonpath='{.metadata.deletionTimestamp}{range .status.containerStatuses[*]} {.name}={.state.terminated.finishedAt}{.state.terminated.exitCode}{end}{range .status.initContainerStatuses[*]} {.name}={.state.terminated.finishedAt}{.state.terminated.exitCode}{end}{"\n"}' \
+kubectl -n "$NS" get pod "$POD" -w -o jsonpath='{.metadata.deletionTimestamp}{range .status.containerStatuses[*]} {.name}={.state.terminated.exitCode}@{.state.terminated.finishedAt}{end}{range .status.initContainerStatuses[*]} {.name}={.state.terminated.exitCode}@{.state.terminated.finishedAt}{end}{"\n"}' \
   >"$term_states" 2>/dev/null &
 watch_pid=$!
 deleted=$(date +%s)
@@ -716,7 +716,19 @@ for _ in $(seq $((grace + 45))); do
   sleep 1
 done
 kill $watch_pid 2>/dev/null || true
-echo "  INFO  pod gone after $(($(date +%s) - deleted))s (grace ${grace}s); last states: $(grep . "$term_states" | tail -n1)"
+took=$(($(date +%s) - deleted))
+echo "  INFO  pod gone after ${took}s (grace ${grace}s); last states: $(grep . "$term_states" | tail -n1)"
+# The image stops Transmission through its RPC with the chart's
+# credentials; if that fails, Transmission is killed when the grace period
+# ends (exit 137) without saving its state.
+tx_exit=$(grep -o 'transmission=[0-9]*@' "$term_states" | tail -n1 | tr -dc '0-9' || true)
+if [[ $tx_exit == 0 ]] && ((took < grace)); then
+  pass "Transmission stops on SIGTERM (exit 0) and the pod is gone in ${took}s, within its ${grace}s grace period"
+elif [[ -z $tx_exit ]]; then
+  echo "  NOTE  Transmission's exit code was not seen (pod gone in ${took}s)"
+else
+  fail "Transmission did not stop cleanly (exit $tx_exit, pod gone after ${took}s of a ${grace}s grace period)"
+fi
 rm -f "$term_states"
 if (($(date +%s) - deleted > grace / 2)); then
   docker exec kind-control-plane journalctl -u kubelet --no-pager --since "-$((grace + 120))s" 2>/dev/null |

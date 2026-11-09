@@ -228,6 +228,9 @@ true
 {{- if hasPrefix "TWG_" $k -}}
 {{- fail (printf "transmission.env must not set %s. The chart sets every TWG_ variable itself" $k) -}}
 {{- end -}}
+{{- if has $k (list "USER" "PASS") -}}
+{{- fail (printf "transmission.env must not set %s. The chart sets USER and PASS from transmission.rpcAuth, so the image can stop Transmission cleanly" $k) -}}
+{{- end -}}
 {{- end -}}
 {{- if index $s "peer-port-random-on-start" -}}
 {{- fail "transmission.settings peer-port-random-on-start must be false. The kill switch only accepts peers on the fixed peer-port" -}}

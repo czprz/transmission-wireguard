@@ -175,6 +175,51 @@ tests:
           path: spec.template.spec.initContainers[1].env
           content: { name: TWG_HANDSHAKE_MAX_AGE, value: "300" }
 
+  - it: gives the image the RPC credentials it stops Transmission with
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.username: admin
+      transmission.rpcAuth.password: s3cret
+      transmission.rpcAuth.allowAnonymous: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: USER
+            valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: username } }
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PASS
+            valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: password } }
+
+  - it: passes RPC credentials set the pre-1.0 way in settings
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.username: ""
+      transmission.rpcAuth.password: ""
+      transmission.settings.rpc-authentication-required: true
+      transmission.settings.rpc-username: legacy
+      transmission.settings.rpc-password: legacy-pass
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: USER, value: legacy }
+
+  - it: passes no RPC credentials for an anonymous web UI
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.username: ""
+      transmission.rpcAuth.password: ""
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env
+          value:
+            - { name: PGID, value: "1000" }
+            - { name: PUID, value: "1000" }
+            - { name: TZ, value: UTC }
+
   - it: resolves DNS through the tunnel by default
     template: templates/deployment.yaml
     asserts:
