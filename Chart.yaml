@@ -2,19 +2,23 @@ apiVersion: v2
 name: transmission-wireguard
 description: Transmission forced through a WireGuard client sidecar (wg-quick) in the same Pod with a kill switch.
 type: application
+kubeVersion: ">=1.29.0-0"
 version: 0.9.5
-appVersion: "1.0"
-home: https://github.com/dever-labs/transmission-wireguard
+# The default Transmission version (tests/metadata-test.sh checks it).
+appVersion: "4.1.3"
+home: https://github.com/czprz/transmission-wireguard
 sources:
-  - https://github.com/dever-labs/transmission-wireguard
+  - https://github.com/czprz/transmission-wireguard
 keywords:
   - transmission
   - wireguard
   - vpn
-icon: https://raw.githubusercontent.com/dever-labs/transmission-wireguard/main/icon.svg
+icon: https://raw.githubusercontent.com/czprz/transmission-wireguard/main/icon.svg
 annotations:
   artifacthub.io/images: |
     - name: wireguard
-      image: ghcr.io/linuxserver/wireguard:1.0.20250521-r1-ls102
+      image: ghcr.io/linuxserver/wireguard:1.0.20260223-r0-ls126@sha256:6bcf5d2f5a265c7e9835eaadd989938e681aabe8bf8bcd4556b61d463da6555c
     - name: transmission
-      image: lscr.io/linuxserver/transmission:4.1.1-r1-ls343
+      image: lscr.io/linuxserver/transmission:4.1.3-r0-ls365@sha256:55aaeedf9fc354d34136387e15ee0ba4679096f20398dd2875867e5cd5cf8be5
+    - name: leak-test
+      image: docker.io/alpine/kubectl:1.34.1@sha256:8413f8890d19aa03f63851654f642957e65ba59654b0c9357ddc6ec0b05b63a6

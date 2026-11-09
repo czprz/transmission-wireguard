@@ -1,3 +1,4 @@
 RELEASE_BODY.md
 wg0.conf
 values.local.yaml
+.previous/

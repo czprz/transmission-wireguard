@@ -1,76 +1,223 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
-    "replicaCount": { "type": "integer", "minimum": 1 },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "description": "One pod per WireGuard key"
+    },
     "images": {
       "type": "object",
       "properties": {
         "wireguard": {
           "type": "object",
           "properties": {
-            "repository": { "type": "string" },
-            "tag": { "type": "string" },
-            "pullPolicy": { "type": "string" }
-          }
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(sha256:[a-f0-9]{64})?$"
+            }
+          },
+          "additionalProperties": false
         },
         "transmission": {
           "type": "object",
           "properties": {
-            "repository": { "type": "string" },
-            "tag": { "type": "string" },
-            "pullPolicy": { "type": "string" }
-          }
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(sha256:[a-f0-9]{64})?$"
+            }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "service": {
       "type": "object",
       "properties": {
-        "type": { "type": "string" },
-        "webPort": { "type": "integer" },
-        "peerPortTcp": { "type": "integer" },
-        "peerPortUdp": { "type": "integer" },
-        "annotations": { "type": "object" }
-      }
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "webPort": {
+          "type": "integer"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "peerPortTcp": {
+          "description": "Removed in 1.0: peers connect through the VPN to transmission.settings.peer-port"
+        },
+        "peerPortUdp": {
+          "description": "Removed in 1.0: peers connect through the VPN to transmission.settings.peer-port"
+        },
+        "exposePeerPorts": {
+          "description": "Removed in 1.0: peers only connect through the VPN"
+        }
+      },
+      "additionalProperties": false
     },
     "ingress": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "className": { "type": "string" },
-        "annotations": { "type": "object" },
-        "hosts": { "type": "array" },
-        "tls": { "type": "array" }
-      }
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "host"
+            ],
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "path"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "pathType": {
+                      "enum": [
+                        "Prefix",
+                        "Exact",
+                        "ImplementationSpecific"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": false
     },
     "issuer": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "kind": { "type": "string" },
-        "name": { "type": "string" },
-        "email": { "type": "string" },
-        "server": { "type": "string" },
-        "privateKeySecretName": { "type": "string" }
-      }
+        "enabled": {
+          "type": "boolean"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        },
+        "privateKeySecretName": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "persistence": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "type": { "type": "string" },
-        "accessModes": { "type": "array", "items": { "type": "string" } },
-        "size": { "type": "string" },
-        "storageClassName": { "type": "string" },
-        "existingClaim": { "type": "string" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string"
+        },
+        "accessModes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "size": {
+          "type": "string"
+        },
+        "storageClassName": {
+          "type": "string"
+        },
+        "existingClaim": {
+          "type": "string"
+        },
         "hostPath": {
           "type": "object",
           "properties": {
-            "path": { "type": "string" },
-            "type": { "type": "string" }
-          }
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "downloads": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "type": "string"
+            },
+            "accessModes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "storageClassName": {
+              "type": "string"
+            },
+            "existingClaim": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         },
         "mounts": {
           "type": "object",
@@ -78,58 +225,355 @@
             "data": {
               "type": "object",
               "properties": {
-                "mountPath": { "type": "string" },
-                "subPath": { "type": "string" }
-              }
+                "mountPath": {
+                  "type": "string"
+                },
+                "subPath": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
             }
-          }
+          },
+          "additionalProperties": false
+        },
+        "keepOnUninstall": {
+          "type": "boolean"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "transmission": {
       "type": "object",
       "properties": {
-        "env": { "type": "object" },
-        "settings": { "type": "object" },
-        "securityContext": { "type": "object" }
-      }
+        "env": {
+          "type": "object"
+        },
+        "settings": {
+          "type": "object",
+          "properties": {
+            "peer-port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        },
+        "securityContext": {
+          "type": "object"
+        },
+        "bindToTunnel": {
+          "const": true,
+          "description": "Must stay true: peer sockets are always bound to the tunnel address"
+        },
+        "rpcAuth": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "usernameKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "passwordKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "allowAnonymous": {
+              "type": "boolean"
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "initResources": {
+          "type": "object"
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "mountPath"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "wireguard": {
       "type": "object",
       "properties": {
-        "wg0Conf": { "type": "string" },
-        "existingSecret": { "type": "string" },
-        "env": { "type": "object" },
+        "wg0Conf": {
+          "type": "string"
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object"
+        },
         "kernelMode": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "mountLibModules": { "type": "boolean" },
-            "mountTun": { "type": "boolean" }
-          }
+            "enabled": {
+              "type": "boolean"
+            },
+            "mountLibModules": {
+              "type": "boolean"
+            },
+            "mountTun": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
         },
         "dns": {
           "type": "object",
           "properties": {
-            "override": { "type": "boolean" },
-            "nameservers": { "type": "array", "items": { "type": "string" } }
+            "override": {
+              "type": "boolean"
+            },
+            "nameservers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$"
+              },
+              "maxItems": 3,
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "resources": {
+          "type": "object"
+        },
+        "securityContext": {
+          "type": "object"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ip"
+            ],
+            "properties": {
+              "ip": {
+                "type": "string",
+                "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$"
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            }
           }
         },
-        "resources": { "type": "object" },
-        "securityContext": { "type": "object" }
+        "handshakeMaxAgeSeconds": {
+          "type": "integer",
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "minimum": 180,
+              "maximum": 86400
+            }
+          ],
+          "description": "0 disables; otherwise 180 to 86400, since WireGuard only re-handshakes every 2 minutes"
+        }
+      },
+      "additionalProperties": false
+    },
+    "firewall": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "webAllowedCIDRs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])/([0-9]|[12][0-9]|3[0-2])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$"
+          }
+        },
+        "wgFwmark": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "minimum": 1,
+          "maximum": 4294967295,
+          "pattern": "^(0[xX][0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$",
+          "not": {
+            "enum": [253, 254, 255, 1000, "253", "254", "255", "1000", "0xfd", "0xfe", "0xff", "0x3e8", "0xFD", "0xFE", "0xFF", "0x3E8"]
+          },
+          "description": "Also the routing table wg-quick uses, so not 253-255 (system tables) or 1000 (the chart's saved route)"
+        },
+        "allowConfHooks": {
+          "type": "boolean"
+        },
+        "allowConfFirewallHooks": {
+          "description": "Removed: renamed to allowConfHooks"
+        }
       }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ingressFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "extraEgress": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ipEchoUrl": {
+          "type": "string",
+          "pattern": "^(https?://.+)?$"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(sha256:[a-f0-9]{64})?$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "resources": {
+          "type": "object"
+        },
+        "vpnEgressIPs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$"
+          },
+          "description": "Your VPN's exit addresses; when set, helm test requires the pod's egress to be one of them"
+        }
+      }
+    },
+    "podSecurityContext": {
+      "type": "object"
     },
     "probes": {
       "type": "object",
       "properties": {
-        "initialDelaySeconds": { "type": "integer" },
-        "periodSeconds": { "type": "integer" },
-        "timeoutSeconds": { "type": "integer" },
-        "failureThreshold": { "type": "integer" }
+        "initialDelaySeconds": {
+          "type": "integer"
+        },
+        "periodSeconds": {
+          "type": "integer"
+        },
+        "timeoutSeconds": {
+          "type": "integer"
+        },
+        "failureThreshold": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "nodeSelector": {
+      "type": "object"
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
       }
     },
-    "nodeSelector": { "type": "object" },
-    "affinity": { "type": "object" },
-    "tolerations": { "type": "array", "items": { "type": "object" } }
+    "global": {
+      "type": "object",
+      "description": "Set by parent charts; unused"
+    },
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "podLabels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "extraVolumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ]
+      }
+    }
   }
 }

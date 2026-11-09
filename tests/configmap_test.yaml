@@ -1,0 +1,77 @@
+suite: configmaps
+
+values:
+  - values/base.yaml
+
+tests:
+  - it: disables local-network discovery and port mapping
+    template: templates/configmap-settings.yaml
+    asserts:
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"lpd-enabled":false'
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"port-forwarding-enabled":false'
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"peer-port-random-on-start":false'
+
+  - it: whitelists the Service name and ingress hosts for RPC
+    template: templates/configmap-settings.yaml
+    release:
+      name: tx
+      namespace: media
+    set:
+      ingress.enabled: true
+      ingress.hosts: [{ host: tx.example.com, paths: [] }]
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"rpc-host-whitelist":"localhost,tx-transmission-wireguard,tx-transmission-wireguard.media,tx-transmission-wireguard.media.svc,tx-transmission-wireguard.media.svc.cluster.local,tx.example.com"'
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"rpc-host-whitelist-enabled":true'
+
+  - it: lets the host whitelist be turned off
+    template: templates/configmap-settings.yaml
+    set:
+      transmission.settings.rpc-host-whitelist-enabled: false
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"rpc-host-whitelist-enabled":false'
+
+  - it: ships the kill switch and settings scripts
+    template: templates/configmap-scripts.yaml
+    asserts:
+      - matchRegex:
+          path: data["firewall.sh"]
+          pattern: 'usage. \$0 apply\|check\|tunnel\|live'
+      - matchRegex:
+          path: data["settings-init.sh"]
+          pattern: bind-address-ipv4
+      - matchRegex:
+          path: data["transmission-live.sh"]
+          pattern: /proc/net/tcp
+
+  - it: listens for the web UI on IPv4 and IPv6 by default
+    template: templates/configmap-settings.yaml
+    asserts:
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"rpc-bind-address":"::"'
+
+  - it: creates the RPC Secret from values
+    template: templates/secret-rpc.yaml
+    set:
+      transmission.rpcAuth.username: admin
+      transmission.rpcAuth.password: s3cret
+    asserts:
+      - isKind:
+          of: Secret
+      - equal:
+          path: stringData
+          value: { username: admin, password: s3cret }

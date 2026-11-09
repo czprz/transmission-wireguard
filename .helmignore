@@ -1,0 +1,28 @@
+# Only the chart goes into the package: not the repository's tooling, and
+# never a local wg0.conf or values file that holds a private key.
+# tests/package-test.sh checks the package against an allowlist.
+.git
+.github/
+.claude/
+.devcontainer/
+.vscode/
+.idea/
+.gitignore
+.helmignore
+.ct.yaml
+/ci/
+/tests/
+/dist/
+Makefile
+renovate.json
+RELEASE_BODY.md
+CONTRIBUTING.md
+*.conf
+*.conf.*
+*.bak
+*.local.yaml
+*.tgz
+*.swp
+*~
+.DS_Store
+/.previous/

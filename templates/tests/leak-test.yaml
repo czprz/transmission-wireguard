@@ -1,0 +1,277 @@
+{{- if .Values.tests.enabled -}}
+{{- $name := printf "%s-test" (include "twg.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $hook := dict "helm.sh/hook" "test" "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded,hook-failed" -}}
+# `helm test` checks the running release for leaks from inside the pod. The
+# Role exists only while the test runs (exec into the release's pods), pass
+# or fail. Off by default: `helm template` pipelines would apply the Role as
+# an ordinary, permanent resource.
+# The pod stays until the next run so `helm test --logs` can read it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-1"
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  # WebSocket exec is authorized as get before Kubernetes 1.35, create after.
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hook | nindent 4 }}
+    helm.sh/hook-weight: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $name }}
+  # Not the release's selector labels: the NetworkPolicy must not apply here.
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-test
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  serviceAccountName: {{ $name }}
+  restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  # Preferably on the release pod's node, so "the cluster's own address"
+  # below is the one that pod would leak with (egress IPs can differ per
+  # node). The script checks it; only preferred, so a missing pod fails
+  # clearly instead of leaving the test Pending.
+  affinity:
+    podAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                {{- include "twg.selectorLabels" . | nindent 16 }}
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: leak-test
+      image: {{ include "twg.testImage" . }}
+      imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      env:
+        - name: HOME
+          value: /tmp
+        - name: SELECTOR
+          value: {{ printf "app.kubernetes.io/name=%s,app.kubernetes.io/instance=%s" .Chart.Name .Release.Name | quote }}
+        - name: IP_ECHO_URL
+          value: {{ .Values.tests.ipEchoUrl | quote }}
+        - name: VPN_EGRESS_IPS
+          value: {{ join " " .Values.tests.vpnEgressIPs | quote }}
+        - name: MY_NODE
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: NAMESERVERS
+          value: {{ join " " .Values.wireguard.dns.nameservers | quote }}
+      command:
+        - sh
+        - -c
+        - |
+          failed=0
+          pass() { echo "PASS  $*"; }
+          fail() { echo "FAIL  $*"; failed=$((failed + 1)); }
+          # Every running pod that is not shutting down (a rollout can leave
+          # the old one Running for a while).
+          pods=$(kubectl get pod -l "$SELECTOR" --field-selector status.phase=Running \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.deletionTimestamp}{"\n"}{end}' | awk 'NF == 1')
+          [ -n "$pods" ] || { echo "FAIL  no running pod matches $SELECTOR"; exit 1; }
+          in_wg() { kubectl exec "$pod" -c wireguard -- "$@"; }
+          in_tx() { kubectl exec "$pod" -c transmission -- "$@"; }
+          trim() { tr -d '[:space:]'; }
+          in_list() { want=$1; shift; for x in "$@"; do [ "$x" = "$want" ] && return 0; done; return 1; }
+          # shellcheck disable=SC2086 # lists of addresses
+          is_own() { in_list "$1" $own; }
+          # tests.vpnEgressIPs per family: an IPv6-only list says nothing
+          # about IPv4, and the other way round.
+          vpn4=$(for x in $VPN_EGRESS_IPS; do case $x in *:*) ;; *) echo "$x" ;; esac; done)
+          vpn6ips=$(for x in $VPN_EGRESS_IPS; do case $x in *:*) echo "$x" ;; esac; done)
+          # shellcheck disable=SC2086
+          is_vpn() { in_list "$1" $vpn4; }
+          # shellcheck disable=SC2086
+          is_vpn6() { in_list "$1" $vpn6ips; }
+          # curl bound to eth0 in the Transmission container. Prints PASS
+          # only for a refused (7) or timed-out (28) connection; any other
+          # failure (no such interface, exec failed) proves nothing. "if!"
+          # makes curl fail rather than fall back to binding eth0's address
+          # (which would send the request into the tunnel instead).
+          eth0_blocked() {
+            rc=$(in_tx sh -c 'curl -sk -m 5 -o /dev/null --interface "if!eth0" "$@" 2>/dev/null; echo "rc=$?"' sh "$@" | sed -n 's/^rc=//p')
+            case $rc in
+              7 | 28) return 0 ;;
+              0) return 1 ;;
+              *) echo "could not test (curl exit ${rc:-none}: exec failed or no eth0)"; return 2 ;;
+            esac
+          }
+          check_eth0() {
+            what=$1; shift
+            out=$(eth0_blocked "$@")
+            case $? in
+              0) pass "a socket bound to eth0 cannot reach $what" ;;
+              1) fail "LEAK: a socket bound to eth0 reached $what" ;;
+              *) fail "eth0 check for $what: $out" ;;
+            esac
+          }
+
+          for pod in $pods; do
+            echo "testing pod $pod"
+            # The pod's and its node's own addresses: without SNAT (IPv6,
+            # routable pod IPs) a leak would show one of these.
+            node=$(kubectl get pod "$pod" -o jsonpath='{.spec.nodeName}')
+            own=$(kubectl get pod "$pod" -o jsonpath='{range .status.podIPs[*]}{.ip} {end}{range .status.hostIPs[*]}{.ip} {end}{.status.hostIP}')
+            if in_wg /twg/scripts/firewall.sh live; then
+              pass "kill switch rules intact and tunnel up"
+            else
+              fail "kill switch or tunnel check failed (see the wireguard container log)"
+            fi
+
+            # Raw and packet sockets bypass iptables: nothing in the Transmission
+            # container may hold NET_RAW (13), NET_ADMIN (12) or SYS_ADMIN (21),
+            # whatever a webhook or runtime added.
+            # shellcheck disable=SC2016 # expanded in the Transmission container
+            caps=$(in_tx sh -c 'for p in 1 $(pgrep -x transmission-daemon); do sed -n "s/^CapBnd:[[:space:]]*//p" /proc/$p/status; done' || true)
+            bad=""
+            for c in $caps; do
+              [ $((0x$c & 0x203000)) -eq 0 ] || bad="$bad $c"
+            done
+            if [ -z "$caps" ]; then
+              fail "could not read the Transmission container's capabilities"
+            elif [ -n "$bad" ]; then
+              fail "LEAK RISK: the Transmission container can use raw sockets or change the network (CapBnd$bad)"
+            else
+              pass "the Transmission container holds no network capabilities"
+            fi
+
+            # The API server is reachable from every pod, so it shows whether
+            # the pod's own interface is blocked rather than merely unrouted.
+            host=$KUBERNETES_SERVICE_HOST
+            case $host in *:*) host="[$host]" ;; esac
+            api="https://$host:$KUBERNETES_SERVICE_PORT/version"
+            if curl -sk -m 5 -o /dev/null "$api"; then
+              check_eth0 "the Kubernetes API" "$api"
+            else
+              fail "this test pod cannot reach the Kubernetes API, so the eth0 check proves nothing"
+            fi
+            # The API is usually IPv4 only. Where the node has an IPv6
+            # address, its kubelet (any HTTP answer will do) covers IPv6.
+            node6=$(kubectl get pod "$pod" -o jsonpath='{range .status.hostIPs[*]}{.ip}{"\n"}{end}{.status.hostIP}' | grep : | tail -n1)
+            if [ -n "$node6" ]; then
+              kubelet6="https://[$node6]:10250/healthz"
+              if curl -sk -m 5 -o /dev/null "$kubelet6"; then
+                check_eth0 "the node's kubelet over IPv6" "$kubelet6"
+              else
+                echo "SKIP  this test pod cannot reach $kubelet6, so IPv6 on eth0 is not probed directly"
+              fi
+            fi
+
+            want=$(echo "$NAMESERVERS" | tr ' ' '\n' | sort | tr '\n' ' ')
+            got=$(in_tx sed -n 's/^nameserver[[:space:]]*//p' /etc/resolv.conf | sort | tr '\n' ' ')
+            if [ "$got" = "$want" ]; then
+              pass "pod DNS uses only the configured nameservers ($want)"
+            else
+              fail "pod nameservers are '${got:-none}', expected '$want'"
+            fi
+
+            if [ -n "$IP_ECHO_URL" ]; then
+              direct=$(curl -4 -fsS -m 10 "$IP_ECHO_URL" | trim)
+              vpn=$(in_tx curl -4 -fsS -m 10 "$IP_ECHO_URL" | trim)
+              if [ -z "$direct" ]; then
+                fail "this test pod cannot reach $IP_ECHO_URL, so the egress address cannot be compared"
+              elif [ -z "$vpn" ]; then
+                fail "the pod cannot reach $IP_ECHO_URL through the VPN"
+              elif [ "$vpn" = "$direct" ] || is_own "$vpn"; then
+                fail "LEAK: the pod's IPv4 egress address $vpn is the cluster's own"
+              elif [ -n "$vpn4" ] && ! is_vpn "$vpn"; then
+                fail "the pod's IPv4 egress address $vpn is not one of tests.vpnEgressIPs ($VPN_EGRESS_IPS)"
+              elif [ "$node" != "$MY_NODE" ] && [ -z "$vpn4" ]; then
+                fail "the test pod runs on $MY_NODE, not on the pod's node $node, so its address proves nothing; set tests.vpnEgressIPs"
+              else
+                pass "IPv4 egress leaves through the VPN as $vpn (the cluster egresses as $direct)"
+              fi
+              direct6=$(curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
+              if [ -n "$direct6" ]; then
+                vpn6=$(in_tx curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
+                if [ -n "$vpn6" ] && { [ "$vpn6" = "$direct6" ] || is_own "$vpn6"; }; then
+                  fail "LEAK: the pod's IPv6 egress address $vpn6 is the cluster's own"
+                elif [ -n "$vpn6" ] && [ -n "$vpn6ips" ] && ! is_vpn6 "$vpn6"; then
+                  fail "the pod's IPv6 egress address $vpn6 is not one of tests.vpnEgressIPs ($VPN_EGRESS_IPS)"
+                elif [ -n "$vpn6" ] && [ "$node" != "$MY_NODE" ] && [ -z "$vpn6ips" ]; then
+                  fail "the test pod runs on $MY_NODE, not on the pod's node $node, so its IPv6 address proves nothing; set tests.vpnEgressIPs"
+                else
+                  pass "IPv6 does not leave as the cluster's address $direct6 (VPN: ${vpn6:-no IPv6})"
+                fi
+                check_eth0 "$IP_ECHO_URL over IPv6" -6 "$IP_ECHO_URL"
+              fi
+              check_eth0 "$IP_ECHO_URL" -4 "$IP_ECHO_URL"
+            fi
+          done
+
+          [ "$failed" -eq 0 ] || { echo "$failed check(s) failed"; exit 1; }
+          echo "no leaks found"
+      resources:
+        {{- toYaml .Values.tests.resources | nindent 8 }}
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  {{- with .Values.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  volumes:
+    - name: tmp
+      emptyDir: {}
+{{- end }}

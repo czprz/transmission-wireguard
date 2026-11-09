@@ -1,23 +1,41 @@
-This chart uses a WireGuard CLIENT container (linuxserver/wireguard) + Transmission in the same Pod.
+Transmission is running behind a WireGuard sidecar with a chart-managed kill switch.
 
-1) Provide wg0.conf securely:
-   - Recommended: create a secret and set wireguard.existingSecret in values.yaml.
-     kubectl create secret generic <name> --from-file=wg0.conf=/path/to/wg0.conf
-   - Alternative: set wireguard.wg0Conf in values.yaml (not recommended for public repos).
+- Traffic can only leave the pod through the tunnel; if the tunnel goes down, it is blocked.
+- Transmission starts only after the kill switch and the tunnel are up.
+{{- if .Values.networkPolicy.enabled }}
+- Egress NetworkPolicy allows only:{{ range include "twg.vpnEndpoints" . | fromJsonArray }} {{ .ip }}:{{ .port }}/udp{{ end }}{{ if .Values.networkPolicy.extraEgress }} and networkPolicy.extraEgress{{ end }}
+  (needs a CNI that enforces NetworkPolicy)
+{{- else }}
+- WARNING: networkPolicy is disabled. Only the in-pod kill switch protects against leaks.
+{{- end }}
+{{- if not (include "twg.rpcAuthConfigured" .) }}
+- WARNING: the web UI has no RPC auth (rpcAuth.allowAnonymous). Any pod that reaches it can add torrents and run scripts.
+{{- end }}
+- DNS: {{ join ", " .Values.wireguard.dns.nameservers }} through the tunnel
+{{- $s := .Values.transmission.settings }}
+{{- if index $s "rpc-host-whitelist-enabled" }}
+- Web UI hostnames allowed without RPC auth: the Service name{{ if .Values.ingress.enabled }}, the ingress hosts{{ end }} and {{ index $s "rpc-host-whitelist" | default "nothing else" }}.
+  Reaching it under another name (Gateway API, external proxy) gives HTTP 421; add the name to transmission.settings.rpc-host-whitelist.
+{{- end }}
+{{- if .Values.wireguard.existingSecret }}
+- wg0.conf comes from Secret {{ .Values.wireguard.existingSecret }}: restart the pod after changing it
+  (kubectl -n {{ .Release.Namespace }} rollout restart deploy/{{ include "twg.fullname" . }}).
+{{- end }}
 
-2) Ensure the Endpoint is IPv4 (NOT [IPv6]) or you can hit silent tunnel failures.
+Check for leaks from inside the cluster:
+{{- if .Values.tests.enabled }}
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+{{- else }}
+  helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} --reset-then-reuse-values --set tests.enabled=true
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+{{- end }}
 
-3) Add a kill switch to wg0.conf (recommended). Example:
+To compare the pod's egress address with the cluster's, set tests.ipEchoUrl to
+an IP echo endpoint you run yourself (a public one sees both addresses).
 
-[Interface]
-...
-PostUp = iptables -w -P OUTPUT DROP; iptables -w -A OUTPUT -o lo -j ACCEPT; iptables -w -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT; iptables -w -A OUTPUT -p udp -d 203.0.113.1 --dport 51820 -j ACCEPT; iptables -w -A OUTPUT -o %i -j ACCEPT; ip6tables -w -P OUTPUT DROP; ip6tables -w -A OUTPUT -o lo -j ACCEPT; ip6tables -w -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT; ip6tables -w -A OUTPUT -o %i -j ACCEPT
-PreDown = iptables -w -P OUTPUT ACCEPT; iptables -w -F OUTPUT; ip6tables -w -P OUTPUT ACCEPT; ip6tables -w -F OUTPUT
+Check eth0 is closed: a request bound to it must fail with curl exit 7 or 28
+(the Kubernetes API answers any ordinary pod; exit 0 would be a leak):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c transmission -- sh -c 'h=$KUBERNETES_SERVICE_HOST; case $h in *:*) h="[$h]" ;; esac; curl -sk -m 5 -o /dev/null --interface "if!eth0" "https://$h:$KUBERNETES_SERVICE_PORT/version"; echo "curl exit $?"'
 
-(Replace <ENDPOINT_IP> with the actual IPv4 address from your Endpoint = line.)
-
-4) Install:
-   helm install transmission ./transmission-wireguard -f values.yaml
-
-5) Verify egress IP:
-   kubectl exec -it deploy/<release>-transmission-wireguard -c transmission -- sh -c 'wget -qO- https://ifconfig.io || true'
+Sidecar logs (refused configs show up as "[twg-firewall] FATAL"):
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "twg.fullname" . }} -c wireguard
