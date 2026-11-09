@@ -67,6 +67,10 @@ metadata:
 spec:
   serviceAccountName: {{ $name }}
   restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   # Preferably on the release pod's node, so "the cluster's own address"
   # below is the one that pod would leak with (egress IPs can differ per
   # node). The script checks it; only preferred, so a missing pod fails

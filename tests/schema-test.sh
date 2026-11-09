@@ -31,6 +31,9 @@ expect_schema_error "a fwmark that is the main routing table" --set firewall.wgF
 expect_schema_error "a fwmark that is the saved route table, in hex" --set-string firewall.wgFwmark=0x3e8
 expect_schema_error "duplicate nameservers" --set 'wireguard.dns.nameservers={1.1.1.1,1.1.1.1}'
 expect_schema_error "a handshake age too large to render" --set wireguard.handshakeMaxAgeSeconds=1000000
+expect_schema_error "an ingress pathType Kubernetes does not know" --set ingress.enabled=true --set 'ingress.hosts[0].host=tx.example.com' --set 'ingress.hosts[0].paths[0].path=/' --set 'ingress.hosts[0].paths[0].pathType=prefix'
+expect_schema_error "an image pull secret without a name" --set 'imagePullSecrets[0].nam=regcred'
+expect_schema_error "a typo in persistence (keepOnUninstal)" --set persistence.keepOnUninstal=false
 
 if helm template t "$ROOT" -f "$ROOT/ci/default-values.yaml" >/dev/null; then
   echo "PASS  the CI values render"

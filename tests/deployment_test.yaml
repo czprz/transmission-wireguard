@@ -81,12 +81,99 @@ tests:
           path: spec.template.spec.containers[0].ports
           content: { containerPort: 6881, protocol: UDP }
 
-  - it: fails Transmission when wg0 disappears
+  - it: restarts Transmission when it never bound its peer port to the tunnel
     template: templates/deployment.yaml
     asserts:
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.exec.command
-          value: ["sh", "-c", "test -d /sys/class/net/wg0"]
+          value: ["/bin/sh", "/twg/scripts/transmission-live.sh"]
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: scripts, mountPath: /twg/scripts, readOnly: true }
+
+  - it: shows the sidecar the addresses Transmission was bound to
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].volumeMounts
+          content: { name: settings-run, mountPath: /twg/run, readOnly: true }
+
+  - it: opts the pod out of service mesh injection unless overridden
+    template: templates/deployment.yaml
+    set:
+      podAnnotations:
+        linkerd.io/inject: enabled
+        example.com/team: media
+        checksum/wg: forged
+      podLabels:
+        app.kubernetes.io/name: forged
+        example.com/tier: apps
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["sidecar.istio.io/inject"]
+          value: "false"
+      - equal:
+          path: spec.template.metadata.annotations["linkerd.io/inject"]
+          value: enabled
+      - equal:
+          path: spec.template.metadata.annotations["example.com/team"]
+          value: media
+      - notEqual:
+          path: spec.template.metadata.annotations["checksum/wg"]
+          value: forged
+      - equal:
+          path: spec.template.metadata.labels["istio.io/dataplane-mode"]
+          value: none
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/name"]
+          value: transmission-wireguard
+      - equal:
+          path: spec.template.metadata.labels["example.com/tier"]
+          value: apps
+
+  - it: sets pull secrets, priority, grace period and init resources
+    template: templates/deployment.yaml
+    set:
+      imagePullSecrets: [{ name: regcred }]
+      priorityClassName: media
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value: [{ name: regcred }]
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: media
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 60
+      - equal:
+          path: spec.template.spec.initContainers[0].resources.limits.memory
+          value: 64Mi
+
+  - it: mounts extra volumes into Transmission only
+    template: templates/deployment.yaml
+    set:
+      extraVolumes: [{ name: media, nfs: { server: nas.example.internal, path: /media } }]
+      transmission.extraVolumeMounts: [{ name: media, mountPath: /data/complete }]
+      # A list under transmission. replaces that map here, base values included.
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: media, nfs: { server: nas.example.internal, path: /media } }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: media, mountPath: /data/complete }
+      - notContains:
+          path: spec.template.spec.initContainers[1].volumeMounts
+          content: { name: media, mountPath: /data/complete }
+
+  - it: restarts a tunnel without a recent handshake by default
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_HANDSHAKE_MAX_AGE, value: "300" }
 
   - it: resolves DNS through the tunnel by default
     template: templates/deployment.yaml

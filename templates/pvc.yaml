@@ -5,6 +5,11 @@ metadata:
   name: {{ include "twg.fullname" . }}
   labels:
     {{- include "twg.labels" . | nindent 4 }}
+  {{- if .Values.persistence.keepOnUninstall }}
+  # Downloads outlive `helm uninstall`; delete the PVC yourself.
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
 spec:
   accessModes:
     {{- toYaml (default (list "ReadWriteOnce") .Values.persistence.accessModes) | nindent 4 }}

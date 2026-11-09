@@ -49,6 +49,10 @@ persistence:
   accessModes:
     - ReadWriteOnce
   size: 10Gi   # Required when using PVC; ignored for hostPath.
+  # Keep the chart's PVC (and the downloads on it) on `helm uninstall`;
+  # delete it yourself afterwards. A later install under the same release
+  # name and namespace picks it up again.
+  keepOnUninstall: true
   # storageClassName: ""
   # existingClaim: ""
   # hostPath:
@@ -58,6 +62,8 @@ persistence:
   # mounts:
   #   data:
   #     mountPath: /data
+  # For downloads on another volume (NFS, SMB, a second PVC), see
+  # extraVolumes and transmission.extraVolumeMounts.
 
 transmission:
   env:
@@ -96,7 +102,9 @@ transmission:
     watch-dir: /data/watch
     watch-dir-enabled: true
     rpc-enabled: true
-    rpc-bind-address: 0.0.0.0
+    # :: listens on IPv4 and IPv6 (IPv6-only and dual-stack clusters);
+    # pods without IPv6 fall back to 0.0.0.0.
+    rpc-bind-address: "::"
     rpc-port: 9091
     rpc-url: /transmission/
     rpc-authentication-required: false
@@ -129,12 +137,29 @@ transmission:
     limits:
       memory: 512Mi
 
+  # The init container that writes settings.json (namespaces with a
+  # ResourceQuota reject containers without resources).
+  initResources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi
+
+  # Extra mounts for the Transmission container only, e.g. a media share
+  # from extraVolumes:
+  #   - name: media
+  #     mountPath: /data/complete
+  extraVolumeMounts: []
+
 wireguard:
   # Provide a FULL WireGuard CLIENT config here (wg0.conf):
   # - Endpoint must be an IP address (DNS is blocked until the tunnel is up)
   # - AllowedIPs must include 0.0.0.0/0 (and ::/0 for IPv6)
   # - No PreUp/PostUp/PreDown/PostDown hooks: the chart owns the kill switch
-  # - PersistentKeepalive = 25 is recommended
+  # - PersistentKeepalive = 25 is recommended (the handshake check needs it)
+  # - MTU = 1420 is needed where the pod's network has jumbo frames (AWS VPC
+  #   CNI); without an MTU line the sidecar refuses MTUs above 1500
   # For public charts, prefer wireguard.existingSecret and leave wg0Conf empty.
   wg0Conf: ""
 
@@ -150,9 +175,11 @@ wireguard:
 
   # Restart the WireGuard sidecar when the newest handshake is older than this
   # many seconds (0 disables, else at least 180: WireGuard re-handshakes only
-  # every 2 minutes). Needs PersistentKeepalive in wg0.conf, otherwise an idle
+  # every 2 minutes). A restart re-reads the Endpoint, so a tunnel whose
+  # server answered from another address (blocked by the kill switch) heals.
+  # Only checked when wg0.conf has PersistentKeepalive: without it an idle
   # tunnel stops handshaking. Restarts are safe: the kill switch stays up.
-  handshakeMaxAgeSeconds: 0
+  handshakeMaxAgeSeconds: 300
 
   env:
     TZ: "UTC"
@@ -189,7 +216,8 @@ wireguard:
       memory: 128Mi
   # wg-quick writes net.ipv4.conf.all.src_valid_mark, which needs privileged
   # (or the sysctl allowed on the kubelet and set in podSecurityContext.sysctls,
-  # then capabilities NET_ADMIN + NET_RAW with privileged: false).
+  # then capabilities NET_ADMIN + NET_RAW with privileged: false; see the
+  # README). Either way the namespace needs the privileged Pod Security level.
   securityContext:
     privileged: true
 
@@ -257,6 +285,28 @@ podSecurityContext: {}
 #  sysctls:
 #    - name: net.ipv4.conf.all.src_valid_mark
 #      value: "1"
+
+# Added to the pod. The chart opts the pod out of Istio and Linkerd
+# injection (a mesh proxy cannot reach its control plane through the kill
+# switch); set a key here to override that.
+podAnnotations: {}
+podLabels: {}
+
+imagePullSecrets: []
+#  - name: registry-credentials
+
+priorityClassName: ""
+
+# Time for Transmission to stop (it saves resume data and sends its
+# "stopped" announces through the still-running tunnel).
+terminationGracePeriodSeconds: 60
+
+# Extra pod volumes, mounted with transmission.extraVolumeMounts.
+extraVolumes: []
+#  - name: media
+#    nfs:
+#      server: nas.example.internal
+#      path: /media
 
 probes:
   initialDelaySeconds: 10

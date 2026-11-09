@@ -53,6 +53,16 @@ tests:
       - matchRegex:
           path: data["settings-init.sh"]
           pattern: bind-address-ipv4
+      - matchRegex:
+          path: data["transmission-live.sh"]
+          pattern: /proc/net/tcp
+
+  - it: listens for the web UI on IPv4 and IPv6 by default
+    template: templates/configmap-settings.yaml
+    asserts:
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"rpc-bind-address":"::"'
 
   - it: creates the RPC Secret from values
     template: templates/secret-rpc.yaml

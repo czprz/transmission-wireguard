@@ -22,6 +22,8 @@ SAVED_ROUTE_TABLE="${TWG_SAVED_ROUTE_TABLE:-1000}"
 HANDSHAKE_MAX_AGE="${TWG_HANDSHAKE_MAX_AGE:-0}"
 ALLOW_CONF_HOOKS="${TWG_ALLOW_CONF_HOOKS:-false}"
 CONF="${TWG_WG_CONF:-/config/wg_confs/${WG_IFACE}.conf}"
+# settings.json the init container wrote, with the addresses Transmission is bound to.
+TX_SETTINGS="${TWG_TX_SETTINGS:-/twg/run/settings.json}"
 
 IN=TWG-INPUT
 OUT=TWG-OUTPUT
@@ -67,7 +69,7 @@ detect_families() {
   FAMILIES=(4)
   if ip6tables -w -S >/dev/null 2>&1; then
     FAMILIES+=(6)
-  elif [[ -s /proc/net/if_inet6 ]] && grep -qv ' lo$' /proc/net/if_inet6; then
+  elif grep -qv ' lo$' /proc/net/if_inet6 2>/dev/null; then
     refuse_setting "$1" "IPv6 is configured in the pod but ip6tables is unusable; refusing to run unfiltered"
   fi
 }
@@ -203,10 +205,13 @@ apply_family() {
 
   # Router advertisements may set the default route, but not add on-link
   # prefixes or routes: those beat the tunnel's /0 and would take IPv6 down.
+  # Without privileged, /proc/sys is read-only: say so, as nothing else would.
   if [[ $fam == 6 ]]; then
+    local ra_failed=0
     for f in /proc/sys/net/ipv6/conf/*/accept_ra_pinfo /proc/sys/net/ipv6/conf/*/accept_ra_rt_info_max_plen; do
-      [[ $f == */"$WG_IFACE"/* ]] || echo 0 2>/dev/null >"$f" || true
+      [[ $f == */"$WG_IFACE"/* ]] || echo 0 2>/dev/null >"$f" || ra_failed=1
     done
+    ((ra_failed == 0)) || log "WARNING: /proc/sys is read-only, so router advertisements can still add IPv6 routes past the tunnel (nothing leaks, but IPv6 stops working). Set net.ipv6.conf.eth0.accept_ra_pinfo=0 and net.ipv6.conf.eth0.accept_ra_rt_info_max_plen=0 in podSecurityContext.sysctls."
   fi
 }
 
@@ -310,7 +315,7 @@ endpoints() {
 
 # Reject configs that would weaken or bypass the kill switch.
 preflight() {
-  local ep fwmark table f allowed addrs err
+  local ep fwmark table f allowed addrs err host route mtu
   [[ -r $CONF ]] || die "WireGuard config ${CONF} not found"
 
   # The image brings up every *.conf it finds; only wg0 is validated.
@@ -357,6 +362,57 @@ preflight() {
       die "FwMark ${fwmark} in ${CONF} differs from firewall.wgFwmark (${WG_FWMARK})"
     fi
   fi
+
+  # Without an MTU line wg-quick sizes the tunnel from the route to the
+  # endpoint, less 80. On jumbo-frame networks (AWS VPC CNI: 9001) that is
+  # far above the internet's 1500: the encrypted packets get fragmented on
+  # the way, and many paths drop fragments. (Runs after reset_netns, so the
+  # default route is back.)
+  if [[ -z $(conf_value MTU) ]]; then
+    while read -r host _; do
+      route=$(ip route get "$host" 2>/dev/null) || continue
+      if [[ $route =~ \ mtu\ ([0-9]+) ]]; then
+        mtu=${BASH_REMATCH[1]}
+      elif [[ $route =~ \ dev\ ([^ ]+) ]] && [[ -r /sys/class/net/${BASH_REMATCH[1]}/mtu ]]; then
+        mtu=$(<"/sys/class/net/${BASH_REMATCH[1]}/mtu")
+      else
+        continue
+      fi
+      ((mtu <= 1500)) || die "the route to the endpoint ${host} has MTU ${mtu}, so wg-quick would give the tunnel $((mtu - 80)), more than the internet carries unfragmented. Add MTU = 1420 to [Interface] in ${CONF}"
+    done < <(endpoints 4; endpoints 6)
+  fi
+
+  # Transmission's peer sockets were bound to the tunnel addresses when the
+  # pod started. The Secret can change under a running pod and this
+  # container reads it again when it restarts: a new Address would leave
+  # Transmission bound to addresses that no longer exist.
+  if [[ -r $TX_SETTINGS ]]; then
+    local a want4="" want6="" bound4 bound6
+    for a in ${addrs//,/ }; do
+      a=${a%%/*}
+      if [[ $a =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        [[ -n $want4 ]] || want4=$a
+      elif [[ $a == *:* ]]; then
+        [[ -n $want6 ]] || want6=$a
+      fi
+    done
+    bound4=$(sed -nE 's/.*"bind-address-ipv4"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$TX_SETTINGS")
+    bound6=$(sed -nE 's/.*"bind-address-ipv6"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$TX_SETTINGS")
+    if [[ $bound4 != "${want4:-127.0.0.1}" || $bound6 != "${want6:-::1}" ]]; then
+      die "Address in ${CONF} changed since the pod started (Transmission is bound to ${bound4:-?} and ${bound6:-?}). Restart the pod: kubectl rollout restart deployment/<release>-transmission-wireguard"
+    fi
+  fi
+
+  if ((HANDSHAKE_MAX_AGE > 0)) && ! keepalive_on; then
+    log "handshake age check off: ${CONF} has no PersistentKeepalive, so an idle tunnel would stop handshaking"
+  fi
+}
+
+# An idle tunnel only handshakes when PersistentKeepalive sends something.
+keepalive_on() {
+  local k
+  k=$(conf_value PersistentKeepalive | tail -n1)
+  [[ $k =~ ^[0-9]+$ ]] && ((10#$k > 0))
 }
 
 # Rule dumps are captured before matching: grep -q exiting early would SIGPIPE
@@ -423,7 +479,7 @@ tunnel() {
 live() {
   local now hs newest=0
   tunnel
-  ((HANDSHAKE_MAX_AGE > 0)) || return 0
+  ((HANDSHAKE_MAX_AGE > 0)) && keepalive_on || return 0
   now=$(date +%s)
   while read -r _ hs; do ((hs > newest)) && newest=$hs; done < <(wg show "$WG_IFACE" latest-handshakes)
   ((newest > 0 && now - newest < HANDSHAKE_MAX_AGE)) || { log "no handshake within ${HANDSHAKE_MAX_AGE}s"; return 1; }

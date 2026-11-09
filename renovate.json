@@ -3,50 +3,89 @@
   "extends": ["config:recommended"],
   "schedule": ["before 7am on monday"],
   "labels": ["dependencies"],
-  "managers": [
+  "minimumReleaseAge": "14 days",
+  "github-actions": {
+    "enabled": false
+  },
+  "packageRules": [
     {
-      "manager": "github-actions",
-      "enabled": false
+      "description": "linuxserver tags are <version>-r<build>-ls<revision>; docker versioning would treat a new -rN-lsNNN suffix as incompatible and never offer an update",
+      "matchPackageNames": ["lscr.io/linuxserver/transmission", "ghcr.io/linuxserver/wireguard"],
+      "matchDepTypes": ["image"],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-r(?<build>\\d+)-ls(?<revision>\\d+)$"
+    },
+    {
+      "description": "Chart.yaml's appVersion follows the Transmission image (tests/metadata-test.sh), so they update together",
+      "matchPackageNames": ["lscr.io/linuxserver/transmission"],
+      "groupName": "Transmission"
+    },
+    {
+      "description": "The WireGuard image is also referenced from Chart.yaml; one PR for both",
+      "matchPackageNames": ["ghcr.io/linuxserver/wireguard"],
+      "groupName": "WireGuard"
     }
   ],
-  "regexManagers": [
+  "customManagers": [
     {
-      "fileMatch": ["templates/_helpers\\.tpl"],
+      "customType": "regex",
+      "description": "Default image tag and digest in templates/_helpers.tpl",
+      "managerFilePatterns": ["/^templates/_helpers\\.tpl$/"],
       "matchStrings": [
         "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.transmission\\.tag -}}\\n\\{\\{- \\$digest := default \"(?<currentDigest>sha256:[a-f0-9]+)\" \\.Values\\.images\\.transmission\\.digest"
       ],
       "depNameTemplate": "lscr.io/linuxserver/transmission",
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "depTypeTemplate": "image"
     },
     {
-      "fileMatch": ["templates/_helpers\\.tpl"],
+      "customType": "regex",
+      "managerFilePatterns": ["/^templates/_helpers\\.tpl$/"],
       "matchStrings": [
         "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.wireguard\\.tag -}}\\n\\{\\{- \\$digest := default \"(?<currentDigest>sha256:[a-f0-9]+)\" \\.Values\\.images\\.wireguard\\.digest"
       ],
       "depNameTemplate": "ghcr.io/linuxserver/wireguard",
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "depTypeTemplate": "image"
     },
     {
-      "fileMatch": ["templates/_helpers\\.tpl"],
+      "customType": "regex",
+      "managerFilePatterns": ["/^templates/_helpers\\.tpl$/"],
       "matchStrings": [
         "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.tests\\.image\\.tag -}}\\n\\{\\{- \\$digest := default \"(?<currentDigest>sha256:[a-f0-9]+)\" \\.Values\\.tests\\.image\\.digest"
       ],
       "depNameTemplate": "docker.io/alpine/kubectl",
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "depTypeTemplate": "image"
     },
     {
-      "fileMatch": ["^tests/e2e/.+\\.sh$", "^Makefile$", "^\\.github/workflows/.+\\.ya?ml$"],
+      "customType": "regex",
+      "description": "Images pinned as name:tag@digest in the e2e tests, Makefile and workflows",
+      "managerFilePatterns": ["/^tests/e2e/.+\\.sh$/", "/^Makefile$/", "/^\\.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
         "(?<depName>(?:[a-z0-9.-]+/)*[a-z0-9._-]+):(?<currentValue>v?[0-9][^\\s@\"']*)@(?<currentDigest>sha256:[a-f0-9]{64})"
       ],
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "depTypeTemplate": "image"
     },
     {
-      "fileMatch": ["Chart\\.yaml"],
+      "customType": "regex",
+      "description": "artifacthub.io/images in Chart.yaml",
+      "managerFilePatterns": ["/^Chart\\.yaml$/"],
       "matchStrings": [
         "image: (?<depName>[^:\\s]+):(?<currentValue>[^\\s@]+)@(?<currentDigest>sha256:[a-f0-9]+)"
       ],
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "docker",
+      "depTypeTemplate": "image"
+    },
+    {
+      "customType": "regex",
+      "description": "appVersion is the plain Transmission version (the image's x.y.z tag)",
+      "managerFilePatterns": ["/^Chart\\.yaml$/"],
+      "matchStrings": ["appVersion: \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""],
+      "depNameTemplate": "lscr.io/linuxserver/transmission",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver",
+      "depTypeTemplate": "appVersion"
     }
   ]
 }

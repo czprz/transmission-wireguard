@@ -47,8 +47,8 @@ always wins, and overriding repository or tag drops the default digest.
 {{- end -}}
 
 {{- define "twg.wireguardImage" -}}
-{{- $tag := default "1.0.20250521-r1-ls102" .Values.images.wireguard.tag -}}
-{{- $digest := default "sha256:72a3c0b6eb67bcecf0138092a7a66220c081246083c7f1e0d078c186560e745b" .Values.images.wireguard.digest -}}
+{{- $tag := default "1.0.20260223-r0-ls126" .Values.images.wireguard.tag -}}
+{{- $digest := default "sha256:6bcf5d2f5a265c7e9835eaadd989938e681aabe8bf8bcd4556b61d463da6555c" .Values.images.wireguard.digest -}}
 {{- include "twg.image" (dict "img" .Values.images.wireguard "repo" "ghcr.io/linuxserver/wireguard" "tag" $tag "digest" $digest) -}}
 {{- end -}}
 
@@ -59,8 +59,8 @@ always wins, and overriding repository or tag drops the default digest.
 {{- end -}}
 
 {{- define "twg.transmissionImage" -}}
-{{- $tag := default "4.1.1-r1-ls343" .Values.images.transmission.tag -}}
-{{- $digest := default "sha256:62a88fbc210fc62d867eab9c67a0f5474db7257013ce598173a9efc1043e97b8" .Values.images.transmission.digest -}}
+{{- $tag := default "4.1.3-r0-ls365" .Values.images.transmission.tag -}}
+{{- $digest := default "sha256:55aaeedf9fc354d34136387e15ee0ba4679096f20398dd2875867e5cd5cf8be5" .Values.images.transmission.digest -}}
 {{- include "twg.image" (dict "img" .Values.images.transmission "repo" "lscr.io/linuxserver/transmission" "tag" $tag "digest" $digest) -}}
 {{- end -}}
 

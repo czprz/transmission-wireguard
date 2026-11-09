@@ -30,12 +30,12 @@ Check for leaks from inside the cluster:
   helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
 {{- end }}
 
-Verify the egress IP is the VPN's:
-  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c transmission -- sh -c 'wget -qO- https://ifconfig.io'
+To compare the pod's egress address with the cluster's, set tests.ipEchoUrl to
+an IP echo endpoint you run yourself (a public one sees both addresses).
 
-Check the kill switch holds (must print "blocked"):
-  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c wireguard -- ip link del wg0
-  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c transmission -- sh -c 'wget -T 5 -qO- https://ifconfig.io || echo blocked'
+Check eth0 is closed: a request bound to it must fail with curl exit 7 or 28
+(the Kubernetes API answers any ordinary pod; exit 0 would be a leak):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "twg.fullname" . }} -c transmission -- sh -c 'h=$KUBERNETES_SERVICE_HOST; case $h in *:*) h="[$h]" ;; esac; curl -sk -m 5 -o /dev/null --interface "if!eth0" "https://$h:$KUBERNETES_SERVICE_PORT/version"; echo "curl exit $?"'
 
 Sidecar logs (refused configs show up as "[twg-firewall] FATAL"):
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "twg.fullname" . }} -c wireguard

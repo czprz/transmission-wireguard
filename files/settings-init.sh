@@ -38,12 +38,19 @@ if [ -n "${RPC_USERNAME+x}${RPC_PASSWORD+x}" ] && { [ -z "${RPC_USERNAME:-}" ] |
   exit 1
 fi
 
+# The web UI listens on :: (IPv4 and IPv6) by default, which fails outright
+# on a kernel without IPv6; fall back to IPv4 there.
+ipv6=yes
+# (procfs files report size 0, so read it rather than test -s.)
+grep -q . /proc/net/if_inet6 2>/dev/null || ipv6=no
+
 umask 077
 jq \
-  --arg v4 "$v4" --arg v6 "$v6" \
+  --arg v4 "$v4" --arg v6 "$v6" --arg ipv6 "$ipv6" \
   --arg user "${RPC_USERNAME:-}" --arg pass "${RPC_PASSWORD:-}" '
   .["bind-address-ipv4"] = $v4
   | .["bind-address-ipv6"] = $v6
+  | (if $ipv6 == "no" and .["rpc-bind-address"] == "::" then .["rpc-bind-address"] = "0.0.0.0" else . end)
   | (if $user != "" and $pass != "" then
        .["rpc-authentication-required"] = true | .["rpc-username"] = $user | .["rpc-password"] = $pass
      else . end)

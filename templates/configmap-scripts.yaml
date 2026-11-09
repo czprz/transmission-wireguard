@@ -9,3 +9,5 @@ data:
     {{- .Files.Get "files/firewall.sh" | nindent 4 }}
   settings-init.sh: |
     {{- .Files.Get "files/settings-init.sh" | nindent 4 }}
+  transmission-live.sh: |
+    {{- .Files.Get "files/transmission-live.sh" | nindent 4 }}

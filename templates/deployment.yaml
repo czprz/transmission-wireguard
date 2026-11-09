@@ -16,8 +16,13 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "twg.selectorLabels" . | nindent 8 }}
+        {{- /* Istio ambient would redirect the pod's traffic with its own rules in the namespace. */ -}}
+        {{- $labels := merge (include "twg.selectorLabels" . | fromYaml) (deepCopy .Values.podLabels) (dict "istio.io/dataplane-mode" "none") }}
+        {{- toYaml $labels | nindent 8 }}
       annotations:
+        {{- /* A mesh proxy cannot reach its control plane through the kill switch, so the pod would never be ready. */ -}}
+        {{- $annotations := merge (deepCopy .Values.podAnnotations) (dict "sidecar.istio.io/inject" "false" "linkerd.io/inject" "disabled") }}
+        {{- toYaml (omit $annotations "checksum/scripts" "checksum/settings" "checksum/wg" "checksum/rpc") | nindent 8 }}
         checksum/scripts: {{ include (print $.Template.BasePath "/configmap-scripts.yaml") . | sha256sum }}
         checksum/settings: {{ include (print $.Template.BasePath "/configmap-settings.yaml") . | sha256sum }}
         # Secrets are only read at start; roll the pod when they change.
@@ -27,6 +32,14 @@ spec:
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -76,6 +89,8 @@ spec:
               readOnly: true
             - name: settings-run
               mountPath: /twg/run
+          resources:
+            {{- toYaml .Values.transmission.initResources | nindent 12 }}
 
         # Native sidecar (restartPolicy: Always): Transmission is not started
         # until the startupProbe confirms the kill switch and tunnel are up.
@@ -119,6 +134,10 @@ spec:
               mountPath: /twg/scripts
             - name: wgconf
               mountPath: /config/wg_confs
+              readOnly: true
+            # The addresses Transmission was bound to, so a changed Address is refused.
+            - name: settings-run
+              mountPath: /twg/run
               readOnly: true
             {{- if and .Values.wireguard.kernelMode.enabled .Values.wireguard.kernelMode.mountTun }}
             - name: dev-net-tun
@@ -179,10 +198,11 @@ spec:
             periodSeconds: {{ .Values.probes.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.failureThreshold }}
-          # The pod shares one network namespace, so wg0 is visible here.
+          # Transmission binds its peer port once. If it started while the
+          # tunnel was down, restart it once the tunnel address is back.
           livenessProbe:
             exec:
-              command: ["sh", "-c", "test -d /sys/class/net/wg0"]
+              command: ["/bin/sh", "/twg/scripts/transmission-live.sh"]
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 3
@@ -201,6 +221,12 @@ spec:
               mountPath: /config/settings.json
               subPath: settings.json
               readOnly: true
+            - name: scripts
+              mountPath: /twg/scripts
+              readOnly: true
+            {{- with .Values.transmission.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
             {{- if .Values.persistence.enabled }}
             - name: transmission-storage
               {{- if and .Values.persistence.mounts .Values.persistence.mounts.data }}
@@ -249,6 +275,9 @@ spec:
         - name: transmission-settings
           configMap:
             name: {{ include "twg.fullname" . }}-transmission-settings
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
 
         {{- if and .Values.wireguard.kernelMode.enabled .Values.wireguard.kernelMode.mountTun }}
         - name: dev-net-tun

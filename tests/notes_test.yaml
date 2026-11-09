@@ -37,9 +37,16 @@ tests:
       tests.enabled: true
     asserts:
       - matchRegexRaw:
-          pattern: 'Check for leaks from inside the cluster:\n  helm test RELEASE-NAME -n NAMESPACE --logs\n\nVerify the egress IP'
+          pattern: 'Check for leaks from inside the cluster:\n  helm test RELEASE-NAME -n NAMESPACE --logs\n\nTo compare the pod''s egress address'
 
   - it: explains how to enable helm test
     asserts:
       - matchRegexRaw:
           pattern: '--reset-then-reuse-values --set tests.enabled=true\n  helm test RELEASE-NAME'
+
+  - it: contacts no third-party service
+    asserts:
+      - notMatchRegexRaw:
+          pattern: 'ifconfig|wget'
+      - matchRegexRaw:
+          pattern: 'curl -sk -m 5 -o /dev/null --interface "if!eth0"'

@@ -32,6 +32,15 @@ CANARY_IMAGE="${CANARY_IMAGE:-traefik/whoami:v1.10.3@sha256:43a68d10b9dfcfc3ffbf
 TRACKER_IMAGE="${TRACKER_IMAGE:-busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec}"
 
 P=twg-e2e
+# privileged (the chart's default) or unprivileged: the sidecar with only
+# NET_ADMIN + NET_RAW and src_valid_mark set for the pod, as the README
+# documents for kubelets that allow that sysctl.
+SIDECAR=${SIDECAR:-privileged}
+case $SIDECAR in
+  privileged) SIDECAR_SECURITY=(--privileged) ;;
+  unprivileged) SIDECAR_SECURITY=(--cap-add NET_ADMIN --cap-add NET_RAW) ;;
+  *) echo "SIDECAR must be privileged or unprivileged" >&2; exit 1 ;;
+esac
 NET=$P-net
 SUBNET_PREFIX=172.31.250
 GW=$SUBNET_PREFIX.1
@@ -340,7 +349,7 @@ wait_for() {
 
 stage_scripts() {
   mkdir -p "$1/twg/scripts"
-  cp "$ROOT/files/firewall.sh" "$ROOT/files/settings-init.sh" "$1/twg/scripts/"
+  cp "$ROOT/files/firewall.sh" "$ROOT/files/settings-init.sh" "$ROOT/files/transmission-live.sh" "$1/twg/scripts/"
   chmod 0555 "$1"/twg/scripts/*
 }
 
@@ -433,6 +442,8 @@ docker run -d --name $P-pod --network $NET --ip $POD_IP --ip6 $POD_IP6 --privile
     # dnsPolicy: None with the VPN's resolver (its tunnel address), not
     # Docker's 127.0.0.11, which dockerd answers from outside the namespace.
     echo 'nameserver $TUN_SERVER' >/etc/resolv.conf
+    # podSecurityContext.sysctls: what an unprivileged sidecar cannot set.
+    [[ $SIDECAR == privileged ]] || sysctl -qw net.ipv4.conf.all.src_valid_mark=1
     exec sleep infinity" >/dev/null
 sleep 2
 count_escapes
@@ -511,7 +522,7 @@ else
 fi
 
 # The sidecar exactly as the chart runs it.
-docker create --name $P-wg --network container:$P-pod --privileged -v /twg "${firewall_env[@]}" \
+docker create --name $P-wg --network container:$P-pod "${SIDECAR_SECURITY[@]}" -v /twg "${firewall_env[@]}" \
   --entrypoint /bin/bash "$WG_IMAGE" -c '/twg/scripts/firewall.sh apply && exec /init' >/dev/null
 docker cp "$STAGE/wg/." $P-wg:/ >/dev/null
 docker start $P-wg >/dev/null
@@ -519,6 +530,17 @@ wait_for "wg0 up" 60 as_root wg show wg0 || true
 if ! wait_for "first handshake" 30 via_vpn; then
   fail "the tunnel never came up; nothing below would mean anything"
   exit 1
+fi
+
+# Router advertisements may not add routes past the tunnel. A privileged
+# sidecar restricts them itself; an unprivileged one cannot and must say so.
+ra=$(as_root cat /proc/sys/net/ipv6/conf/eth0/accept_ra_pinfo 2>/dev/null || echo unreadable)
+if [[ $SIDECAR == privileged && $ra == 0 ]]; then
+  pass "router advertisements cannot add on-link prefixes on eth0"
+elif [[ $SIDECAR == unprivileged ]] && docker logs $P-wg 2>&1 | grep -q 'WARNING: /proc/sys is read-only'; then
+  pass "the unprivileged sidecar warns that it cannot restrict router advertisements"
+else
+  fail "router advertisements on eth0 not restricted and not warned about (accept_ra_pinfo=$ra, $SIDECAR sidecar)"
 fi
 
 # settings-init runs in the Transmission image like the chart's init container.
@@ -543,6 +565,7 @@ jq 'del(.["rpc-username"], .["rpc-password"]) | .["rpc-authentication-required"]
   "$STAGE/settings.json" >"$STAGE/tx-settings.json"
 mkdir -p "$STAGE/tx/config"
 cp "$STAGE/tx-settings.json" "$STAGE/tx/config/settings.json"
+stage_scripts "$STAGE/tx"
 # Capabilities as the chart allows them: everything dropped but these.
 docker create --name $P-tx --network container:$P-pod --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
   -e PUID=1000 -e PGID=1000 "$TX_IMAGE" >/dev/null
@@ -829,6 +852,44 @@ else
   fail "stale wg-quick policy rules left behind: $(as_root ip -4 rule show | tr '\n' ';')"
 fi
 
+step "Transmission started while the tunnel was down (it binds its peer port once)"
+# The chart's liveness probe of the Transmission container.
+tx_live() { docker exec $P-tx /bin/sh /twg/scripts/transmission-live.sh; }
+if wait_for "Transmission listening for peers on the tunnel" 30 tx_live; then
+  pass "Transmission's liveness probe passes with the tunnel up"
+else
+  fail "Transmission's liveness probe fails with the tunnel up: $(tx_live 2>&1)"
+fi
+hits_mark
+docker stop -t 10 $P-wg >/dev/null
+as_root ip link del wg0 2>/dev/null || true
+if tx_live >/dev/null 2>&1; then
+  pass "the probe passes while the tunnel address is gone (a restart could not bind any better)"
+else
+  fail "the probe would restart Transmission while the tunnel is down"
+fi
+# A crash (or an old-style probe) restarts Transmission now: it cannot bind
+# its peer port to the missing address, and never tries again.
+docker restart -t 20 $P-tx >/dev/null
+wait_for "transmission listening again" 90 as_app nc -z 127.0.0.1 $WEB_PORT || fail "Transmission did not start again"
+docker start $P-wg >/dev/null
+if wait_for "tunnel back" 60 as_root /twg/scripts/firewall.sh tunnel && wait_for "traffic via VPN" 30 via_vpn; then
+  if tx_live >/dev/null 2>&1; then
+    fail "the probe missed that Transmission never bound its peer port"
+  else
+    pass "the probe fails once the tunnel is back and Transmission has no peer port (the kubelet restarts it)"
+  fi
+else
+  fail "the tunnel did not come back after the sidecar stopped"
+fi
+docker restart -t 20 $P-tx >/dev/null
+if wait_for "Transmission listening for peers on the tunnel" 90 tx_live; then
+  pass "restarted, Transmission listens for peers on the tunnel address again"
+else
+  fail "Transmission did not bind its peer port after a restart: $(tx_live 2>&1)"
+fi
+hits_check "with Transmission starting while the tunnel was down"
+
 step "firewall tampering"
 hits_mark
 as_root ip6tables -I TWG-OUTPUT 1 -j ACCEPT
@@ -920,16 +981,25 @@ fi
 
 step "stale handshake"
 # The liveness branch for handshakeMaxAgeSeconds: the last handshake is at
-# least a few seconds old by now.
+# least a few seconds old by now. In the sidecar, like the probe: it reads
+# PersistentKeepalive from wg0.conf, which as_root cannot see.
 for _ in 1 2 3 4 5; do
   sleep 2
-  out=$(as_root env TWG_HANDSHAKE_MAX_AGE=1 /twg/scripts/firewall.sh live 2>&1) && rc=0 || rc=$?
+  out=$(docker exec -e TWG_HANDSHAKE_MAX_AGE=1 $P-wg /twg/scripts/firewall.sh live 2>&1) && rc=0 || rc=$?
   ((rc == 0)) || break
 done
 if ((rc != 0)) && grep -q 'no handshake within 1s' <<<"$out"; then
   pass "liveness fails when the newest handshake is older than the limit"
 else
   fail "liveness did not notice a stale handshake (rc=$rc: $out)"
+fi
+# Without PersistentKeepalive an idle tunnel stops handshaking, so the age
+# is not checked (the restarts would never end).
+if docker exec $P-wg sh -c 'sed /PersistentKeepalive/d /config/wg_confs/wg0.conf >/tmp/nk.conf &&
+    TWG_WG_CONF=/tmp/nk.conf TWG_HANDSHAKE_MAX_AGE=1 /twg/scripts/firewall.sh live' 2>/dev/null; then
+  pass "the handshake age is not checked without PersistentKeepalive"
+else
+  fail "liveness checks the handshake age of a tunnel without PersistentKeepalive"
 fi
 
 step "VPN server roams to another address"
@@ -1002,8 +1072,14 @@ run_apply() {
   stage_scripts "$STAGE/pre"
   sed "$1" "$STAGE/wg/config/wg_confs/wg0.conf" >"$STAGE/pre/config/wg_confs/wg0.conf"
   [[ -z ${2:-} ]] || echo "$2" >"$STAGE/pre/config/wg_confs/wg1.conf"
+  # $3: the settings.json the init container wrote (bound addresses).
+  if [[ -n ${3:-} ]]; then
+    mkdir -p "$STAGE/pre/twg/run"
+    echo "$3" >"$STAGE/pre/twg/run/settings.json"
+  fi
+  # TWG_TEST_PRE (in APPLY_ENV) sets up the namespace's network first.
   docker create --name $P-pre --privileged --network none "${firewall_env[@]}" "${APPLY_ENV[@]}" --entrypoint /bin/bash "$WG_IMAGE" \
-    -c '/twg/scripts/firewall.sh apply; rc=$?; /twg/scripts/firewall.sh check && echo RULES_OK; echo "RC=$rc"
+    -c 'eval "${TWG_TEST_PRE:-}"; /twg/scripts/firewall.sh apply; rc=$?; /twg/scripts/firewall.sh check && echo RULES_OK; echo "RC=$rc"
       for c in INPUT FORWARD OUTPUT; do iptables -S $c | head -n1; ip6tables -S $c | head -n1; done | sed "s/^/POLICY /"' >/dev/null
   docker cp "$STAGE/pre/." $P-pre:/ >/dev/null
   # Not start -a: attaching can miss the output of a container this short-lived.
@@ -1062,6 +1138,19 @@ expect_locked_down "a connection mark sharing bits with the fwmark" TWG_LOCAL_MA
 expect_locked_down "the peer port equal to the web port" TWG_PEER_PORT=$WEB_PORT
 expect_locked_down "a zero fwmark" TWG_WG_FWMARK=0
 expect_locked_down "a fwmark that is the main routing table" TWG_WG_FWMARK=254
+# IPv6 in the namespace with ip6tables broken (a shim that always fails):
+# refused rather than run with IPv6 unfiltered; IPv4 is locked down.
+APPLY_ENV=(-e "TWG_TEST_PRE=ip link add d6 type dummy && ip link set d6 up && ip -6 addr add fd00::5/64 dev d6 && mkdir -p /tmp/shim &&
+  printf '#!/bin/sh\nexit 1\n' >/tmp/shim/ip6tables && chmod +x /tmp/shim/ip6tables && export PATH=/tmp/shim:\$PATH")
+out=$(run_apply '')
+APPLY_ENV=()
+if grep -q 'FATAL: IPv6 is configured in the pod but ip6tables is unusable' <<<"$out" &&
+  [[ $(grep -c '^POLICY -P [A-Z]* DROP$' <<<"$out") == 3 ]] && ! grep -q 'RC=0' <<<"$out"; then
+  pass "refused, IPv4 locked down: IPv6 in the pod with ip6tables unusable"
+else
+  fail "not refused: IPv6 in the pod with ip6tables unusable"
+  echo "${out//$'\n'/$'\n        '}"
+fi
 expect_refused "a FwMark that differs from firewall.wgFwmark" '/^\[Interface\]/a FwMark = 1234'
 APPLY_ENV=(-e TWG_WG_FWMARK=4660)
 expect_refused "a custom fwmark without a FwMark line" ''
@@ -1071,6 +1160,15 @@ expect_refused "Table = off" '/^\[Interface\]/a Table = off'
 expect_refused "Table = 1234" '/^\[Interface\]/a Table = 1234'
 expect_refused "a second tunnel config next to wg0.conf" '' $'[Interface]\nPostUp = iptables -P OUTPUT ACCEPT'
 expect_accepted "FwMark written in hex (0xca6c = 51820)" '/^\[Interface\]/a FwMark = 0xca6c'
+# A route to the endpoint with jumbo frames, like AWS VPC CNI's eth0.
+APPLY_ENV=(-e "TWG_TEST_PRE=ip link add j0 mtu 9001 type dummy && ip link set j0 up && ip route add default dev j0")
+expect_refused "no MTU line where the endpoint's route has MTU 9001" ''
+expect_accepted "MTU = 1420 where the endpoint's route has MTU 9001" '/^\[Interface\]/a MTU = 1420'
+APPLY_ENV=()
+expect_refused "an Address changed since Transmission was bound" '' '' \
+  '{"bind-address-ipv4": "10.99.0.77", "bind-address-ipv6": "'"$TUN_CLIENT6"'"}'
+expect_accepted "the Address Transmission was bound to" '' '' \
+  '{"bind-address-ipv4": "'"$TUN_CLIENT"'", "bind-address-ipv6": "'"$TUN_CLIENT6"'"}'
 expect_accepted "CRLF line endings" 's/$/\r/'
 
 echo
