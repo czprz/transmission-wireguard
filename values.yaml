@@ -62,8 +62,21 @@ persistence:
   # mounts:
   #   data:
   #     mountPath: /data
-  # For downloads on another volume (NFS, SMB, a second PVC), see
-  # extraVolumes and transmission.extraVolumeMounts.
+
+  # A PVC of its own for /data (the downloads), so filling it cannot stop
+  # Transmission from saving its config and resume files on the main volume.
+  # Recommended for new installs. Off by default: on an existing install,
+  # turning it on hides the downloads already on the main volume. Kept on
+  # uninstall like the main PVC (keepOnUninstall).
+  downloads:
+    enabled: false
+    size: 100Gi
+    accessModes:
+      - ReadWriteOnce
+    # storageClassName: ""
+    # existingClaim: ""
+  # For downloads on an NFS or SMB share, see extraVolumes and
+  # transmission.extraVolumeMounts.
 
 transmission:
   env:

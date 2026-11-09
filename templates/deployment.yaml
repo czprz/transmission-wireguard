@@ -253,7 +253,10 @@ spec:
             {{- with .Values.transmission.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- if .Values.persistence.enabled }}
+            {{- if .Values.persistence.downloads.enabled }}
+            - name: transmission-downloads
+              mountPath: {{ (.Values.persistence.mounts | default dict).data | default dict | dig "mountPath" "/data" }}
+            {{- else if .Values.persistence.enabled }}
             - name: transmission-storage
               {{- if and .Values.persistence.mounts .Values.persistence.mounts.data }}
               mountPath: {{ default "/data" .Values.persistence.mounts.data.mountPath }}
@@ -296,6 +299,11 @@ spec:
         {{- else }}
         - name: transmission-config
           emptyDir: {}
+        {{- end }}
+        {{- if .Values.persistence.downloads.enabled }}
+        - name: transmission-downloads
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.downloads.existingClaim | default (printf "%s-downloads" (include "twg.fullname" .)) }}
         {{- end }}
 
         - name: transmission-settings

@@ -20,3 +20,27 @@ spec:
   storageClassName: {{ .Values.persistence.storageClassName }}
   {{- end }}
 {{- end }}
+{{- with .Values.persistence.downloads }}
+{{- if and .enabled (not .existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "twg.fullname" $ }}-downloads
+  labels:
+    {{- include "twg.labels" $ | nindent 4 }}
+  {{- if $.Values.persistence.keepOnUninstall }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml (default (list "ReadWriteOnce") .accessModes) | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ required "persistence.downloads.size must be set" .size | quote }}
+  {{- if .storageClassName }}
+  storageClassName: {{ .storageClassName }}
+  {{- end }}
+{{- end }}
+{{- end }}

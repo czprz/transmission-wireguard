@@ -151,6 +151,7 @@ PersistentKeepalive = 25
 - **The pod opts out of Istio and Linkerd** (injection annotations, and the ambient label `istio.io/dataplane-mode: none`): a mesh proxy can't reach its control plane through the kill switch. Override them in `podAnnotations`/`podLabels` if you must.
 - **Transmission now stops cleanly.** The image stops it through its RPC with `USER`/`PASS`, which the chart never set, so with RPC auth every shutdown waited out the grace period and ended in a kill (exit 137) without Transmission saving its state. The chart now sets them from `transmission.rpcAuth` (so they can't be set in `transmission.env`), and `terminationGracePeriodSeconds` is 60 (was Kubernetes' 30) for a slow shutdown with many torrents.
 - **The chart is published at `oci://ghcr.io/czprz/transmission-wireguard`** (the repository moved from `dever-labs`).
+- **`persistence.downloads`** puts `/data` on a PVC of its own. It's off by default; see [Persistence](#persistence) before turning it on for an existing install.
 
 ## Transmission settings
 
@@ -166,9 +167,22 @@ Official docs:
 
 ## Persistence
 
-The chart supports PVC or hostPath. By default it creates a 10Gi `ReadWriteOnce` PVC with the cluster's default storage class; set `persistence.storageClassName`, `existingClaim`, or `type: hostPath` with `hostPath.path` to change that. It holds both `/config` and `/data`, so size it for your downloads. `helm uninstall` keeps the chart's PVC (`persistence.keepOnUninstall`); delete it yourself when you're done with the data.
+The chart supports PVC or hostPath. By default it creates a 10Gi `ReadWriteOnce` PVC with the cluster's default storage class; set `persistence.storageClassName`, `existingClaim`, or `type: hostPath` with `hostPath.path` to change that. It holds both `/config` and `/data`, so size it for your downloads. `helm uninstall` keeps the chart's PVCs (`persistence.keepOnUninstall`); delete them yourself when you're done with the data.
 
-To keep downloads on another volume (an NFS or SMB share, a second PVC), add it under `extraVolumes` and mount it in the Transmission container with `transmission.extraVolumeMounts`:
+For a new install, give the downloads a PVC of their own, so a full download disk can't stop Transmission from saving its config and resume files:
+
+```yaml
+persistence:
+  downloads:
+    enabled: true
+    size: 500Gi
+    # storageClassName: bulk
+    # existingClaim: media
+```
+
+It's off by default because on an existing install it would hide the downloads already on the main volume: copy them over first.
+
+To keep downloads on an NFS or SMB share, add it under `extraVolumes` and mount it in the Transmission container with `transmission.extraVolumeMounts`:
 
 ```yaml
 extraVolumes:
@@ -249,8 +263,9 @@ Comparing the pod's public address with the cluster's needs an IP echo endpoint;
 ## Testing
 
 - `make lint`: `helm lint`, the helm-unittest suites in `tests/`, `tests/schema-test.sh` (the schema refuses typos and bad addresses) and `tests/metadata-test.sh` (`appVersion` and Chart.yaml's image list match the default images).
+- `make release-test`: packages and pushes the chart with the release job's script to a local registry, pulls it back, and checks that the package holds only the chart (never a local `wg0.conf` or values file) and that this README names where it's published.
 - `make e2e-docker`: builds a dual-stack Pod-like network namespace in Docker with the chart's images and scripts, a WireGuard server and a canary, then tries to leak over IPv4 and IPv6: sockets bound to `eth0`, UDP (DNS and another port), ICMP, Transmission's own tracker announces, a deleted `wg0`, sidecar restarts and SIGKILL, tampered and flushed rules, packets marked by a stray mangle rule or re-routed by a nat rule, duplicating nft rules, unsafe configs. Every leak probe must be refused or time out, and every canary counts the packets that arrive from the pod's own address, so a leak fails the test however the client saw it; a probe that can't run fails the test too. Needs Docker with kernel WireGuard.
-- `make e2e-kind CNI=kindnet|calico|cilium`: creates a kind cluster with that CNI (kindnet dual-stack, with IPv6 checks) and runs the same idea there. It adds start order, kubelet probes, pod DNS, UDP, the Service, `helm test` against a healthy and a tampered pod, the NetworkPolicy holding with the in-pod kill switch verifiably flushed, a refused `existingSecret` keeping Transmission from starting, and pod termination. The leak checks run first without the NetworkPolicy, so they test the in-pod kill switch alone. Delete the cluster afterwards with `kind delete cluster`.
+- `make e2e-kind CNI=kindnet|calico|cilium`: creates a kind cluster with that CNI (kindnet dual-stack, with IPv6 checks) and runs the same idea there. It adds start order, kubelet probes, pod DNS, UDP, the Service, `helm test` against a healthy and a tampered pod, the NetworkPolicy holding with the in-pod kill switch verifiably flushed, a refused `existingSecret` keeping Transmission from starting, a downloads PVC, and pod termination (Transmission must exit 0 within the grace period). CI also validates the rendered chart against the cluster's API server. The leak checks run first without the NetworkPolicy, so they test the in-pod kill switch alone. Delete the cluster afterwards with `kind delete cluster`.
 
 CI runs the Docker test on amd64 and arm64 (and once with the sidecar unprivileged, `make e2e-docker SIDECAR=unprivileged`) and the kind test with each CNI, on every pull request and on pushes to `dev` and `main`.
 
