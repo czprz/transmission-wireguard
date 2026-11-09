@@ -151,9 +151,11 @@ jobs:
           KIND="$(go env GOPATH)/bin/kind" tests/e2e/kind-cluster.sh ${{ matrix.cni }}
 
       # The API server validates the manifests, unknown fields included.
+      # (The helm test pod needs its ServiceAccount to exist; kind-test.sh
+      # runs it for real.)
       - name: Server-side validation
         run: |
-          helm template transmission-wireguard . -f ci/default-values.yaml --set tests.enabled=true --set persistence.downloads.enabled=true |
+          helm template transmission-wireguard . -f ci/default-values.yaml --set persistence.downloads.enabled=true |
             kubectl apply --dry-run=server --validate=strict -f -
 
       - name: Kill switch leak test (kind, ${{ matrix.cni }})
