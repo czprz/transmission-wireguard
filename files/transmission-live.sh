@@ -9,10 +9,14 @@
 # the kill switch keeps everything in until the sidecar is back.
 set -eu
 
-SETTINGS="${TWG_SETTINGS:-/config/settings.json}"
-
-addr=$(jq -r '.["bind-address-ipv4"] // ""' "$SETTINGS")
-port=$(jq -r '.["peer-port"] // 51413' "$SETTINGS")
+# Written by the init container next to settings.json, without the
+# credentials.
+TUNNEL_ENV="${TWG_TUNNEL_ENV:-/twg/run/tunnel.env}"
+TWG_BIND4="" TWG_PEER_PORT=51413
+# shellcheck disable=SC1090
+. "$TUNNEL_ENV"
+addr=$TWG_BIND4
+port=$TWG_PEER_PORT
 case $addr in "" | 127.*) exit 0 ;; esac
 
 # The namespace's own addresses are the "/32 host LOCAL" entries.

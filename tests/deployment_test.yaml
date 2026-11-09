@@ -90,6 +90,9 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].volumeMounts
           content: { name: scripts, mountPath: /twg/scripts, readOnly: true }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: settings-run, mountPath: /twg/run, readOnly: true }
 
   - it: shows the sidecar the addresses Transmission was bound to
     template: templates/deployment.yaml

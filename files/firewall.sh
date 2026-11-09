@@ -22,8 +22,8 @@ SAVED_ROUTE_TABLE="${TWG_SAVED_ROUTE_TABLE:-1000}"
 HANDSHAKE_MAX_AGE="${TWG_HANDSHAKE_MAX_AGE:-0}"
 ALLOW_CONF_HOOKS="${TWG_ALLOW_CONF_HOOKS:-false}"
 CONF="${TWG_WG_CONF:-/config/wg_confs/${WG_IFACE}.conf}"
-# settings.json the init container wrote, with the addresses Transmission is bound to.
-TX_SETTINGS="${TWG_TX_SETTINGS:-/twg/run/settings.json}"
+# The addresses Transmission is bound to, written by the init container.
+TUNNEL_ENV="${TWG_TUNNEL_ENV:-/twg/run/tunnel.env}"
 
 IN=TWG-INPUT
 OUT=TWG-OUTPUT
@@ -386,7 +386,7 @@ preflight() {
   # pod started. The Secret can change under a running pod and this
   # container reads it again when it restarts: a new Address would leave
   # Transmission bound to addresses that no longer exist.
-  if [[ -r $TX_SETTINGS ]]; then
+  if [[ -r $TUNNEL_ENV ]]; then
     local a want4="" want6="" bound4 bound6
     for a in ${addrs//,/ }; do
       a=${a%%/*}
@@ -396,8 +396,8 @@ preflight() {
         [[ -n $want6 ]] || want6=$a
       fi
     done
-    bound4=$(sed -nE 's/.*"bind-address-ipv4"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$TX_SETTINGS")
-    bound6=$(sed -nE 's/.*"bind-address-ipv6"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$TX_SETTINGS")
+    bound4=$(sed -n 's/^TWG_BIND4=//p' "$TUNNEL_ENV")
+    bound6=$(sed -n 's/^TWG_BIND6=//p' "$TUNNEL_ENV")
     if [[ $bound4 != "${want4:-127.0.0.1}" || $bound6 != "${want6:-::1}" ]]; then
       die "Address in ${CONF} changed since the pod started (Transmission is bound to ${bound4:-?} and ${bound6:-?}). Restart the pod: kubectl rollout restart deployment/<release>-transmission-wireguard"
     fi

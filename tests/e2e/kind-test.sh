@@ -682,6 +682,17 @@ else
 fi
 helm uninstall twg-bad -n "$NS" >/dev/null
 
+step "Transmission's liveness probe"
+# Every outage above (sidecar restarts, the deleted tunnel) left
+# Transmission listening on the tunnel address, so its probe must never
+# have restarted it.
+tx_restarts=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.containerStatuses[?(@.name=="transmission")].restartCount}')
+if [[ $tx_restarts == 0 ]]; then
+  pass "Transmission was never restarted, through every sidecar restart and tunnel outage"
+else
+  fail "Transmission was restarted ${tx_restarts:-?} times: $(kubectl -n "$NS" get events --field-selector "involvedObject.name=$POD" -o jsonpath='{range .items[?(@.reason=="Unhealthy")]}{.message}{"; "}{end}' | cut -c1-300)"
+fi
+
 step "pod termination"
 # Transmission stops before its sidecar, and the rules live as long as the
 # pod's network namespace: nothing may leak while the pod shuts down.

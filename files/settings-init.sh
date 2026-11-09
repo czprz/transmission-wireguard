@@ -6,6 +6,9 @@ set -eu
 
 SRC="${TWG_SETTINGS_SRC:-/twg/settings/settings.json}"
 DST="${TWG_SETTINGS_DST:-/twg/run/settings.json}"
+# The bound addresses and peer port, without the credentials, for
+# Transmission's liveness probe and the sidecar.
+TUNNEL_ENV="${TWG_TUNNEL_ENV:-/twg/run/tunnel.env}"
 CONF="${TWG_WG_CONF:-/twg/wg/wg0.conf}"
 BIND_TO_TUNNEL="${TWG_BIND_TO_TUNNEL:-true}"
 
@@ -55,6 +58,11 @@ jq \
        .["rpc-authentication-required"] = true | .["rpc-username"] = $user | .["rpc-password"] = $pass
      else . end)
 ' "$SRC" >"$DST"
-chown "${PUID:-1000}:${PGID:-1000}" "$DST"
+# Transmission's user owns it; the image's own scripts read rpc-port from
+# it as root, which without CAP_DAC_OVERRIDE only works through the group.
+chmod 0640 "$DST"
+chown "${PUID:-1000}:0" "$DST"
+umask 022
+printf 'TWG_BIND4=%s\nTWG_BIND6=%s\nTWG_PEER_PORT=%s\n' "$v4" "$v6" "$(jq -r '.["peer-port"] // 51413' "$DST")" >"$TUNNEL_ENV"
 
 echo "[twg-settings] wrote ${DST} (bind-address-ipv4=$(jq -r '.["bind-address-ipv4"] // "unset"' "$DST"), rpc-auth=$(jq -r '.["rpc-authentication-required"] // false' "$DST"))"

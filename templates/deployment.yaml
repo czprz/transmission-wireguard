@@ -246,6 +246,10 @@ spec:
             - name: scripts
               mountPath: /twg/scripts
               readOnly: true
+            # tunnel.env, for the liveness probe.
+            - name: settings-run
+              mountPath: /twg/run
+              readOnly: true
             {{- with .Values.transmission.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

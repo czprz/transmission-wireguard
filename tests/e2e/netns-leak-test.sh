@@ -559,14 +559,21 @@ docker create --name $P-pre --network none -e RPC_USERNAME=admin -e RPC_PASSWORD
 docker cp "$STAGE/settings/." $P-pre:/ >/dev/null
 docker start -a $P-pre
 docker cp $P-pre:/twg/run/settings.json "$STAGE/settings.json"
+docker cp $P-pre:/twg/run/tunnel.env "$STAGE/tunnel.env"
 docker rm -f $P-pre >/dev/null
 
 # Transmission with the composed settings, but without credentials so the
 # web UI answers plainly for the reachability checks below.
 jq 'del(.["rpc-username"], .["rpc-password"]) | .["rpc-authentication-required"] = false' \
   "$STAGE/settings.json" >"$STAGE/tx-settings.json"
-mkdir -p "$STAGE/tx/config"
+mkdir -p "$STAGE/tx/config" "$STAGE/tx/twg/run"
 cp "$STAGE/tx-settings.json" "$STAGE/tx/config/settings.json"
+# 0600 like the chart's (the image then chowns it to its user), so root in
+# the container, without CAP_DAC_OVERRIDE, cannot read it: as for the
+# liveness probe in Kubernetes.
+chmod 0600 "$STAGE/tx/config/settings.json"
+cp "$STAGE/tunnel.env" "$STAGE/tx/twg/run/tunnel.env"
+chmod 0644 "$STAGE/tx/twg/run/tunnel.env"
 stage_scripts "$STAGE/tx"
 # Capabilities as the chart allows them: everything dropped but these.
 docker create --name $P-tx --network container:$P-pod --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
@@ -590,6 +597,12 @@ if jq -e --arg ip $TUN_CLIENT --arg ip6 $TUN_CLIENT6 '.["bind-address-ipv4"] == 
   pass "peer sockets bound to tunnel addresses $TUN_CLIENT and $TUN_CLIENT6"
 else
   fail "bind addresses wrong: $(jq -c '{a4:.["bind-address-ipv4"],a6:.["bind-address-ipv6"]}' "$STAGE/settings.json")"
+fi
+if [[ $(cat "$STAGE/tunnel.env") == "TWG_BIND4=$TUN_CLIENT"$'\n'"TWG_BIND6=$TUN_CLIENT6"$'\n'"TWG_PEER_PORT=$PEER_PORT" ]] &&
+  ! grep -q s3cret "$STAGE/tunnel.env"; then
+  pass "tunnel.env holds the bound addresses and peer port, and no credentials"
+else
+  fail "tunnel.env is wrong: $(tr '\n' ' ' <"$STAGE/tunnel.env")"
 fi
 if jq -e '.["rpc-authentication-required"] == true and .["rpc-username"] == "admin" and .["rpc-password"] == "s3cret"' "$STAGE/settings.json" >/dev/null; then
   pass "RPC credentials from the Secret are applied"
@@ -1074,10 +1087,10 @@ run_apply() {
   stage_scripts "$STAGE/pre"
   sed "$1" "$STAGE/wg/config/wg_confs/wg0.conf" >"$STAGE/pre/config/wg_confs/wg0.conf"
   [[ -z ${2:-} ]] || echo "$2" >"$STAGE/pre/config/wg_confs/wg1.conf"
-  # $3: the settings.json the init container wrote (bound addresses).
+  # $3: the tunnel.env the init container wrote (bound addresses).
   if [[ -n ${3:-} ]]; then
     mkdir -p "$STAGE/pre/twg/run"
-    echo "$3" >"$STAGE/pre/twg/run/settings.json"
+    echo "$3" >"$STAGE/pre/twg/run/tunnel.env"
   fi
   # TWG_TEST_PRE (in APPLY_ENV) sets up the namespace's network first.
   docker create --name $P-pre --privileged --network none "${firewall_env[@]}" "${APPLY_ENV[@]}" --entrypoint /bin/bash "$WG_IMAGE" \
@@ -1168,9 +1181,8 @@ expect_refused "no MTU line where the endpoint's route has MTU 9001" ''
 expect_accepted "MTU = 1420 where the endpoint's route has MTU 9001" '/^\[Interface\]/a MTU = 1420'
 APPLY_ENV=()
 expect_refused "an Address changed since Transmission was bound" '' '' \
-  '{"bind-address-ipv4": "10.99.0.77", "bind-address-ipv6": "'"$TUN_CLIENT6"'"}'
-expect_accepted "the Address Transmission was bound to" '' '' \
-  '{"bind-address-ipv4": "'"$TUN_CLIENT"'", "bind-address-ipv6": "'"$TUN_CLIENT6"'"}'
+  $'TWG_BIND4=10.99.0.77\nTWG_BIND6='"$TUN_CLIENT6"$'\nTWG_PEER_PORT=51413'
+expect_accepted "the Address Transmission was bound to" '' '' "$(cat "$STAGE/tunnel.env")"
 expect_accepted "CRLF line endings" 's/$/\r/'
 
 echo
