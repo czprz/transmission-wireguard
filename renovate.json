@@ -59,8 +59,8 @@
     },
     {
       "customType": "regex",
-      "description": "Images pinned as name:tag@digest in the e2e tests, Makefile and workflows",
-      "managerFilePatterns": ["/^tests/e2e/.+\\.sh$/", "/^Makefile$/", "/^\\.github/workflows/.+\\.ya?ml$/"],
+      "description": "Images pinned as name:tag@digest in the test scripts, Makefile and workflows",
+      "managerFilePatterns": ["/^tests/.+\\.sh$/", "/^Makefile$/", "/^\\.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
         "(?<depName>(?:[a-z0-9.-]+/)*[a-z0-9._-]+):(?<currentValue>v?[0-9][^\\s@\"']*)@(?<currentDigest>sha256:[a-f0-9]{64})"
       ],

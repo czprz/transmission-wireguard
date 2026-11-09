@@ -12,6 +12,7 @@ Thank you for considering contributing! Here are some guidelines to help you get
 ## Development
 - Lint the chart: `helm lint . --strict -f ci/default-values.yaml` (the chart needs a WireGuard config to render)
 - Run tests: `docker run --rm -v "${PWD}:/apps" helmunittest/helm-unittest:3.11.1-0.3.0@sha256:97f1d07dad520c9af52e090198469515b7b194622b5085302e40b11a8a930613 .` `tests/schema-test.sh` and `tests/metadata-test.sh` (`appVersion` and Chart.yaml's image list must match the default images; bump them together)
+- Release: `make release-test` pushes the package to a local registry with `ci/push-chart.sh`, the release job's script, and checks it against an allowlist; a new top-level file must be listed in `.helmignore` or in that allowlist
 - Validate manifests: `make validate` runs `ct lint --charts . --validate-maintainers=false` from the chart-testing image (the chart sits at the repo root, where `--all` finds nothing to lint)
 - Leak tests: `make e2e-docker` (Docker with kernel WireGuard; `SIDECAR=unprivileged` runs the sidecar with only `NET_ADMIN` and `NET_RAW`) and `make e2e-kind CNI=kindnet|calico|cilium` (deletes and recreates the kind cluster). On Ubuntu hosts whose AppArmor profiles cover `wg`/`wg-quick`, run `sudo aa-teardown` first.
 - Images: Renovate proposes new image builds once they are 14 days old; the Transmission image and `appVersion` come in one PR.

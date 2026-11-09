@@ -45,18 +45,6 @@ jobs:
             quay.io/helmpack/chart-testing:v3.14.0@sha256:425ff3058dfc192fffb94e471e732b9bc995c375df963eba417ff01aea594e83 \
             ct lint --charts . --validate-maintainers=false
 
-      - name: Render chart
-        run: helm template transmission-wireguard . -f ci/default-values.yaml > /tmp/manifest.yaml
-
-      - name: Kubeconform
-        run: |
-          KUBECONFORM_VERSION=0.6.7
-          curl -sSLo kubeconform.tar.gz "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
-          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform.tar.gz" | sha256sum -c -
-          tar -xzf kubeconform.tar.gz kubeconform
-          sudo mv kubeconform /usr/local/bin/kubeconform
-          kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.29.0 /tmp/manifest.yaml
-
       - name: Helm unittest
         run: |
           docker run --rm \
@@ -69,6 +57,10 @@ jobs:
 
       - name: Chart metadata test
         run: tests/metadata-test.sh
+
+      # The release job's packaging and push, against a local registry.
+      - name: Release test
+        run: tests/release-test.sh
 
 
   # Leak tests: try to make traffic escape the tunnel and fail if it does.
@@ -151,11 +143,18 @@ jobs:
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
           rm kubectl
 
-      # go install verifies kind against the Go checksum database.
+      # go install verifies kind against the Go checksum database, and
+      # fetches it from the Go module proxy rather than GitHub.
       - name: Create kind cluster (${{ matrix.cni }})
         run: |
           go install sigs.k8s.io/kind@v0.27.0
           KIND="$(go env GOPATH)/bin/kind" tests/e2e/kind-cluster.sh ${{ matrix.cni }}
+
+      # The API server validates the manifests, unknown fields included.
+      - name: Server-side validation
+        run: |
+          helm template transmission-wireguard . -f ci/default-values.yaml --set tests.enabled=true --set persistence.downloads.enabled=true |
+            kubectl apply --dry-run=server --validate=strict -f -
 
       - name: Kill switch leak test (kind, ${{ matrix.cni }})
         run: tests/e2e/kind-test.sh

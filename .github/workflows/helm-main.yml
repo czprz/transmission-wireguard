@@ -39,17 +39,10 @@ jobs:
         with:
           version: v3.14.4
 
-      - name: Install yq
-        run: |
-          YQ_VERSION=4.45.1
-          curl -sSLo yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-          echo "654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049  yq" | sha256sum -c -
-          sudo install -m 0755 yq /usr/local/bin/yq
-          rm yq
-
       - name: Read current chart version
         id: chart
-        run: echo "result=$(yq -r '.version' Chart.yaml)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "result=$(helm show chart . | sed -n 's/^version: //p')" >> "$GITHUB_OUTPUT"
 
       # Versions pinned: npx runs them in a job that can push to the repo.
       - name: Determine recommended bump
@@ -101,7 +94,9 @@ jobs:
 
       - name: Update Chart.yaml version
         if: steps.bump.outputs.bump != 'none'
-        run: yq -i '.version = strenv(NEW_VERSION)' Chart.yaml
+        run: |
+          sed -i "s/^version: .*/version: ${NEW_VERSION}/" Chart.yaml
+          [ "$(helm show chart . | sed -n 's/^version: //p')" = "${NEW_VERSION}" ]
         env:
           NEW_VERSION: ${{ steps.next.outputs.new_version }}
 

@@ -1,6 +1,6 @@
 # Makefile for transmission-wireguard
 
-.PHONY: lint validate test e2e e2e-docker e2e-kind install help
+.PHONY: lint validate release-test test e2e e2e-docker e2e-kind install help
 
 lint:
 	helm lint . --strict -f ci/default-values.yaml
@@ -14,10 +14,14 @@ validate:
 	  quay.io/helmpack/chart-testing:v3.14.0@sha256:425ff3058dfc192fffb94e471e732b9bc995c375df963eba417ff01aea594e83 \
 	  ct lint --charts . --validate-maintainers=false
 
+# The release job's push, to a local registry (port 5000).
+release-test:
+	GITHUB_REPOSITORY_OWNER=$${GITHUB_REPOSITORY_OWNER:-czprz} tests/release-test.sh
+
 install:
 	helm install transmission ./transmission-wireguard -f values.yaml
 
-test: lint validate
+test: lint validate release-test
 
 # Leak tests. Need Docker with kernel WireGuard; e2e-kind also needs kind,
 # kubectl and helm. CNI=kindnet (dual-stack), calico or cilium.
@@ -42,6 +46,7 @@ help:
 	@echo "Available targets:"
 	@echo "  lint     - Lint the chart and run unit tests"
 	@echo "  validate - Run chart-testing lint"
+	@echo "  release-test - Push the package to a local registry and check it"
 	@echo "  install  - Install the chart with Helm"
-	@echo "  test     - Run lint and validate"
+	@echo "  test     - Run lint, validate and release-test"
 	@echo "  e2e      - Run the kill switch leak tests (Docker, then kind; CNI=kindnet|calico|cilium)"

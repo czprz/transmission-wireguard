@@ -29,20 +29,13 @@ jobs:
         with:
           version: v3.14.4
 
-      - name: Install yq
-        run: |
-          YQ_VERSION=4.45.1
-          curl -sSLo yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"
-          echo "654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049  yq" | sha256sum -c -
-          sudo install -m 0755 yq /usr/local/bin/yq
-          rm yq
-
       - name: Lint chart
         run: helm lint . --strict -f ci/default-values.yaml
 
       - name: Read chart version
         id: chart
-        run: echo "result=$(yq -r '.version' Chart.yaml)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "result=$(helm show chart . | sed -n 's/^version: //p')" >> "$GITHUB_OUTPUT"
 
       - name: Verify tag matches chart version
         run: |
@@ -56,13 +49,9 @@ jobs:
             exit 1
           fi
 
-      - name: Package chart
-        run: |
-          mkdir -p dist
-          helm package . --destination dist
-
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Push chart to GHCR
-        run: helm push dist/*.tgz "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+      # The same script tests/release-test.sh runs against a local registry.
+      - name: Package and push chart to GHCR
+        run: ci/push-chart.sh ghcr.io

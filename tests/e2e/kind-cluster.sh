@@ -6,7 +6,8 @@
 #   calico   Calico (iptables dataplane), IPv4
 #   cilium   Cilium (eBPF dataplane), IPv4
 #
-# Downloads are pinned by checksum. Usage: tests/e2e/kind-cluster.sh calico
+# Downloads are pinned by checksum, and each has a source outside GitHub, so
+# a GitHub outage does not fail the run. Usage: tests/e2e/kind-cluster.sh calico
 set -euo pipefail
 
 CNI=${1:?usage: $0 kindnet|calico|cilium}
@@ -26,6 +27,19 @@ CILIUM_SHA256=b54b1bae91bd87bcf9f19672e7f23304156697596332e6c64a53b62143b2b251
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# fetch FILE SHA256 URL...: the first URL whose download matches the checksum.
+fetch() {
+  local file=$1 sum=$2 url
+  shift 2
+  for url; do
+    if curl -fsSL --retry 2 -m 60 -o "$file" "$url" && echo "$sum  $file" | sha256sum -c --status -; then
+      return 0
+    fi
+    echo "download failed or checksum mismatch: $url" >&2
+  done
+  return 1
+}
+
 case $CNI in
   kindnet) networking='  ipFamily: dual' ;;
   # Calico's manifest defaults its IP pool to 192.168.0.0/16.
@@ -44,9 +58,10 @@ EOF
 
 case $CNI in
   calico)
-    curl -fsSL -o "$TMP/calico.yaml" \
+    # jsDelivr serves the same file from its own CDN.
+    fetch "$TMP/calico.yaml" "$CALICO_SHA256" \
+      "https://cdn.jsdelivr.net/gh/projectcalico/calico@$CALICO_VERSION/manifests/calico.yaml" \
       "https://raw.githubusercontent.com/projectcalico/calico/$CALICO_VERSION/manifests/calico.yaml"
-    echo "$CALICO_SHA256  $TMP/calico.yaml" | sha256sum -c -
     # The manifest names its images by tag; pin each one to its digest.
     sed -i \
       -e "s|docker.io/calico/cni:$CALICO_VERSION\$|&@$CALICO_CNI_DIGEST|" \
@@ -59,7 +74,10 @@ case $CNI in
     kubectl apply -f "$TMP/calico.yaml" >/dev/null
     ;;
   cilium)
-    curl -fsSL -o "$TMP/cilium.tgz" "https://helm.cilium.io/cilium-$CILIUM_VERSION.tgz"
+    # helm.cilium.io is GitHub Pages; Cilium also publishes the chart on quay.io.
+    helm pull oci://quay.io/cilium/charts/cilium --version "$CILIUM_VERSION" -d "$TMP" >/dev/null 2>&1 ||
+      fetch "$TMP/cilium-$CILIUM_VERSION.tgz" "$CILIUM_SHA256" "https://helm.cilium.io/cilium-$CILIUM_VERSION.tgz"
+    mv "$TMP/cilium-$CILIUM_VERSION.tgz" "$TMP/cilium.tgz"
     echo "$CILIUM_SHA256  $TMP/cilium.tgz" | sha256sum -c -
     helm install cilium "$TMP/cilium.tgz" -n kube-system \
       --set image.pullPolicy=IfNotPresent --set ipam.mode=kubernetes >/dev/null
