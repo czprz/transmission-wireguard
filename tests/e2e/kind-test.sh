@@ -120,7 +120,7 @@ record() {
       leak*) LEAKED="$LEAKED ${r#leak }" ;;
       broken*) BROKEN="$BROKEN ${r#broken }" ;;
       blocked | "") BLOCKED=$((BLOCKED + 1)) ;; # "": no UDP datagram arrived
-      vpn) ;;
+      vpn | "$SERVER_IP" | "${SERVER_IP6:-none}") ;; # UDP from the server is the tunnel
       *) LEAKED="$LEAKED $r" ;; # UDP source addresses
     esac
   done
@@ -139,12 +139,17 @@ result_summary() {
   fi
   LEAKED="" BROKEN="" PROBES=0 BLOCKED=0
 }
-# The canaries count every packet that does not come from the VPN server:
-# a leak however the client saw it. Only read around windows in which no
-# ordinary pod or helm test talks to them. (IPv6: TCP, UDP and echo only,
-# not neighbour discovery.)
+# Sensors that count leaked packets, however the client saw them. Only read
+# around windows in which no ordinary pod or helm test talks to them.
+# - The canaries count every packet that does not come from the VPN server
+#   (IPv6: TCP, UDP and echo only, not neighbour discovery).
+# - The VPN server counts new plaintext connections (anything but WireGuard).
+# - The release pod counts every new flow leaving eth0 other than WireGuard's
+#   own, whatever its destination (a rule after the kill switch's jump in
+#   mangle POSTROUTING sees only what it let through).
 count_rules() {
   docker run --rm --network "container:$1" --cap-add NET_ADMIN --entrypoint "" "$WG_IMAGE" sh -c "
+    set -e
     iptables -w -I INPUT ! -s $SERVER_IP -m comment --comment twg-count
     if [ -n '${SERVER_IP6:-}' ]; then
       for m in '-p tcp' '-p udp' '-p ipv6-icmp --icmpv6-type echo-request'; do
@@ -152,33 +157,75 @@ count_rules() {
       done
     fi"
 }
-canary_hits() {
-  local c n out total=0
-  for c in $P-canary $P-udp; do
+count_plaintext() {
+  docker run --rm --network "container:$P-server" --cap-add NET_ADMIN --entrypoint "" "$WG_IMAGE" sh -c "
+    set -e
+    for m in '-p tcp' '-p udp ! --dport 51820' '-p icmp --icmp-type echo-request'; do
+      iptables -w -t mangle -I PREROUTING -i eth0 -m conntrack --ctstate NEW \$m -m comment --comment twg-count
+    done
+    for m in '-p tcp' '-p udp ! --dport 51820' '-p ipv6-icmp --icmpv6-type echo-request'; do
+      ip6tables -w -t mangle -I PREROUTING -i eth0 -m conntrack --ctstate NEW \$m -m comment --comment twg-count
+    done"
+}
+count_escapes() {
+  # shellcheck disable=SC2016 # expanded by the pod's shell
+  kx wireguard sh -c 'set -e
+    for f in 4 6; do
+      ipt=iptables server=$1
+      [ $f = 4 ] || ipt=ip6tables server=${2:-::1}
+      $ipt -w -t mangle -N TWGTEST-ESCAPE
+      $ipt -w -t mangle -A TWGTEST-ESCAPE -p udp -d "$server" --dport 51820 -j RETURN
+      $ipt -w -t mangle -A TWGTEST-ESCAPE -m comment --comment twg-count -j RETURN
+      $ipt -w -t mangle -A POSTROUTING -o eth0 -m conntrack --ctstate NEW -j TWGTEST-ESCAPE
+    done' sh "$SERVER_IP" "${SERVER_IP6:-}"
+}
+# Packets counted by comment twg-count in iptables-save -c output on stdin,
+# as "<family> <packets>" lines.
+count_lines() {
+  awk '/^V6$/ { fam = 6 } !fam { fam = 4 }
+    / --comment "?twg-count"?( |$)/ && match($0, /^\[[0-9]+:/) { n[fam] += substr($0, 2, RLENGTH - 2) }
+    END { print 4, n[4] + 0; print 6, n[6] + 0 }'
+}
+# "<sensor> <family> <packets>" for every sensor; "nopod" as $1 leaves out
+# the release pod (once it is gone).
+sensor_counts() {
+  local c out
+  for c in $P-canary $P-udp $P-server; do
     out=""
     for _ in 1 2 3; do
       out=$(docker run --rm --network "container:$c" --cap-add NET_ADMIN --entrypoint "" "$WG_IMAGE" \
-        sh -c 'iptables-save -c -t filter && ip6tables-save -c -t filter && echo END' 2>/dev/null || true)
+        sh -c 'iptables-save -c && echo V6 && ip6tables-save -c && echo END' 2>/dev/null || true)
       [[ $out == *END* ]] && break
     done
     [[ $out == *END* ]] || { echo unreadable; return; }
-    while read -r n; do
-      total=$((total + n))
-    done < <(sed -n 's/^\[\([0-9]*\):[0-9]*\] .*twg-count.*/\1/p' <<<"$out")
+    count_lines <<<"$out" | sed "s/^/$c /"
   done
-  echo "$total"
+  [[ ${1:-} != nopod ]] || return 0
+  # The sidecar may be restarting: retry for a while.
+  for _ in $(seq 15); do
+    out=$(kx wireguard sh -c 'iptables-save -c -t mangle && echo V6 && ip6tables-save -c -t mangle && echo END' 2>/dev/null || true)
+    [[ $out == *END* ]] && break
+    sleep 2
+  done
+  [[ $out == *END* ]] || { echo unreadable; return; }
+  count_lines <<<"$out" | sed "s/^/pod /"
+}
+canary_hits() {
+  local out
+  out=$(sensor_counts "$@")
+  if [[ $out == *unreadable* ]]; then echo unreadable; else awk '{ t += $3 } END { print t + 0 }' <<<"$out"; fi
 }
 HITS=unreadable
-hits_mark() { HITS=$(canary_hits); }
+hits_mark() { HITS=$(canary_hits "$@"); }
 hits_check() {
   local now
-  now=$(canary_hits)
+  now=$(canary_hits "${@:2}")
   if [[ $HITS == unreadable || $now == unreadable ]]; then
-    fail "could not read the canaries' packet counters $1"
+    fail "could not read the packet counters $1"
   elif ((now > HITS)); then
-    fail "LEAK: $((now - HITS)) packet(s) not from the VPN server reached the canaries $1"
+    fail "LEAK: $((now - HITS)) packet(s) outside the tunnel reached the canaries, the server or left eth0 $1"
   else
-    pass "the canaries received nothing but VPN traffic $1"
+    pass "no packet left eth0 outside the tunnel, and the canaries got only VPN traffic $1"
   fi
   HITS=$now
 }
@@ -190,7 +237,7 @@ tcp_open() { [[ $("$@" -s -o /dev/null -m 2 -w '%{time_connect}' 2>/dev/null </d
 tcp_eth0() {
   local out tc rc
   # shellcheck disable=SC2016 # expanded by the pod's shell
-  out=$(kx transmission sh -c 'curl -s -o /dev/null -m 2 --interface eth0 -w "%{time_connect}" "$1" </dev/null; echo " rc=$?"' sh "$1" 2>/dev/null || true)
+  out=$(kx transmission sh -c 'curl -s -o /dev/null -m 2 --interface "if!eth0" -w "%{time_connect}" "$1" </dev/null; echo " rc=$?"' sh "$1" 2>/dev/null || true)
   tc=${out%% *} rc=${out##*rc=}
   if [[ $tc =~ [1-9] ]]; then
     echo open
@@ -201,10 +248,12 @@ tcp_eth0() {
   fi
 }
 # A request bound to eth0 must be refused (curl exit 7) or time out (28);
-# any other failure (exec failed, no eth0) proves nothing.
+# any other failure (exec failed, no eth0) proves nothing. "if!" makes curl
+# fail rather than fall back to binding eth0's address (into the tunnel).
+ETH0=(--interface 'if!eth0')
 check_eth0() {
   local what=$1 rc; shift
-  rc=$(kx transmission sh -c 'curl -sk -m 4 -o /dev/null --interface eth0 "$@" 2>/dev/null; echo "rc=$?"' sh "$@" |
+  rc=$(kx transmission sh -c 'curl -sk -m 4 -o /dev/null --interface "if!eth0" "$@" 2>/dev/null; echo "rc=$?"' sh "$@" |
     sed -n 's/^rc=//p' || true)
   case $rc in
     7 | 28) pass "a socket bound to eth0 cannot reach $what" ;;
@@ -276,8 +325,15 @@ docker run -d --name $P-server --network "$KIND_NET" --privileged \
     ip addr add $TUN_SERVER6/64 dev wg0
     ip link set wg0 up
     sysctl -qw net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
-    iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-    ip6tables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+    # Only tunnel traffic is forwarded and NATed, like a real VPN server: a
+    # plaintext packet routed via the server must not come out as its own.
+    for ipt in iptables ip6tables; do
+      \$ipt -P FORWARD DROP
+      \$ipt -A FORWARD -i wg0 -o eth0 -j ACCEPT
+      \$ipt -A FORWARD -i eth0 -o wg0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    done
+    iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o eth0 -j MASQUERADE
+    ip6tables -t nat -A POSTROUTING -s fd99::/64 -o eth0 -j MASQUERADE
     exec sleep infinity" >/dev/null
 CANARY_IP=$(container_ip $P-canary)
 SERVER_IP=$(container_ip $P-server)
@@ -293,6 +349,7 @@ if ((IPV6)); then
 fi
 count_rules $P-canary
 count_rules $P-udp
+count_plaintext
 
 kubectl create namespace "$NS" >/dev/null
 kubectl -n "$NS" create secret generic wg-client --from-file=wg0.conf=/dev/stdin >/dev/null <<EOF
@@ -319,7 +376,9 @@ helm_args=(
 )
 helm install $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${helm_args[@]}" --set networkPolicy.enabled=false
 POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/instance=$RELEASE -o jsonpath='{.items[0].metadata.name}')
+POD_UID=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.metadata.uid}')
 wait_for "first handshake" 15 via_vpn || true
+count_escapes || fail "could not install the pod's eth0 sensor"
 
 step "pod start"
 if kubectl -n "$NS" wait --for=condition=Ready "pod/$POD" --timeout=10s >/dev/null; then
@@ -344,7 +403,7 @@ else
 fi
 
 step "egress (in-pod kill switch only, NetworkPolicy off)"
-hits_mark
+before_counts=$(sensor_counts)
 baseline=$(ordinary_pod curl -sS -m 5 "http://$CANARY_IP/cgi-bin/ip" | remote_addr || true)
 if [[ -n $baseline && $baseline != "$SERVER_IP" ]]; then
   pass "baseline: an ordinary pod reaches the canary directly (as $baseline)"
@@ -359,12 +418,41 @@ if ((IPV6)); then
     fail "baseline: an ordinary pod cannot reach the canary over IPv6 (harness broken)"
   fi
 fi
-baseline_hits=$(canary_hits)
-if [[ $HITS != unreadable && $baseline_hits != unreadable ]] && ((baseline_hits > HITS)); then
-  pass "baseline: the canaries count direct traffic ($((baseline_hits - HITS)) packets)"
-else
-  fail "baseline: the canaries' packet counters do not work (harness broken)"
+# Each sensor and family must count: UDP from outside the cluster, plaintext
+# to the server, and a flow the release pod sends out eth0 with the kill
+# switch bypassed for a moment (an ACCEPT and a RETURN at the top of its chains).
+for f in 4 6; do
+  ((f == 4 || IPV6)) || continue
+  ip=$UDP_IP port=6881 server=$SERVER_IP
+  ((f == 4)) || ip=$UDP_IP6 port=6882 server=$SERVER_IP6
+  docker run --rm --network "$KIND_NET" --entrypoint "" "$WG_IMAGE" sh -c \
+    "echo BASELINE | nc -$f -u -w1 $ip $port; nc -$f -z -w2 $server 80" >/dev/null 2>&1 || true
+done
+# shellcheck disable=SC2016 # expanded by the pod's shell
+bypass='$1 -I TWG-OUTPUT 1 -j ACCEPT && $1 -t mangle -I TWG-POSTROUTING 1 -j RETURN'
+# shellcheck disable=SC2016
+restore='$1 -D TWG-OUTPUT -j ACCEPT; $1 -t mangle -D TWG-POSTROUTING -j RETURN'
+kx wireguard sh -c "$bypass" sh iptables >/dev/null
+r=$(egress4 "${ETH0[@]}")
+kx wireguard sh -c "$restore" sh iptables >/dev/null
+if ((IPV6)); then
+  kx wireguard sh -c "$bypass" sh ip6tables >/dev/null
+  r6=$(egress6 "${ETH0[@]}")
+  kx wireguard sh -c "$restore" sh ip6tables >/dev/null
 fi
+after_counts=$(sensor_counts)
+dead=$(join -j1 <(awk '{ print $1 "/" $2, $3 }' <<<"$before_counts" | sort) <(awk '{ print $1 "/" $2, $3 }' <<<"$after_counts" | sort) |
+  awk -v v6="$IPV6" '$3 <= $2 && (v6 == 1 || $1 !~ /\/6$/) { printf " %s", $1 }')
+if [[ $before_counts == *unreadable* || $after_counts == *unreadable* ]]; then
+  fail "baseline: the packet counters cannot be read (harness broken)"
+elif [[ -n $dead ]]; then
+  fail "baseline: these sensors did not count direct packets:$dead (harness broken)"
+elif [[ $r != leak* ]] || { ((IPV6)) && [[ ${r6:-} != leak* ]]; }; then
+  fail "baseline: with the kill switch bypassed the pod did not leak via eth0 ($r ${r6:-}), so the eth0 checks prove nothing"
+else
+  pass "baseline: every sensor counts direct packets per family, and the pod leaks via eth0 once the kill switch is bypassed"
+fi
+wait_for "kill switch intact" 15 kx wireguard /twg/scripts/firewall.sh check || fail "the kill switch did not pass check after the baseline"
 hits_mark
 seen=$(canary_seen)
 if [[ $seen == "$SERVER_IP" ]]; then
@@ -443,7 +531,8 @@ fi
 # An ACCEPT at the top of both kill switch chains: the test must catch the
 # altered rules and the resulting eth0 leak. (-D by spec: if liveness
 # restarts the sidecar meanwhile, rule 1 is a real rule again.)
-kx wireguard sh -c 'iptables -I TWG-OUTPUT 1 -j ACCEPT && iptables -t mangle -I TWG-POSTROUTING 1 -j RETURN'
+# shellcheck disable=SC2016 # expanded by the pod's shell
+kx wireguard sh -c 'for t in iptables ip6tables; do $t -I TWG-OUTPUT 1 -j ACCEPT && $t -t mangle -I TWG-POSTROUTING 1 -j RETURN || exit 1; done'
 if helm_test; then
   fail "helm test passes with the kill switch opened"
 elif grep -q 'FAIL  kill switch' <<<"$HELM_TEST_OUT" && grep -q 'LEAK: a socket bound to eth0' <<<"$HELM_TEST_OUT"; then
@@ -452,17 +541,20 @@ else
   fail "helm test failed for another reason with the kill switch opened"
   echo "$HELM_TEST_OUT" | tail -20
 fi
-kx wireguard sh -c 'iptables -D TWG-OUTPUT -j ACCEPT; iptables -t mangle -D TWG-POSTROUTING -j RETURN' 2>/dev/null || true
+# shellcheck disable=SC2016
+kx wireguard sh -c 'for t in iptables ip6tables; do $t -D TWG-OUTPUT -j ACCEPT; $t -t mangle -D TWG-POSTROUTING -j RETURN; done' 2>/dev/null || true
 wait_for "kill switch intact" 15 kx wireguard /twg/scripts/firewall.sh check || true
 
 step "sidecar restart with the tunnel up"
 before=$(sidecar_restarts)
 hits_mark
-kx wireguard sh -c 'kill 1' || true
-# Probe until the sidecar has restarted and at least one probe hit the outage.
+kx wireguard sh -c 'kill 1' || fail "could not stop the sidecar"
+# Probe until the sidecar has restarted and at least one probe hit the
+# outage. Unbound probes only: an eth0-bound one is blocked every time, so
+# it would satisfy "hit the outage" without proving anything.
 for _ in $(seq 30); do
-  record "$(egress4)" "$(egress4 --interface eth0)"
-  if ((IPV6)); then record "$(egress6)" "$(egress6 --interface eth0)"; fi
+  record "$(egress4)"
+  if ((IPV6)); then record "$(egress6)"; fi
   if restarted_since "$before" && ((BLOCKED > 0)); then break; fi
   sleep 1
 done
@@ -479,16 +571,29 @@ step "packets marked by a stray mangle rule"
 # decision must still drop them.
 wait_for "kill switch intact" 30 kx wireguard /twg/scripts/firewall.sh check || true
 hits_mark
-kx wireguard sh -c 'iptables -t mangle -A OUTPUT -j MARK --set-mark 51820'
+kx wireguard sh -c 'iptables -t mangle -A OUTPUT -j MARK --set-mark 51820 && ip6tables -t mangle -A OUTPUT -j MARK --set-mark 51820'
 for _ in 1 2; do
-  record "$(egress4)" "$(egress4 --interface eth0)" "$(udp_seen MARKED$RANDOM)"
+  record "$(egress4)" "$(egress4 "${ETH0[@]}")" "$(udp_seen MARKED$RANDOM)"
+  if ((IPV6)); then record "$(egress6)" "$(egress6 "${ETH0[@]}")" "$(udp_seen MARKED6$RANDOM 6)"; fi
 done
-kx wireguard sh -c 'iptables -t mangle -D OUTPUT -j MARK --set-mark 51820' || true
+kx wireguard sh -c 'iptables -t mangle -D OUTPUT -j MARK --set-mark 51820; ip6tables -t mangle -D OUTPUT -j MARK --set-mark 51820' || true
 result_summary "with every packet marked"
 hits_check "with every packet marked"
 wait_for "traffic via VPN" 45 via_vpn || true
 
 step "in-pod firewall flushed and tunnel deleted (NetworkPolicy must hold)"
+before=$(sidecar_restarts)
+# shellcheck disable=SC2016 # expanded by the pod's shell
+kx wireguard sh -c 'set -e; for t in iptables ip6tables; do $t -P OUTPUT ACCEPT; $t -F OUTPUT; $t -t mangle -F POSTROUTING; done; ip link del wg0' ||
+  fail "flushing the in-pod kill switch failed"
+# Positive control: without the kill switch and before the policy, the pod
+# does leak, so "blocked" below is the policy's doing.
+r=$(egress4)
+if [[ $r == leak* ]]; then
+  pass "positive control: with the kill switch flushed and no NetworkPolicy the pod leaks (${r#leak })"
+else
+  fail "the flushed pod did not leak without the NetworkPolicy ($r), so the policy check proves nothing"
+fi
 # Only adds the NetworkPolicy; the pod spec is unchanged, so no rollout.
 helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${helm_args[@]}" --set networkPolicy.enabled=true
 if kubectl -n "$NS" get networkpolicy "$RELEASE-transmission-wireguard" >/dev/null 2>&1; then
@@ -496,11 +601,12 @@ if kubectl -n "$NS" get networkpolicy "$RELEASE-transmission-wireguard" >/dev/nu
 else
   fail "NetworkPolicy not created"
 fi
+if [[ $(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.metadata.uid}' 2>/dev/null) == "$POD_UID" ]]; then
+  pass "the upgrade kept the same pod"
+else
+  fail "the upgrade replaced the pod, so the probes below would test a fresh kill switch"
+fi
 sleep 5
-before=$(sidecar_restarts)
-# shellcheck disable=SC2016 # expanded by the pod's shell
-kx wireguard sh -c 'set -e; for t in iptables ip6tables; do $t -P OUTPUT ACCEPT; $t -F OUTPUT; $t -t mangle -F POSTROUTING; done; ip link del wg0' ||
-  fail "flushing the in-pod kill switch failed"
 # Prove the in-pod kill switch is really gone, so only the NetworkPolicy
 # can be what blocks the probes below.
 flushed() {
@@ -516,11 +622,11 @@ if flushed; then
 else
   fail "the in-pod kill switch is still in place, so the NetworkPolicy check proves nothing"
 fi
-hits_mark
-record "$(egress4)" "$(egress4 --interface eth0)" "$(udp_seen NOFIREWALL)"
+hits_mark nopod
+record "$(egress4)" "$(egress4 "${ETH0[@]}")" "$(udp_seen NOFIREWALL)"
 if ((IPV6)); then record "$(egress6)" "$(udp_seen NOFIREWALL6 6)"; fi
 result_summary "with the in-pod kill switch gone (NetworkPolicy holds)"
-hits_check "with the in-pod kill switch gone"
+hits_check "with the in-pod kill switch gone (outside sensors)" nopod
 # Liveness needs 3 failures 30s apart, plus the restart itself.
 if wait_for "liveness restart" 90 restarted_since "$before"; then
   pass "liveness probe restarted the sidecar"
@@ -581,28 +687,43 @@ step "pod termination"
 # pod's network namespace: nothing may leak while the pod shuts down.
 # A loop inside the Transmission container probes until the container is
 # gone; the canaries' counters see whatever it sent.
-term_log=$(mktemp)
-# Only stdout: kubectl reports the container's end on stderr.
-kx transmission sh -c "while :; do curl -sS -m 2 http://$CANARY_IP/cgi-bin/ip 2>/dev/null || echo blocked; sleep 0.5; done" >"$term_log" 2>/dev/null &
-probe_pid=$!
+# The sidecar outlives Transmission, so a second loop in it covers its own
+# shutdown (s6 runs wg-quick down) too.
+term_probe="while :; do curl -sS -m 2 http://$CANARY_IP/cgi-bin/ip 2>/dev/null || echo blocked;"
+((IPV6)) && term_probe+=" curl -6 -sS -m 2 http://[$CANARY_IP6]/cgi-bin/ip 2>/dev/null || echo blocked;"
+term_probe+=" sleep 0.5; done"
+declare -A term_log term_pid started
+for c in transmission wireguard; do
+  term_log[$c]=$(mktemp)
+  # Only stdout: kubectl reports the container's end on stderr.
+  kx $c sh -c "$term_probe" >"${term_log[$c]}" 2>/dev/null &
+  term_pid[$c]=$!
+done
 sleep 3
-hits_mark
-started=$(wc -l <"$term_log")
+hits_mark nopod
+for c in transmission wireguard; do started[$c]=$(wc -l <"${term_log[$c]}"); done
 kubectl -n "$NS" delete pod "$POD" --wait=false >/dev/null
-for _ in $(seq 60); do kill -0 $probe_pid 2>/dev/null || break; sleep 1; done
-kill $probe_pid 2>/dev/null || true
-while read -r line; do
-  line=$(tr -d '[:space:]' <<<"$line")
-  case $line in
-    blocked) record blocked ;;
-    "$SERVER_IP") record vpn ;;
-    *[0-9].*[0-9] | *:*) record "leak $line" ;; # an address
-    *) ;; # a line cut off when the container was killed
-  esac
-done < <(tail -n +$((started + 1)) "$term_log")
-rm -f "$term_log"
+gone=0
+for _ in $(seq 90); do
+  if ! kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then gone=1; break; fi
+  sleep 1
+done
+((gone)) || fail "the pod did not terminate within 90 s, so its shutdown was not observed to the end"
+for c in transmission wireguard; do
+  kill "${term_pid[$c]}" 2>/dev/null || true
+  while read -r line; do
+    line=$(tr -d '[:space:]' <<<"$line")
+    case $line in
+      blocked) record blocked ;;
+      "$SERVER_IP" | "${SERVER_IP6:-none}") record vpn ;;
+      *[0-9].*[0-9] | *:*) record "leak $line" ;; # an address
+      *) ;; # a line cut off when the container was killed
+    esac
+  done < <(tail -n +$((started[$c] + 1)) "${term_log[$c]}")
+  rm -f "${term_log[$c]}"
+done
 result_summary "while the pod terminates"
-hits_check "while the pod terminates"
+hits_check "while the pod terminates" nopod
 
 echo
 if ((FAILED)); then

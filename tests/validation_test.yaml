@@ -46,6 +46,7 @@ tests:
       firewall.allowConfHooks: true
       wireguard.wg0Conf: |
         [Interface]
+        Address = 10.64.0.2/32
         PostUp = iptables -w -A OUTPUT -o %i -j ACCEPT
         [Peer]
         AllowedIPs = 0.0.0.0/0
@@ -285,7 +286,7 @@ tests:
       transmission.securityContext.capabilities.add: [NET_ADMIN]
     asserts:
       - failedTemplate:
-          errorMessage: "transmission.securityContext adds capability NET_ADMIN. Only CHOWN, DAC_OVERRIDE, DAC_READ_SEARCH, FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, SETFCAP, NET_BIND_SERVICE, SYS_CHROOT, SYS_NICE, MKNOD, AUDIT_WRITE may be added; others (NET_RAW, NET_ADMIN, SYS_ADMIN, ...) can bypass the kill switch"
+          errorMessage: "transmission.securityContext adds capability NET_ADMIN. Only CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, SETFCAP, NET_BIND_SERVICE, SYS_CHROOT, SYS_NICE, MKNOD, AUDIT_WRITE may be added; others (NET_RAW, NET_ADMIN, SYS_ADMIN, ...) can bypass the kill switch"
 
   - template: templates/deployment.yaml
     it: refuses NET_RAW whatever its spelling
@@ -293,7 +294,7 @@ tests:
       transmission.securityContext.capabilities.add: [CHOWN, cap_net_raw]
     asserts:
       - failedTemplate:
-          errorMessage: "transmission.securityContext adds capability NET_RAW. Only CHOWN, DAC_OVERRIDE, DAC_READ_SEARCH, FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, SETFCAP, NET_BIND_SERVICE, SYS_CHROOT, SYS_NICE, MKNOD, AUDIT_WRITE may be added; others (NET_RAW, NET_ADMIN, SYS_ADMIN, ...) can bypass the kill switch"
+          errorMessage: "transmission.securityContext adds capability NET_RAW. Only CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, SETFCAP, NET_BIND_SERVICE, SYS_CHROOT, SYS_NICE, MKNOD, AUDIT_WRITE may be added; others (NET_RAW, NET_ADMIN, SYS_ADMIN, ...) can bypass the kill switch"
 
   - template: templates/deployment.yaml
     it: accepts lowercase harmless capabilities
@@ -310,7 +311,7 @@ tests:
       transmission.securityContext.capabilities.drop: [NET_ADMIN]
     asserts:
       - failedTemplate:
-          errorMessage: "transmission.securityContext must drop ALL capabilities and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch"
+          errorMessage: "transmission.securityContext must drop ALL capabilities (written ALL, not CAP_ALL) and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch"
 
   - template: templates/deployment.yaml
     it: refuses a missing Transmission securityContext
@@ -326,7 +327,7 @@ tests:
       transmission.securityContext.privileged: true
     asserts:
       - failedTemplate:
-          errorMessage: "transmission.securityContext must drop ALL capabilities and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch"
+          errorMessage: "transmission.securityContext must drop ALL capabilities (written ALL, not CAP_ALL) and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch"
 
   - template: templates/deployment.yaml
     it: refuses a DNS override without nameservers
@@ -360,6 +361,13 @@ tests:
     it: passes the fwmark to the sidecar in decimal
     set:
       firewall.wgFwmark: 4026531839
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = 10.64.0.2/32
+        FwMark = 4026531839
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
     asserts:
       - contains:
           path: spec.template.spec.initContainers[1].env
@@ -370,6 +378,7 @@ tests:
     set:
       wireguard.wg0Conf: |
         [Interface]
+        Address = 10.64.0.2/32
         FwMark = 0xCA6C
         [Peer]
         AllowedIPs = 0.0.0.0/0
@@ -500,3 +509,99 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "service.peerPortTcp/peerPortUdp were removed. Peers connect through the VPN to transmission.settings.peer-port (forward it at your provider)"
+
+  - template: templates/deployment.yaml
+    it: refuses CAP_ALL, which runtimes do not read as everything
+    set:
+      transmission.securityContext.capabilities.drop: [CAP_ALL]
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.securityContext must drop ALL capabilities (written ALL, not CAP_ALL) and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch"
+
+  - template: templates/deployment.yaml
+    it: refuses DAC_READ_SEARCH
+    set:
+      transmission.securityContext.capabilities.add: [DAC_READ_SEARCH]
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.securityContext adds capability DAC_READ_SEARCH. Only CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, SETFCAP, NET_BIND_SERVICE, SYS_CHROOT, SYS_NICE, MKNOD, AUDIT_WRITE may be added; others (NET_RAW, NET_ADMIN, SYS_ADMIN, ...) can bypass the kill switch"
+
+  - template: templates/deployment.yaml
+    it: refuses a custom fwmark without a FwMark line
+    set:
+      firewall.wgFwmark: 4660
+    asserts:
+      - failedTemplate:
+          errorMessage: "firewall.wgFwmark is 4660 but wireguard.wg0Conf has no FwMark line, so wg-quick would use 51820. Add FwMark = 4660 to [Interface]"
+
+  - template: templates/deployment.yaml
+    it: refuses a tunnel without an IPv4 address
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = fd00:64::2/128
+        [Peer]
+        AllowedIPs = 0.0.0.0/0, ::/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.wg0Conf Address has no IPv4 address. Without one, traffic into the tunnel would carry the pod's own IPv4 address to the VPN"
+
+  - template: templates/deployment.yaml
+    it: refuses wg0Conf together with existingSecret
+    set:
+      wireguard.existingSecret: other
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = 10.64.0.2/32
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - failedTemplate:
+          errorMessage: "set only one of wireguard.wg0Conf and wireguard.existingSecret. The pod uses the Secret, so wg0Conf would only feed the checks and the NetworkPolicy"
+
+  - template: templates/deployment.yaml
+    it: does not count a string rpc-authentication-required as auth
+    set:
+      transmission.rpcAuth.allowAnonymous: false
+      transmission.rpcAuth.existingSecret: ""
+      transmission.settings.rpc-authentication-required: "false"
+      transmission.settings.rpc-username: a
+      transmission.settings.rpc-password: b
+    asserts:
+      - failedTemplate:
+          errorMessage: "The web UI needs RPC auth. Without it any pod that can reach it can add torrents (linking trackers it controls to your VPN address) and run scripts. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth"
+
+  - template: templates/deployment.yaml
+    it: refuses rpcAuth existingSecret together with inline credentials
+    set:
+      transmission.rpcAuth.existingSecret: rpc
+      transmission.rpcAuth.username: a
+      transmission.rpcAuth.password: b
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.rpcAuth sets existingSecret and username/password. The Secret wins, so remove username/password"
+
+  - template: templates/deployment.yaml
+    it: accepts lowercase drop all
+    set:
+      transmission.securityContext.capabilities.drop: [all]
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - template: templates/deployment.yaml
+    it: accepts Table = auto
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = 10.64.0.2/32
+        Table = auto
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - isKind:
+          of: Deployment

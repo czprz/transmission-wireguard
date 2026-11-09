@@ -27,6 +27,10 @@ expect_schema_error "firewall.wgFwmark=0" --set firewall.wgFwmark=0
 expect_schema_error "replicaCount=2 (one WireGuard key)" --set replicaCount=2
 expect_schema_error "a handshake age WireGuard cannot meet" --set wireguard.handshakeMaxAgeSeconds=60
 expect_schema_error "a nameserver that is just a colon" --set 'wireguard.dns.nameservers={:}'
+expect_schema_error "a fwmark that is the main routing table" --set firewall.wgFwmark=254
+expect_schema_error "a fwmark that is the saved route table, in hex" --set-string firewall.wgFwmark=0x3e8
+expect_schema_error "duplicate nameservers" --set 'wireguard.dns.nameservers={1.1.1.1,1.1.1.1}'
+expect_schema_error "a handshake age too large to render" --set wireguard.handshakeMaxAgeSeconds=1000000
 
 if helm template t "$ROOT" -f "$ROOT/ci/default-values.yaml" >/dev/null; then
   echo "PASS  the CI values render"

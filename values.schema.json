@@ -278,7 +278,8 @@
                 "type": "string",
                 "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$"
               },
-              "maxItems": 3
+              "maxItems": 3,
+              "uniqueItems": true
             }
           },
           "additionalProperties": false
@@ -317,10 +318,11 @@
               "const": 0
             },
             {
-              "minimum": 180
+              "minimum": 180,
+              "maximum": 86400
             }
           ],
-          "description": "0 disables; otherwise at least 180, since WireGuard only re-handshakes every 2 minutes"
+          "description": "0 disables; otherwise 180 to 86400, since WireGuard only re-handshakes every 2 minutes"
         }
       },
       "additionalProperties": false
@@ -343,7 +345,11 @@
           ],
           "minimum": 1,
           "maximum": 4294967295,
-          "pattern": "^(0[xX][0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$"
+          "pattern": "^(0[xX][0-9a-fA-F]{1,8}|[1-9][0-9]{0,9})$",
+          "not": {
+            "enum": [253, 254, 255, 1000, "253", "254", "255", "1000", "0xfd", "0xfe", "0xff", "0x3e8", "0xFD", "0xFE", "0xFF", "0x3E8"]
+          },
+          "description": "Also the routing table wg-quick uses, so not 253-255 (system tables) or 1000 (the chart's saved route)"
         },
         "allowConfHooks": {
           "type": "boolean"

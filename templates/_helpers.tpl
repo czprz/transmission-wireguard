@@ -125,7 +125,8 @@ Endpoint line parsed from an inline wg0Conf.
 {{/* RPC auth is configured through rpcAuth or, the pre-1.0 way, settings. */}}
 {{- define "twg.rpcAuthConfigured" -}}
 {{- $s := .Values.transmission.settings -}}
-{{- if or (include "twg.rpcSecretName" .) (and (index $s "rpc-authentication-required") (index $s "rpc-username") (index $s "rpc-password")) -}}
+{{- /* Only a real true: Transmission reads the string "false" as false. */ -}}
+{{- if or (include "twg.rpcSecretName" .) (and (eq (toString (index $s "rpc-authentication-required")) "true") (index $s "rpc-username") (index $s "rpc-password")) -}}
 true
 {{- end -}}
 {{- end -}}
@@ -133,6 +134,19 @@ true
 {{- define "twg.validate" -}}
 {{- if not (or .Values.wireguard.existingSecret .Values.wireguard.wg0Conf) -}}
 {{- fail "wireguard.wg0Conf or wireguard.existingSecret must be set" -}}
+{{- end -}}
+{{- if and .Values.wireguard.existingSecret .Values.wireguard.wg0Conf -}}
+{{- fail "set only one of wireguard.wg0Conf and wireguard.existingSecret. The pod uses the Secret, so wg0Conf would only feed the checks and the NetworkPolicy" -}}
+{{- end -}}
+{{- $mark := include "twg.markValue" .Values.firewall.wgFwmark -}}
+{{- if or (not $mark) (gt (int64 $mark) 4294967295) -}}
+{{- fail (printf "firewall.wgFwmark %v must be between 1 and 4294967295" .Values.firewall.wgFwmark) -}}
+{{- end -}}
+{{- if has $mark (list "253" "254" "255" "1000") -}}
+{{- fail (printf "firewall.wgFwmark %v is also the routing table wg-quick uses, and 253-255 (system tables) and 1000 (the chart's saved route) are taken" .Values.firewall.wgFwmark) -}}
+{{- end -}}
+{{- if eq (mod (div (int64 $mark) 268435456) 2) 1 -}}
+{{- fail (printf "firewall.wgFwmark %v must not set bit 0x10000000, which marks connections from the cluster" .Values.firewall.wgFwmark) -}}
 {{- end -}}
 {{- with .Values.wireguard.wg0Conf -}}
 {{- if and (not $.Values.firewall.allowConfHooks) (regexMatch "(?mi)^[ \\t]*(PreUp|PostUp|PreDown|PostDown)[ \\t]*=" .) -}}
@@ -158,28 +172,35 @@ true
 {{- end -}}
 {{- end -}}
 {{- $want := include "twg.markValue" $.Values.firewall.wgFwmark -}}
-{{- range regexFindAll "(?mi)^[ \\t]*FwMark[ \\t]*=[ \\t]*[^ \\t\\r\\n#]+" . -1 -}}
+{{- $fwmarks := regexFindAll "(?mi)^[ \\t]*FwMark[ \\t]*=[ \\t]*[^ \\t\\r\\n#]+" . -1 -}}
+{{- if and (not $fwmarks) (ne $want "51820") -}}
+{{- fail (printf "firewall.wgFwmark is %s but wireguard.wg0Conf has no FwMark line, so wg-quick would use 51820. Add FwMark = %s to [Interface]" $want $want) -}}
+{{- end -}}
+{{- range $fwmarks -}}
 {{- $mark := regexReplaceAll "(?i)^[ \\t]*FwMark[ \\t]*=[ \\t]*" . "" -}}
 {{- if ne (include "twg.markValue" $mark) $want -}}
 {{- fail (printf "wireguard.wg0Conf FwMark %s differs from firewall.wgFwmark (%v). Remove it or make them equal" $mark $.Values.firewall.wgFwmark) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $mark := include "twg.markValue" .Values.firewall.wgFwmark -}}
-{{- if or (not $mark) (gt (int64 $mark) 4294967295) -}}
-{{- fail (printf "firewall.wgFwmark %v must be between 1 and 4294967295" .Values.firewall.wgFwmark) -}}
-{{- end -}}
-{{- if eq (mod (div (int64 $mark) 268435456) 2) 1 -}}
-{{- fail (printf "firewall.wgFwmark %v must not set bit 0x10000000, which marks connections from the cluster" .Values.firewall.wgFwmark) -}}
-{{- end -}}
 {{- /* Parsed even without the NetworkPolicy: a bad Endpoint fails here, not at runtime. */ -}}
 {{- $endpoints := include "twg.vpnEndpoints" . | fromJsonArray -}}
+{{- with .Values.wireguard.wg0Conf -}}
+{{- $addrs := list -}}
+{{- range regexFindAll "(?mi)^[ \\t]*Address[ \\t]*=[^#\\r\\n]*" . -1 }}{{ $addrs = append $addrs (regexReplaceAll "(?i)^[ \\t]*Address[ \\t]*=" . "") }}{{ end -}}
+{{- if not (regexMatch "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+" (join "," $addrs)) -}}
+{{- fail "wireguard.wg0Conf Address has no IPv4 address. Without one, traffic into the tunnel would carry the pod's own IPv4 address to the VPN" -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.networkPolicy.enabled (eq (len $endpoints) 0) -}}
 {{- fail "networkPolicy.enabled needs the VPN endpoint. Set wireguard.endpoints (ip and port of your Endpoint), or disable networkPolicy if your CNI does not enforce it" -}}
 {{- end -}}
 {{- with .Values.transmission.rpcAuth -}}
 {{- if and (not .existingSecret) (or .username .password) (not (and .username .password)) -}}
 {{- fail "transmission.rpcAuth needs both username and password (or existingSecret)" -}}
+{{- end -}}
+{{- if and .existingSecret (or .username .password) -}}
+{{- fail "transmission.rpcAuth sets existingSecret and username/password. The Secret wins, so remove username/password" -}}
 {{- end -}}
 {{- end -}}
 {{- $s := .Values.transmission.settings -}}
@@ -232,13 +253,14 @@ NET_RAW, would apply.
 {{- fail "transmission.securityContext must be set and drop ALL capabilities. Without it the runtime's default capabilities, including NET_RAW, let root in the container bypass the kill switch" -}}
 {{- end -}}
 {{- $caps := default dict $sc.capabilities -}}
+{{- /* Runtimes only treat a bare ALL (any case) as everything; CAP_ALL drops nothing. */ -}}
 {{- $drop := list -}}
-{{- range default list $caps.drop }}{{ $drop = append $drop (toString . | upper | trimPrefix "CAP_") }}{{ end -}}
+{{- range default list $caps.drop }}{{ $drop = append $drop (toString . | upper) }}{{ end -}}
 {{- $added := list -}}
 {{- range default list $caps.add }}{{ $added = append $added (toString . | upper | trimPrefix "CAP_") }}{{ end -}}
-{{- $safe := list "CHOWN" "DAC_OVERRIDE" "DAC_READ_SEARCH" "FOWNER" "FSETID" "KILL" "SETGID" "SETUID" "SETPCAP" "SETFCAP" "NET_BIND_SERVICE" "SYS_CHROOT" "SYS_NICE" "MKNOD" "AUDIT_WRITE" -}}
+{{- $safe := list "CHOWN" "DAC_OVERRIDE" "FOWNER" "FSETID" "KILL" "SETGID" "SETUID" "SETPCAP" "SETFCAP" "NET_BIND_SERVICE" "SYS_CHROOT" "SYS_NICE" "MKNOD" "AUDIT_WRITE" -}}
 {{- if or $sc.privileged (not (has "ALL" $drop)) -}}
-{{- fail "transmission.securityContext must drop ALL capabilities and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch" -}}
+{{- fail "transmission.securityContext must drop ALL capabilities (written ALL, not CAP_ALL) and not be privileged. Otherwise root in the container (NET_RAW is enough) can bypass the kill switch" -}}
 {{- end -}}
 {{- range $added -}}
 {{- if not (has . $safe) -}}

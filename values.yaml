@@ -1,6 +1,5 @@
-# Running more than 1 replica is not recommended unless each replica has
-# its own unique storage and WireGuard config.
-# Must stay 1: every replica would use the same WireGuard key.
+# Must stay 1: every replica would use the same WireGuard key. Run another
+# release for a second instance.
 replicaCount: 1
 
 images:
@@ -120,6 +119,8 @@ transmission:
     capabilities:
       drop: ["ALL"]
       add: ["SETUID", "SETGID", "CHOWN"]
+    seccompProfile:
+      type: RuntimeDefault
 
   resources:
     requests:
@@ -158,12 +159,14 @@ wireguard:
     PUID: "1000"
     PGID: "1000"
 
-  # Kernel WireGuard is built into Linux 5.6+, so no host mounts are needed.
+  # Host mounts for WireGuard. Kernel WireGuard is built into Linux 5.6+, so
+  # none are needed there. enabled only gates the two mounts below.
   kernelMode:
     enabled: true
     # Only for hosts older than 5.6 that must load the module from the host.
     mountLibModules: false
-    # Only for userspace WireGuard implementations (wireguard-go/boringtun).
+    # /dev/net/tun, only for userspace WireGuard (wireguard-go/boringtun).
+    # Needs enabled: true as well.
     mountTun: false
 
   # Pod DNS. The kill switch blocks cluster DNS (it would leak lookups via
@@ -204,7 +207,9 @@ firewall:
     - 192.168.0.0/16
     - 100.64.0.0/10
     - fc00::/7
-  # Firewall mark wg-quick puts on WireGuard's own UDP packets (its default).
+  # Firewall mark wg-quick puts on WireGuard's own UDP packets (its default),
+  # also its routing table number. Another value needs the same FwMark line
+  # in wg0.conf, and 253-255 and 1000 are taken.
   wgFwmark: 51820
   # Set true to run wg0.conf PreUp/PostUp/PreDown/PostDown hooks. Refused by
   # default: they run as root with NET_ADMIN and, directly or through a

@@ -46,6 +46,10 @@ jobs:
 
       - name: Verify tag matches chart version
         run: |
+          if [ "${GITHUB_REF_TYPE}" != tag ]; then
+            echo "Run this on a release tag, not the ${GITHUB_REF_TYPE} ${GITHUB_REF_NAME}."
+            exit 1
+          fi
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           if [ "${TAG_VERSION}" != "${{ steps.chart.outputs.result }}" ]; then
             echo "Tag version (${TAG_VERSION}) does not match Chart.yaml version (${{ steps.chart.outputs.result }})."

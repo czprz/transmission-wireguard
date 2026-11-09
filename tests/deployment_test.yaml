@@ -112,6 +112,21 @@ tests:
       - equal:
           path: spec.template.spec.volumes[0].secret.defaultMode
           value: 0400
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: keeps an indented wg0.conf intact in the Secret
+    template: templates/secret-wg.yaml
+    set:
+      wireguard.wg0Conf: "  [Interface]\n  Address = 10.64.0.2/32\n  [Peer]\n  AllowedIPs = 0.0.0.0/0\n  Endpoint = 203.0.113.10:51820\n"
+    asserts:
+      - equal:
+          path: data["wg0.conf"]
+          value: ICBbSW50ZXJmYWNlXQogIEFkZHJlc3MgPSAxMC42NC4wLjIvMzIKICBbUGVlcl0KICBBbGxvd2VkSVBzID0gMC4wLjAuMC8wCiAgRW5kcG9pbnQgPSAyMDMuMC4xMTMuMTA6NTE4MjAK
 
   - it: needs no host mounts by default
     template: templates/deployment.yaml

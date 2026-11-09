@@ -143,6 +143,12 @@ tests:
       - matchRegex:
           path: spec.containers[0].command[2]
           pattern: "status.podIPs"
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: "is_vpn6"
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: 'interface "if!eth0"'
 
   - it: checks the Transmission container's capabilities at runtime
     documentIndex: 3

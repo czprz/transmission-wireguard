@@ -1,6 +1,6 @@
 # Makefile for transmission-wireguard
 
-.PHONY: lint validate test e2e e2e-docker e2e-kind install
+.PHONY: lint validate test e2e e2e-docker e2e-kind install help
 
 lint:
 	helm lint . --strict -f ci/default-values.yaml
@@ -22,8 +22,12 @@ CNI ?= kindnet
 e2e-docker:
 	tests/e2e/netns-leak-test.sh
 
+KIND ?= kind
+
+# Starts from a fresh cluster, so a rerun works.
 e2e-kind:
-	tests/e2e/kind-cluster.sh $(CNI)
+	$(KIND) delete cluster
+	KIND=$(KIND) tests/e2e/kind-cluster.sh $(CNI)
 	IPV6=$(if $(filter kindnet,$(CNI)),1,0) tests/e2e/kind-test.sh
 
 e2e: e2e-docker e2e-kind

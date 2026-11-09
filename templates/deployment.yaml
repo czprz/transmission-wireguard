@@ -45,6 +45,8 @@ spec:
             capabilities:
               drop: ["ALL"]
               add: ["CHOWN"]
+            seccompProfile:
+              type: RuntimeDefault
           env:
             - name: PUID
               value: {{ .Values.transmission.env.PUID | default "1000" | quote }}
@@ -111,7 +113,7 @@ spec:
             - name: TWG_ALLOW_CONF_HOOKS
               value: {{ .Values.firewall.allowConfHooks | quote }}
             - name: TWG_HANDSHAKE_MAX_AGE
-              value: {{ .Values.wireguard.handshakeMaxAgeSeconds | quote }}
+              value: {{ .Values.wireguard.handshakeMaxAgeSeconds | int64 | toString | quote }}
           volumeMounts:
             - name: scripts
               mountPath: /twg/scripts
@@ -140,8 +142,9 @@ spec:
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.failureThreshold }}
           # Restarts re-apply the kill switch, so altered rules heal. (Root in
-          # the pod can still change routing or nftables beyond what check sees;
-          # marked packets only ever pass as UDP to the VPN endpoints.)
+          # the sidecar can still change routing, tc or nftables beyond what
+          # check sees. Marked packets only pass as UDP to the VPN endpoints or
+          # as replies from the web port to webAllowedCIDRs.)
           livenessProbe:
             exec:
               command: ["/twg/scripts/firewall.sh", "live"]

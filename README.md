@@ -109,7 +109,7 @@ PersistentKeepalive = 25
 
 | Layer | What it does |
 |---|---|
-| Kill switch (`files/firewall.sh`) | Runs in the WireGuard sidecar before `wg-quick`. IPv4 and IPv6 default to DROP; only `wg0`, WireGuard's own encrypted packets (by fwmark, and only as UDP to the `Endpoint` addresses) and replies to connections that arrived from the cluster may leave. The final decision is made in mangle `POSTROUTING`, on the interface a packet really leaves by, so nat rules, marks or nft chains that re-route a packet can't get it out `eth0`. Inbound: peers on `peer-port` via `wg0`, the web UI from `firewall.webAllowedCIDRs` outside the tunnel. Nothing in the tunnel lifecycle removes these rules. |
+| Kill switch (`files/firewall.sh`) | Runs in the WireGuard sidecar before `wg-quick`. IPv4 and IPv6 default to DROP; only `wg0`, WireGuard's own encrypted packets (by fwmark, and only as UDP to the `Endpoint` addresses) and the web UI's replies to `firewall.webAllowedCIDRs` may leave. The final decision is made in mangle `POSTROUTING`, on the interface a packet really leaves by, so nat rules, marks or nft chains that re-route a packet can't get it out `eth0`. Inbound: peers on `peer-port` via `wg0`, the web UI from `firewall.webAllowedCIDRs` outside the tunnel. Nothing in the tunnel lifecycle removes these rules. |
 | Start order | WireGuard is a native sidecar with a startup probe; Transmission is not started until the kill switch and `wg0` are up. |
 | Probes | Sidecar liveness fails if the rules are altered or `wg0` is gone, and a restart re-applies the rules. Optional handshake-age check (`wireguard.handshakeMaxAgeSeconds`: 0, or at least 180, since WireGuard re-handshakes only every 2 minutes). Transmission's liveness fails if `wg0` disappears. |
 | NetworkPolicy | Egress only to `wireguard.endpoints` on UDP. Enforced by the CNI outside the pod. |
@@ -125,7 +125,11 @@ PersistentKeepalive = 25
 - **Set `wireguard.endpoints`** when using `existingSecret`. The egress NetworkPolicy needs the VPN server's IP and port. If your CNI doesn't enforce NetworkPolicy, set `networkPolicy.enabled: false` instead.
 - **DNS** now goes through the tunnel to `wireguard.dns.nameservers`. Set your VPN provider's resolver. `dns.override: false` is refused: cluster DNS can't be reached through the tunnel.
 - **`transmission.securityContext` must drop `ALL` capabilities.** Only harmless ones may be added back (the default `SETUID`, `SETGID`, `CHOWN` are fine). A `null` securityContext is refused, since the runtime's defaults include `NET_RAW`.
-- **`firewall.wgFwmark`** must be between 1 and 4294967295.
+- **`firewall.wgFwmark`** must be between 1 and 4294967295. It is also wg-quick's routing table, so 253-255 and 1000 are refused, and any value other than 51820 needs the same `FwMark` line in `wg0.conf`.
+- **`wg0.conf` needs an IPv4 `Address`** (with `0.0.0.0/0`, traffic would otherwise carry the pod's own IPv4 address into the tunnel).
+- **`wireguard.wg0Conf` and `wireguard.existingSecret` can't both be set**, nor `rpcAuth.existingSecret` with `rpcAuth.username`/`password`.
+- **RPC auth in `transmission.settings` needs `rpc-authentication-required: true`** as a boolean; the string `"false"` (or `"true"`) no longer counts.
+- **Capabilities are dropped with `ALL`.** `CAP_ALL` drops nothing at runtime and is refused; `DAC_READ_SEARCH` can no longer be added back.
 - **RPC auth** is required, also for a ClusterIP-only UI: without it any pod in the cluster can add torrents (with trackers it controls, linking them to your VPN address) or set a script to run. Move `rpc-username`/`rpc-password` from `transmission.settings` to `transmission.rpcAuth` (settings still work), or set `rpcAuth.allowAnonymous: true`.
 - **Unknown values are refused.** The schema rejects keys it doesn't know (a typo such as `wireguard.dns.nameserver` used to be ignored silently), nameservers that aren't IPs and `webAllowedCIDRs` that aren't CIDRs.
 - **Peer sockets are always bound to the tunnel.** `bindToTunnel: false` and `bind-address-ipv4`/`-ipv6` in `transmission.settings` are refused; `peer-port` must differ from `service.webPort`.
@@ -153,7 +157,7 @@ Official docs:
 
 ## Persistence
 
-The chart supports PVC or hostPath. For public repos, the defaults are commented out in `values.yaml`. Uncomment and configure what fits your cluster.
+The chart supports PVC or hostPath. By default it creates a 10Gi `ReadWriteOnce` PVC with the cluster's default storage class; set `persistence.storageClassName`, `existingClaim`, or `type: hostPath` with `hostPath.path` to change that.
 
 ## Ingress and cert-manager issuer
 
@@ -201,9 +205,9 @@ It runs on the release pod's node (egress addresses can differ per node) and che
 
 - the kill switch rules are intact and the tunnel is up (in every running pod of the release);
 - the Transmission container holds no `NET_RAW`, `NET_ADMIN` or `SYS_ADMIN` capability at runtime (raw sockets would bypass iptables), whatever a webhook added;
-- a socket bound to `eth0` can't reach the Kubernetes API, though the test pod can;
+- a socket bound to `eth0` can't reach the Kubernetes API, though the test pod can (and, where the node has an IPv6 address, the kubelet over IPv6);
 - the pod uses only `wireguard.dns.nameservers`;
-- optionally, that the public address the pod gets from `tests.ipEchoUrl` differs from the cluster's own, the pod's and its node's addresses (IPv4, and IPv6 where the cluster has it), and that `eth0` can't reach it. Set `tests.vpnEgressIPs` to your VPN's exit addresses to require one of them; without it the test pod must land on the release pod's node.
+- optionally, that the public address the pod gets from `tests.ipEchoUrl` differs from the cluster's own, the pod's and its node's addresses (IPv4, and IPv6 where the cluster has it), and that `eth0` can't reach it. Set `tests.vpnEgressIPs` to your VPN's exit addresses (IPv4, IPv6 or both) to require one of them per family; without it the test pod must land on the release pod's node.
 
 While the test runs, a temporary Role lets the test pod exec into pods in the namespace. Helm deletes it after the run, pass or fail. The finished test pod stays until the next run so `--logs` can read it; `helm uninstall` leaves it behind, so delete it afterwards with `kubectl delete pod <release>-transmission-wireguard-test`. The test is off by default because tools that deploy with `helm template` (kustomize `helmCharts`, some GitOps setups) ignore hook annotations and would create that Role permanently. Leave it off there, or render with `--skip-tests`. By default the test contacts nothing outside the cluster. `tests.ipEchoUrl` is off by default because the echo endpoint sees your VPN address and your real address side by side; only set it to one you run yourself (any endpoint that answers with the caller's IP as plain text). Set `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server (and the echo endpoint, if set).
 
@@ -272,7 +276,7 @@ See `values.yaml` for the full list of configuration options.
   - Lookups go to `wireguard.dns.nameservers` through the tunnel. Use a resolver your VPN allows (usually the provider's).
   - Cluster-internal names do not resolve from this pod, by design.
 - **Multiple replicas?**
-  - Not recommended unless each replica has unique storage and config.
+  - Not supported: `replicaCount` must be 1. Install another release, with its own storage and WireGuard config, for a second instance.
 - **`Permission denied` from `wg`, `wg-quick` or `readlink` in the sidecar log?**
   - Recent Ubuntu hosts ship AppArmor profiles that attach to those binaries by path, and they apply inside containers too, privileged or not. Check with `sudo aa-status` on the node; disable the offending profile (`sudo aa-disable <profile>`) or use a node image without it.
 - **PVC/hostPath issues?**

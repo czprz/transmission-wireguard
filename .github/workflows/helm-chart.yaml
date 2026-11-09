@@ -11,14 +11,17 @@ on:
 permissions:
   contents: read
 
-# A pull request from dev also pushes to dev: run the suite once per commit.
+# A newer push to a pull request replaces its older run. Runs of other
+# events (a push to dev, main's release gate) are never cancelled: main
+# releases only if its run finishes.
 concurrency:
-  group: helm-chart-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: true
+  group: helm-chart-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
@@ -68,6 +71,7 @@ jobs:
     name: e2e-docker (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     needs: verify
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -96,6 +100,7 @@ jobs:
     name: e2e-kind (${{ matrix.cni }})
     runs-on: ubuntu-latest
     needs: verify
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -121,6 +126,15 @@ jobs:
         with:
           version: v3.14.4
 
+      # The cluster's version, not whatever the runner image ships.
+      - name: Install kubectl
+        run: |
+          KUBECTL_VERSION=v1.32.2
+          curl -sSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea  kubectl" | sha256sum -c -
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          rm kubectl
+
       # go install verifies kind against the Go checksum database.
       - name: Create kind cluster (${{ matrix.cni }})
         run: |
@@ -131,3 +145,16 @@ jobs:
         run: tests/e2e/kind-test.sh
         env:
           IPV6: ${{ matrix.ipv6 }}
+
+  # The one check to require in branch protection: GitHub counts a skipped
+  # job (e2e after a failed verify) as passed.
+  all-tests:
+    if: always()
+    needs: [verify, e2e-docker, e2e-kind]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every test job passed
+        run: jq -e 'to_entries | all(.value.result == "success")' <<<"$NEEDS" >/dev/null || { echo "$NEEDS"; exit 1; }
+        env:
+          NEEDS: ${{ toJSON(needs) }}

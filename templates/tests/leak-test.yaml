@@ -128,13 +128,21 @@ spec:
           in_list() { want=$1; shift; for x in "$@"; do [ "$x" = "$want" ] && return 0; done; return 1; }
           # shellcheck disable=SC2086 # lists of addresses
           is_own() { in_list "$1" $own; }
+          # tests.vpnEgressIPs per family: an IPv6-only list says nothing
+          # about IPv4, and the other way round.
+          vpn4=$(for x in $VPN_EGRESS_IPS; do case $x in *:*) ;; *) echo "$x" ;; esac; done)
+          vpn6ips=$(for x in $VPN_EGRESS_IPS; do case $x in *:*) echo "$x" ;; esac; done)
           # shellcheck disable=SC2086
-          is_vpn() { in_list "$1" $VPN_EGRESS_IPS; }
+          is_vpn() { in_list "$1" $vpn4; }
+          # shellcheck disable=SC2086
+          is_vpn6() { in_list "$1" $vpn6ips; }
           # curl bound to eth0 in the Transmission container. Prints PASS
           # only for a refused (7) or timed-out (28) connection; any other
-          # failure (no such interface, exec failed) proves nothing.
+          # failure (no such interface, exec failed) proves nothing. "if!"
+          # makes curl fail rather than fall back to binding eth0's address
+          # (which would send the request into the tunnel instead).
           eth0_blocked() {
-            rc=$(in_tx sh -c 'curl -sk -m 5 -o /dev/null --interface eth0 "$@" 2>/dev/null; echo "rc=$?"' sh "$@" | sed -n 's/^rc=//p')
+            rc=$(in_tx sh -c 'curl -sk -m 5 -o /dev/null --interface "if!eth0" "$@" 2>/dev/null; echo "rc=$?"' sh "$@" | sed -n 's/^rc=//p')
             case $rc in
               7 | 28) return 0 ;;
               0) return 1 ;;
@@ -190,6 +198,17 @@ spec:
             else
               fail "this test pod cannot reach the Kubernetes API, so the eth0 check proves nothing"
             fi
+            # The API is usually IPv4 only. Where the node has an IPv6
+            # address, its kubelet (any HTTP answer will do) covers IPv6.
+            node6=$(kubectl get pod "$pod" -o jsonpath='{range .status.hostIPs[*]}{.ip}{"\n"}{end}{.status.hostIP}' | grep : | tail -n1)
+            if [ -n "$node6" ]; then
+              kubelet6="https://[$node6]:10250/healthz"
+              if curl -sk -m 5 -o /dev/null "$kubelet6"; then
+                check_eth0 "the node's kubelet over IPv6" "$kubelet6"
+              else
+                echo "SKIP  this test pod cannot reach $kubelet6, so IPv6 on eth0 is not probed directly"
+              fi
+            fi
 
             want=$(echo "$NAMESERVERS" | tr ' ' '\n' | sort | tr '\n' ' ')
             got=$(in_tx sed -n 's/^nameserver[[:space:]]*//p' /etc/resolv.conf | sort | tr '\n' ' ')
@@ -208,9 +227,9 @@ spec:
                 fail "the pod cannot reach $IP_ECHO_URL through the VPN"
               elif [ "$vpn" = "$direct" ] || is_own "$vpn"; then
                 fail "LEAK: the pod's IPv4 egress address $vpn is the cluster's own"
-              elif [ -n "$VPN_EGRESS_IPS" ] && ! is_vpn "$vpn"; then
+              elif [ -n "$vpn4" ] && ! is_vpn "$vpn"; then
                 fail "the pod's IPv4 egress address $vpn is not one of tests.vpnEgressIPs ($VPN_EGRESS_IPS)"
-              elif [ "$node" != "$MY_NODE" ] && [ -z "$VPN_EGRESS_IPS" ]; then
+              elif [ "$node" != "$MY_NODE" ] && [ -z "$vpn4" ]; then
                 fail "the test pod runs on $MY_NODE, not on the pod's node $node, so its address proves nothing; set tests.vpnEgressIPs"
               else
                 pass "IPv4 egress leaves through the VPN as $vpn (the cluster egresses as $direct)"
@@ -220,6 +239,10 @@ spec:
                 vpn6=$(in_tx curl -6 -fsS -m 10 "$IP_ECHO_URL" 2>/dev/null | trim)
                 if [ -n "$vpn6" ] && { [ "$vpn6" = "$direct6" ] || is_own "$vpn6"; }; then
                   fail "LEAK: the pod's IPv6 egress address $vpn6 is the cluster's own"
+                elif [ -n "$vpn6" ] && [ -n "$vpn6ips" ] && ! is_vpn6 "$vpn6"; then
+                  fail "the pod's IPv6 egress address $vpn6 is not one of tests.vpnEgressIPs ($VPN_EGRESS_IPS)"
+                elif [ -n "$vpn6" ] && [ "$node" != "$MY_NODE" ] && [ -z "$vpn6ips" ]; then
+                  fail "the test pod runs on $MY_NODE, not on the pod's node $node, so its IPv6 address proves nothing; set tests.vpnEgressIPs"
                 else
                   pass "IPv6 does not leave as the cluster's address $direct6 (VPN: ${vpn6:-no IPv6})"
                 fi

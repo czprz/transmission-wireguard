@@ -51,11 +51,13 @@ jobs:
         id: chart
         run: echo "result=$(yq -r '.version' Chart.yaml)" >> "$GITHUB_OUTPUT"
 
+      # Versions pinned: npx runs them in a job that can push to the repo.
       - name: Determine recommended bump
         id: bump
         run: |
-          BUMP=$(npx -y -p conventional-recommended-bump -p conventional-changelog-angular \
-            conventional-recommended-bump -p angular || true)
+          # A failing tool must fail the job, not silently skip the release.
+          BUMP=$(npx -y -p conventional-recommended-bump@12.1.0 -p conventional-changelog-angular@9.4.0 \
+            conventional-recommended-bump -p angular)
           if [ -z "${BUMP}" ]; then
             echo "bump=none" >> "$GITHUB_OUTPUT"
             exit 0
@@ -107,13 +109,13 @@ jobs:
         if: steps.bump.outputs.bump != 'none'
         run: |
           touch CHANGELOG.md
-          npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
+          npx -y -p conventional-changelog-cli@5.0.0 -p conventional-changelog-angular@9.4.0 \
             conventional-changelog -p angular -i CHANGELOG.md -s -r 0
 
       - name: Build release notes
         if: steps.bump.outputs.bump != 'none'
         run: |
-          npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
+          npx -y -p conventional-changelog-cli@5.0.0 -p conventional-changelog-angular@9.4.0 \
             conventional-changelog -p angular -r 1 > RELEASE_BODY.md
 
       - name: Commit and tag
