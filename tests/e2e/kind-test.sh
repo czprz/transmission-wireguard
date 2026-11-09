@@ -46,8 +46,13 @@ fail() { echo "  FAIL  $*"; FAILED=$((FAILED + 1)); }
 step() { echo; echo "== $*"; }
 
 # $1=wait: block until the namespace is gone, so a rerun can recreate it.
+# The termination step holds the release pod with a finalizer; release it,
+# or the namespace never goes.
+HOLD=twg.e2e/hold
 cleanup() {
   docker rm -f $P-server $P-canary $P-udp >/dev/null 2>&1 || true
+  kubectl -n "$NS" get pods -o name 2>/dev/null | xargs -r kubectl -n "$NS" patch --type=merge \
+    -p '{"metadata":{"finalizers":null}}' >/dev/null 2>&1 || true
   kubectl delete namespace "$NS" --ignore-not-found --wait="${1:-false}" --timeout=3m >/dev/null 2>&1 || true
 }
 cleanup true
@@ -261,9 +266,22 @@ check_eth0() {
     *) fail "eth0 check for $what proves nothing (curl exit ${rc:-none})" ;;
   esac
 }
-# The same request from an ordinary pod in the namespace.
+# The same request from an ordinary pod in the namespace: its output and
+# exit code. Not `kubectl run -i --rm`, which loses the output of a command
+# that ends before kubectl attaches.
 ordinary_pod() {
-  kubectl -n "$NS" run "probe-$RANDOM" --rm -i --restart=Never --quiet --image=curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 --command -- "$@" 2>/dev/null
+  local name="probe-$RANDOM$RANDOM" phase="" rc
+  kubectl -n "$NS" run "$name" --restart=Never --quiet --image=curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 --command -- "$@" >/dev/null 2>&1 || return 1
+  for _ in $(seq 120); do
+    phase=$(kubectl -n "$NS" get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    [[ $phase == Succeeded || $phase == Failed ]] && break
+    sleep 0.5
+  done
+  kubectl -n "$NS" logs "$name" 2>/dev/null || true
+  rc=$(kubectl -n "$NS" get pod "$name" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
+  kubectl -n "$NS" delete pod "$name" --wait=false >/dev/null 2>&1 || true
+  [[ $rc =~ ^[0-9]+$ ]] || rc=1
+  return "$rc"
 }
 via_vpn() { [[ $(canary_seen) == "$SERVER_IP" ]]; }
 wait_for() {
@@ -369,6 +387,7 @@ helm_args=(
   --set "wireguard.endpoints[0].port=51820"
   --set wireguard.handshakeMaxAgeSeconds=180
   --set persistence.enabled=false
+  --set persistence.downloads.enabled=true
   --set transmission.rpcAuth.username=admin
   --set transmission.rpcAuth.password=kind-test-password
   --set tests.enabled=true
@@ -392,6 +411,11 @@ if [[ -n $wg_started && -n $tx_started && ! $tx_started < $wg_started ]]; then
   pass "Transmission started after the WireGuard sidecar ($wg_started <= $tx_started)"
 else
   fail "start order wrong (wireguard=$wg_started transmission=$tx_started)"
+fi
+if kx transmission grep -q ' /data ' /proc/mounts; then
+  pass "the downloads PVC is mounted at /data ($(kubectl -n "$NS" get pvc "$RELEASE-transmission-wireguard-downloads" -o jsonpath='{.status.phase}'))"
+else
+  fail "the downloads PVC is not mounted at /data"
 fi
 wg_log=$(kubectl -n "$NS" logs "$POD" -c wireguard)
 fw_line=$(grep -n -m1 'kill switch installed' <<<"$wg_log" | cut -d: -f1 || true)
@@ -713,39 +737,41 @@ done
 sleep 3
 hits_mark nopod
 for c in transmission wireguard; do started[$c]=$(wc -l <"${term_log[$c]}"); done
-# When each container ended, to see what a slow shutdown waited for.
+# A finalizer keeps the pod object after its containers end, so their exit
+# codes can be read; otherwise it is often gone before the kubelet's last
+# status update is seen.
 grace=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.terminationGracePeriodSeconds}')
-term_states=$(mktemp)
-kubectl -n "$NS" get pod "$POD" -w -o jsonpath='{.metadata.deletionTimestamp}{range .status.containerStatuses[*]} {.name}={.state.terminated.exitCode}@{.state.terminated.finishedAt}{end}{range .status.initContainerStatuses[*]} {.name}={.state.terminated.exitCode}@{.state.terminated.finishedAt}{end}{"\n"}' \
-  >"$term_states" 2>/dev/null &
-watch_pid=$!
+kubectl -n "$NS" patch pod "$POD" --type=merge -p "{\"metadata\":{\"finalizers\":[\"$HOLD\"]}}" >/dev/null
+term_states='{range .status.containerStatuses[*]} {.name}={.state.terminated.exitCode}@{.state.terminated.finishedAt}{end}{range .status.initContainerStatuses[*]} {.name}={.state.terminated.exitCode}@{.state.terminated.finishedAt}{end}'
+# Each container's exit code, once it has one.
+exit_code() { grep -o " $1=[0-9]*@" <<<"$states" | tr -dc '0-9' || true; }
 deleted=$(date +%s)
 kubectl -n "$NS" delete pod "$POD" --wait=false >/dev/null
-gone=0
+stopped=0 states=""
 for _ in $(seq $((grace + 45))); do
-  if ! kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then gone=1; break; fi
+  states=$(kubectl -n "$NS" get pod "$POD" -o jsonpath="$term_states" 2>/dev/null || true)
+  if [[ -n $(exit_code transmission) && -n $(exit_code wireguard) ]]; then stopped=1; break; fi
   sleep 1
 done
-kill $watch_pid 2>/dev/null || true
 took=$(($(date +%s) - deleted))
-echo "  INFO  pod gone after ${took}s (grace ${grace}s); last states: $(grep . "$term_states" | tail -n1)"
+echo "  INFO  containers stopped after ${took}s (grace ${grace}s):$states"
 # The image stops Transmission through its RPC with the chart's
 # credentials; if that fails, Transmission is killed when the grace period
 # ends (exit 137) without saving its state.
-tx_exit=$(grep -o 'transmission=[0-9]*@' "$term_states" | tail -n1 | tr -dc '0-9' || true)
-if [[ $tx_exit == 0 ]] && ((took < grace)); then
-  pass "Transmission stops on SIGTERM (exit 0) and the pod is gone in ${took}s, within its ${grace}s grace period"
-elif [[ -z $tx_exit ]]; then
-  echo "  NOTE  Transmission's exit code was not seen (pod gone in ${took}s)"
+tx_exit=$(exit_code transmission)
+if ((!stopped)); then
+  fail "the containers did not stop within the pod's grace period plus 45 s, so its shutdown was not observed to the end"
+elif [[ $tx_exit == 0 ]] && ((took < grace)); then
+  pass "Transmission stops on SIGTERM (exit 0), and both containers end in ${took}s, within the ${grace}s grace period"
 else
-  fail "Transmission did not stop cleanly (exit $tx_exit, pod gone after ${took}s of a ${grace}s grace period)"
+  fail "Transmission did not stop cleanly (exit ${tx_exit:-none}, containers stopped after ${took}s of a ${grace}s grace period)"
 fi
-rm -f "$term_states"
-if (($(date +%s) - deleted > grace / 2)); then
+if ((took > grace / 2)); then
   docker exec kind-control-plane journalctl -u kubelet --no-pager --since "-$((grace + 120))s" 2>/dev/null |
     grep -F "$POD" | grep -iE 'kill|grace|terminat|stop' | tail -n 15 | cut -c1-400 | sed 's/^/        kubelet: /' || true
 fi
-((gone)) || fail "the pod did not terminate within its grace period plus 45 s, so its shutdown was not observed to the end"
+kubectl -n "$NS" patch pod "$POD" --type=json -p '[{"op":"remove","path":"/metadata/finalizers"}]' >/dev/null
+kubectl -n "$NS" wait --for=delete "pod/$POD" --timeout=60s >/dev/null || fail "the pod was not deleted once released"
 for c in transmission wireguard; do
   kill "${term_pid[$c]}" 2>/dev/null || true
   while read -r line; do
