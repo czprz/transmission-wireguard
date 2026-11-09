@@ -535,9 +535,11 @@ fi
 # Router advertisements may not add routes past the tunnel. A privileged
 # sidecar restricts them itself; an unprivileged one cannot and must say so.
 ra=$(as_root cat /proc/sys/net/ipv6/conf/eth0/accept_ra_pinfo 2>/dev/null || echo unreadable)
+# Captured first: grep -q exiting early would SIGPIPE docker logs (pipefail).
+wg_log=$(docker logs $P-wg 2>&1)
 if [[ $SIDECAR == privileged && $ra == 0 ]]; then
   pass "router advertisements cannot add on-link prefixes on eth0"
-elif [[ $SIDECAR == unprivileged ]] && docker logs $P-wg 2>&1 | grep -q 'WARNING: /proc/sys is read-only'; then
+elif [[ $SIDECAR == unprivileged && $wg_log == *'WARNING: /proc/sys is read-only'* ]]; then
   pass "the unprivileged sidecar warns that it cannot restrict router advertisements"
 else
   fail "router advertisements on eth0 not restricted and not warned about (accept_ra_pinfo=$ra, $SIDECAR sidecar)"

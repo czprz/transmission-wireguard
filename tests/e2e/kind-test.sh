@@ -702,13 +702,27 @@ done
 sleep 3
 hits_mark nopod
 for c in transmission wireguard; do started[$c]=$(wc -l <"${term_log[$c]}"); done
+# When each container ended, to see what a slow shutdown waited for.
+grace=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.terminationGracePeriodSeconds}')
+term_states=$(mktemp)
+kubectl -n "$NS" get pod "$POD" -w -o jsonpath='{.metadata.deletionTimestamp}{range .status.containerStatuses[*]} {.name}={.state.terminated.finishedAt}{.state.terminated.exitCode}{end}{range .status.initContainerStatuses[*]} {.name}={.state.terminated.finishedAt}{.state.terminated.exitCode}{end}{"\n"}' \
+  >"$term_states" 2>/dev/null &
+watch_pid=$!
+deleted=$(date +%s)
 kubectl -n "$NS" delete pod "$POD" --wait=false >/dev/null
 gone=0
-for _ in $(seq 90); do
+for _ in $(seq $((grace + 45))); do
   if ! kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then gone=1; break; fi
   sleep 1
 done
-((gone)) || fail "the pod did not terminate within 90 s, so its shutdown was not observed to the end"
+kill $watch_pid 2>/dev/null || true
+echo "  INFO  pod gone after $(($(date +%s) - deleted))s (grace ${grace}s); last states: $(grep . "$term_states" | tail -n1)"
+rm -f "$term_states"
+if (($(date +%s) - deleted > grace / 2)); then
+  docker exec kind-control-plane journalctl -u kubelet --no-pager --since "-$((grace + 120))s" 2>/dev/null |
+    grep -F "$POD" | grep -iE 'kill|grace|terminat|stop' | tail -n 15 | cut -c1-400 | sed 's/^/        kubelet: /' || true
+fi
+((gone)) || fail "the pod did not terminate within its grace period plus 45 s, so its shutdown was not observed to the end"
 for c in transmission wireguard; do
   kill "${term_pid[$c]}" 2>/dev/null || true
   while read -r line; do
