@@ -25,3 +25,4 @@ CONTRIBUTING.md
 *.swp
 *~
 .DS_Store
+/.previous/

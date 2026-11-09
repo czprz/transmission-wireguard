@@ -16,6 +16,11 @@
 #
 # Usage: tests/e2e/kind-cluster.sh kindnet && IPV6=1 tests/e2e/kind-test.sh
 # (IPV6=1 needs a dual-stack cluster and adds the IPv6 leak checks.)
+#
+# UPGRADE_FROM=<chart dir> first installs that chart (an earlier release,
+# with its defaults and a PVC) and upgrades it to this one, so every check
+# runs on an upgraded release. UPGRADE_FLAGS are added to that upgrade, as a
+# user following the README's upgrade notes would.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -39,6 +44,8 @@ TUN_CLIENT=10.99.0.2
 TUN_SERVER6=fd99::1
 TUN_CLIENT6=fd99::2
 IPV6=${IPV6:-0}
+UPGRADE_FROM=${UPGRADE_FROM:-}
+read -ra UPGRADE_FLAGS <<<"${UPGRADE_FLAGS:-}"
 
 FAILED=0
 pass() { echo "  PASS  $*"; }
@@ -386,14 +393,35 @@ helm_args=(
   --set "wireguard.endpoints[0].ip=$SERVER_IP"
   --set "wireguard.endpoints[0].port=51820"
   --set wireguard.handshakeMaxAgeSeconds=180
-  --set persistence.enabled=false
-  --set persistence.downloads.enabled=true
   --set transmission.rpcAuth.username=admin
   --set transmission.rpcAuth.password=kind-test-password
   --set tests.enabled=true
   --set "tests.ipEchoUrl=http://$CANARY_IP/cgi-bin/ip"
 )
-helm install $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${helm_args[@]}" --set networkPolicy.enabled=false
+if [[ -z $UPGRADE_FROM ]]; then
+  # A fresh install, with /config on an emptyDir and the downloads on a PVC of their own.
+  helm_args+=(--set persistence.enabled=false --set persistence.downloads.enabled=true)
+  helm install $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${helm_args[@]}" --set networkPolicy.enabled=false
+else
+  step "upgrade from $(helm show chart "$UPGRADE_FROM" | sed -n 's/^version: //p')"
+  # The earlier release as its users run it: its defaults, its PVC. Its pod
+  # need not become ready here; the upgrade is what is tested.
+  helm install $RELEASE "$UPGRADE_FROM" -n "$NS" --set wireguard.existingSecret=wg-client >/dev/null
+  kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'=Bound "pvc/$RELEASE-transmission-wireguard" --timeout 3m >/dev/null 2>&1 ||
+    kubectl -n "$NS" get pvc "$RELEASE-transmission-wireguard" >/dev/null
+  old_pvc=$(kubectl -n "$NS" get pvc "$RELEASE-transmission-wireguard" -o jsonpath='{.metadata.uid}')
+  if helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${UPGRADE_FLAGS[@]}" "${helm_args[@]}" --set networkPolicy.enabled=false; then
+    pass "helm upgrade from the earlier release succeeds${UPGRADE_FLAGS[*]:+ (with ${UPGRADE_FLAGS[*]})}"
+  else
+    fail "helm upgrade from the earlier release fails"
+    exit 1
+  fi
+  if [[ $(kubectl -n "$NS" get pvc "$RELEASE-transmission-wireguard" -o jsonpath='{.metadata.uid}') == "$old_pvc" ]]; then
+    pass "the upgrade keeps the release's PVC, and the downloads on it"
+  else
+    fail "the upgrade replaced the release's PVC"
+  fi
+fi
 POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/instance=$RELEASE -o jsonpath='{.items[0].metadata.name}')
 POD_UID=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.metadata.uid}')
 wait_for "first handshake" 15 via_vpn || true
@@ -412,10 +440,12 @@ if [[ -n $wg_started && -n $tx_started && ! $tx_started < $wg_started ]]; then
 else
   fail "start order wrong (wireguard=$wg_started transmission=$tx_started)"
 fi
-if kx transmission grep -q ' /data ' /proc/mounts; then
+if ! kx transmission grep -q ' /data ' /proc/mounts; then
+  fail "nothing is mounted at /data"
+elif [[ -z $UPGRADE_FROM ]]; then
   pass "the downloads PVC is mounted at /data ($(kubectl -n "$NS" get pvc "$RELEASE-transmission-wireguard-downloads" -o jsonpath='{.status.phase}'))"
 else
-  fail "the downloads PVC is not mounted at /data"
+  pass "the release's PVC is mounted at /data"
 fi
 wg_log=$(kubectl -n "$NS" logs "$POD" -c wireguard)
 fw_line=$(grep -n -m1 'kill switch installed' <<<"$wg_log" | cut -d: -f1 || true)

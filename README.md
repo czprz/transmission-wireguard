@@ -140,6 +140,7 @@ PersistentKeepalive = 25
 - **An RPC Secret with an empty username or password** stops the pod instead of leaving the web UI open.
 - **`TWG_*` variables and the image's server mode** (`PEERS`, `SERVERURL`, ...) are refused in `wireguard.env` / `transmission.env`.
 - **The Deployment uses `strategy: Recreate`**, so an upgrade never runs two pods on one WireGuard key; expect a short gap.
+  **If Helm 4 installed the release**, add `--server-side=false` to this one upgrade: `helm upgrade <release> <chart> --server-side=false ...`. Without it the upgrade fails with `spec.strategy.rollingUpdate: Forbidden`, because Helm 4's server-side apply leaves the old strategy's settings in place. Releases installed with Helm 3 upgrade as usual, with Helm 3 or 4. CI runs both upgrades.
 - **`rpc-host-whitelist-enabled` is now `true`.** The Service name and ingress hosts are allowed automatically. If you reach the UI under another name (Gateway API, an external proxy, a Tailscale name), add it to `transmission.settings.rpc-host-whitelist` or you get HTTP 421.
 - **`transmission.settings.rpc-port` must equal `service.webPort`**, and `peer-port-random-on-start` must be `false`.
 - **Peer ports are off the Service.** `service.exposePeerPorts`, `peerPortTcp` and `peerPortUdp` are gone; peers connect through the VPN (forward a port at your provider and set `peer-port`).
@@ -266,7 +267,17 @@ Comparing the pod's public address with the cluster's needs an IP echo endpoint;
 - `make e2e-docker`: builds a dual-stack Pod-like network namespace in Docker with the chart's images and scripts, a WireGuard server and a canary, then tries to leak over IPv4 and IPv6: sockets bound to `eth0`, UDP (DNS and another port), ICMP, Transmission's own tracker announces, a deleted `wg0`, sidecar restarts and SIGKILL, tampered and flushed rules, packets marked by a stray mangle rule or re-routed by a nat rule, duplicating nft rules, unsafe configs. Every leak probe must be refused or time out, and every canary counts the packets that arrive from the pod's own address, so a leak fails the test however the client saw it; a probe that can't run fails the test too. Needs Docker with kernel WireGuard.
 - `make e2e-kind CNI=kindnet|calico|cilium`: creates a kind cluster with that CNI (kindnet dual-stack, with IPv6 checks) and runs the same idea there. It adds start order, kubelet probes, pod DNS, UDP, the Service, `helm test` against a healthy and a tampered pod, the NetworkPolicy holding with the in-pod kill switch verifiably flushed, a refused `existingSecret` keeping Transmission from starting, a downloads PVC, and pod termination (Transmission must exit 0 within the grace period). CI also validates the rendered chart against the cluster's API server. The leak checks run first without the NetworkPolicy, so they test the in-pod kill switch alone. Delete the cluster afterwards with `kind delete cluster`.
 
-CI runs the Docker test on amd64 and arm64 (and once with the sidecar unprivileged, `make e2e-docker SIDECAR=unprivileged`) and the kind test with each CNI, on every pull request and on pushes to `dev` and `main`.
+- `make e2e-upgrade`: installs the last release in kind, upgrades it to this chart and runs the kind test on the upgraded release.
+- `make mutation`: turns off each firewall rule in turn and runs the Docker test, which must fail every time. A rule whose removal fails no check would be redundant or untested.
+
+CI runs on every pull request, on pushes to `dev` and `main`, and weekly:
+- **The Docker test:** on amd64 and arm64, and once with the sidecar unprivileged (`make e2e-docker SIDECAR=unprivileged`).
+- **The kind test:**
+  - on Kubernetes 1.29 (the oldest the chart supports) up to 1.37;
+  - on kindnet, Calico and Cilium;
+  - with Helm 3 and Helm 4;
+  - as an upgrade from the last release, with Helm 3 and with Helm 4.
+- **The mutation test:** weekly, and on pull requests that change `files/firewall.sh` or its leak test.
 
 ## Values overview
 

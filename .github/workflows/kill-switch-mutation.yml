@@ -1,0 +1,72 @@
+name: Kill switch mutation test
+
+# Proves the leak tests guard every firewall rule: each job turns one rule
+# off and runs the Docker leak test, which must then fail. Runs weekly, by
+# hand, and on pull requests that change the firewall or its leak test.
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - files/firewall.sh
+      - tests/e2e/netns-leak-test.sh
+      - tests/e2e/mutation-test.sh
+      - .github/workflows/kill-switch-mutation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      lines: ${{ steps.list.outputs.lines }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      - name: List mutants
+        id: list
+        run: echo "lines=$(tests/e2e/mutation-test.sh --list | jq -cRs 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
+  mutant:
+    name: mutant firewall.sh:${{ matrix.line }}
+    needs: mutants
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        line: ${{ fromJSON(needs.mutants.outputs.lines) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      - name: Load WireGuard kernel module
+        run: sudo modprobe wireguard
+
+      # As in helm-chart.yaml: the runner's AppArmor profiles break wg-quick.
+      - name: Unload host AppArmor profiles
+        run: sudo aa-teardown || sudo systemctl stop apparmor || true
+
+      - name: Leak test without firewall.sh line ${{ matrix.line }}
+        run: tests/e2e/mutation-test.sh ${{ matrix.line }}
+
+  # One result to look at (and to require, if you want it on the PRs above).
+  mutation-passed:
+    if: always()
+    needs: [mutants, mutant]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every mutant was killed
+        run: jq -e 'to_entries | all(.value.result == "success")' <<<"$NEEDS" >/dev/null || { echo "$NEEDS"; exit 1; }
+        env:
+          NEEDS: ${{ toJSON(needs) }}

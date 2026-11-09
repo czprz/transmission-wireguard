@@ -347,9 +347,12 @@ wait_for() {
   return 1
 }
 
+# FIREWALL_SH replaces the chart's firewall.sh (tests/e2e/mutation-test.sh).
+FIREWALL_SH=${FIREWALL_SH:-$ROOT/files/firewall.sh}
 stage_scripts() {
   mkdir -p "$1/twg/scripts"
-  cp "$ROOT/files/firewall.sh" "$ROOT/files/settings-init.sh" "$ROOT/files/transmission-live.sh" "$1/twg/scripts/"
+  cp "$ROOT/files/settings-init.sh" "$ROOT/files/transmission-live.sh" "$1/twg/scripts/"
+  cp "$FIREWALL_SH" "$1/twg/scripts/firewall.sh"
   chmod 0555 "$1"/twg/scripts/*
 }
 

@@ -7,6 +7,11 @@ on:
     branches:
       - dev
   workflow_call:
+  # Weekly on main, to catch what changes outside the repo: runner kernels
+  # and images, Kubernetes and Helm releases behind unchanged pins.
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -101,10 +106,14 @@ jobs:
         env:
           SIDECAR: ${{ matrix.sidecar }}
 
-  # The kind test runs once per NetworkPolicy implementation; kindnet runs
-  # dual-stack and adds the IPv6 checks.
+  # The kind test runs on each NetworkPolicy implementation, on the oldest
+  # Kubernetes the chart supports (1.29) up to the newest kind ships, with
+  # Helm 3 and Helm 4, and as an upgrade from the last release. kindnet runs
+  # dual-stack and adds the IPv6 checks. Calico stays on a Kubernetes version
+  # its release supports. Each node image is the digest from its kind
+  # release notes; kubectl matches the cluster's version.
   e2e-kind:
-    name: e2e-kind (${{ matrix.cni }})
+    name: e2e-kind (${{ matrix.cni }}, k8s ${{ matrix.k8s }}, helm ${{ matrix.helm }}${{ matrix.upgrade && ', upgrade' || '' }})
     runs-on: ubuntu-latest
     needs: verify
     timeout-minutes: 45
@@ -114,13 +123,64 @@ jobs:
         include:
           - cni: kindnet
             ipv6: 1
+            k8s: "1.37"
+            kind: v0.33.0
+            node: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+            kubectl: v1.37.0
+            kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+            helm: v4.3.1
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.29"
+            kind: v0.27.0
+            node: kindest/node:v1.29.14@sha256:8703bd94ee24e51b778d5556ae310c6c0fa67d761fae6379c8e0bb480e6fea29
+            kubectl: v1.29.14
+            kubectl_sha256: a4902c8a454a3678d589b51d95d810ec84791c03ed6b5779969df559c9c0357e
+            helm: v3.14.4
           - cni: calico
             ipv6: 0
+            k8s: "1.32"
+            kind: v0.27.0
+            node: kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f
+            kubectl: v1.32.2
+            kubectl_sha256: 4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea
+            helm: v3.22.1
           - cni: cilium
             ipv6: 0
+            k8s: "1.34"
+            kind: v0.33.0
+            node: kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
+            kubectl: v1.34.11
+            kubectl_sha256: 8efbb9435132a190920eb65a47a8c1ecf755ad85ab57a600c9bedbab460bb7a8
+            helm: v4.3.1
+          # Upgrades from the last release tag, as its users would run them.
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.37"
+            kind: v0.33.0
+            node: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+            kubectl: v1.37.0
+            kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+            helm: v3.22.1
+            upgrade: true
+          # Helm 4 installs with server-side apply, which cannot switch the
+          # Deployment to Recreate; the README's upgrade note says to add
+          # --server-side=false once.
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.37"
+            kind: v0.33.0
+            node: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+            kubectl: v1.37.0
+            kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+            helm: v4.3.1
+            upgrade: true
+            upgrade_flags: --server-side=false
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+        with:
+          fetch-depth: 0  # the release tags, for the upgrade runs
 
       - name: Load WireGuard kernel module
         run: sudo modprobe wireguard
@@ -131,23 +191,21 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
-          version: v3.14.4
+          version: ${{ matrix.helm }}
 
-      # The cluster's version, not whatever the runner image ships.
       - name: Install kubectl
         run: |
-          KUBECTL_VERSION=v1.32.2
-          curl -sSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-          echo "4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea  kubectl" | sha256sum -c -
+          curl -sSLo kubectl "https://dl.k8s.io/release/${{ matrix.kubectl }}/bin/linux/amd64/kubectl"
+          echo "${{ matrix.kubectl_sha256 }}  kubectl" | sha256sum -c -
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
           rm kubectl
 
       # go install verifies kind against the Go checksum database, and
       # fetches it from the Go module proxy rather than GitHub.
-      - name: Create kind cluster (${{ matrix.cni }})
+      - name: Create kind cluster (${{ matrix.cni }}, k8s ${{ matrix.k8s }})
         run: |
-          go install sigs.k8s.io/kind@v0.27.0
-          KIND="$(go env GOPATH)/bin/kind" tests/e2e/kind-cluster.sh ${{ matrix.cni }}
+          go install "sigs.k8s.io/kind@${{ matrix.kind }}"
+          KIND="$(go env GOPATH)/bin/kind" NODE_IMAGE="${{ matrix.node }}" tests/e2e/kind-cluster.sh ${{ matrix.cni }}
 
       # The API server validates the manifests, unknown fields included.
       # (The helm test pod needs its ServiceAccount to exist; kind-test.sh
@@ -157,10 +215,20 @@ jobs:
           helm template transmission-wireguard . -f ci/default-values.yaml --set persistence.downloads.enabled=true |
             kubectl apply --dry-run=server --validate=strict -f -
 
+      - name: Check out the last release
+        if: matrix.upgrade
+        run: |
+          tag=$(git tag --list 'v*' --sort=-v:refname --merged HEAD | head -n1)
+          echo "Upgrading from $tag"
+          mkdir -p "$RUNNER_TEMP/previous"
+          git archive "$tag" | tar -x -C "$RUNNER_TEMP/previous"
+
       - name: Kill switch leak test (kind, ${{ matrix.cni }})
         run: tests/e2e/kind-test.sh
         env:
           IPV6: ${{ matrix.ipv6 }}
+          UPGRADE_FROM: ${{ matrix.upgrade && format('{0}/previous', runner.temp) || '' }}
+          UPGRADE_FLAGS: ${{ matrix.upgrade_flags }}
 
   # Not a test: the merge gate. Require this one job in branch protection,
   # because GitHub counts a skipped job (e2e after a failed verify) as passed.
