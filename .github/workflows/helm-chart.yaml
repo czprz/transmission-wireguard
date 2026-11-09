@@ -55,12 +55,11 @@ jobs:
       - name: Schema test
         run: tests/schema-test.sh
 
-      - name: Chart metadata test
+      - name: appVersion test
         run: tests/metadata-test.sh
 
-      # The release job's packaging and push, against a local registry.
-      - name: Release test
-        run: tests/release-test.sh
+      - name: Package test
+        run: tests/package-test.sh
 
 
   # Leak tests: try to make traffic escape the tunnel and fail if it does.
@@ -163,9 +162,9 @@ jobs:
         env:
           IPV6: ${{ matrix.ipv6 }}
 
-  # The one check to require in branch protection: GitHub counts a skipped
-  # job (e2e after a failed verify) as passed.
-  all-tests:
+  # Not a test: the merge gate. Require this one job in branch protection,
+  # because GitHub counts a skipped job (e2e after a failed verify) as passed.
+  ci-passed:
     if: always()
     needs: [verify, e2e-docker, e2e-kind]
     runs-on: ubuntu-latest

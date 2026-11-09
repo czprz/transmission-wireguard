@@ -52,6 +52,13 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      # The same script tests/release-test.sh runs against a local registry.
-      - name: Package and push chart to GHCR
-        run: ci/push-chart.sh ghcr.io
+      - name: Package test
+        run: tests/package-test.sh
+
+      - name: Package chart
+        run: |
+          mkdir -p dist
+          helm package . --destination dist
+
+      - name: Push chart to GHCR
+        run: helm push dist/*.tgz "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"

@@ -1,6 +1,6 @@
 # Only the chart goes into the package: not the repository's tooling, and
 # never a local wg0.conf or values file that holds a private key.
-# tests/release-test.sh checks the package against an allowlist.
+# tests/package-test.sh checks the package against an allowlist.
 .git
 .github/
 .claude/
@@ -18,6 +18,8 @@ renovate.json
 RELEASE_BODY.md
 CONTRIBUTING.md
 *.conf
+*.conf.*
+*.bak
 *.local.yaml
 *.tgz
 *.swp

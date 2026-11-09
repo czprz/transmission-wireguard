@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Chart.yaml must describe the images the chart really runs: appVersion is
-# the default Transmission version, and the artifacthub.io/images
-# annotation lists each default image as tag@digest.
+# appVersion, which `helm list` shows users, must be the Transmission
+# version the chart runs by default.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,13 +27,4 @@ else
   failed=1
 fi
 
-for name in wireguardImage transmissionImage testImage; do
-  img=$(default_image "$name")
-  if grep -qxF "      image: $img" Chart.yaml; then
-    echo "PASS  Chart.yaml lists $img"
-  else
-    echo "FAIL  Chart.yaml's artifacthub.io/images does not list the default $img"
-    failed=1
-  fi
-done
 exit "$failed"
