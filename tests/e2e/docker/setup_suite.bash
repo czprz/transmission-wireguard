@@ -130,14 +130,16 @@ baseline() {
 
 setup_suite() {
   [[ ${#SIDECAR_SECURITY[@]} -gt 0 ]] || { echo "SIDECAR must be privileged or unprivileged" >&2; return 1; }
-  export WG_IMAGE TX_IMAGE CANARY_IMAGE TRACKER_IMAGE FIREWALL_SH
+  export WG_IMAGE SIDECAR_IMAGE TX_IMAGE CANARY_IMAGE TRACKER_IMAGE FIREWALL_SH
   cleanup
   mkdir -p "$STAGE"
 
   # Pull up front with retries: registries rate-limit bursts of pulls, so
   # back off between attempts.
   local image attempt
-  for image in "$WG_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE" "$TRACKER_IMAGE"; do
+  for image in "$WG_IMAGE" "$SIDECAR_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE" "$TRACKER_IMAGE"; do
+    # A sidecar image built here (image/wireguard) is not pulled.
+    [[ $image != "$SIDECAR_IMAGE" || $image == "$WG_IMAGE" ]] || ! docker image inspect "$image" >/dev/null 2>&1 || continue
     for attempt in 1 2 3 4 5; do
       docker pull -q "$image" >/dev/null && break
       ((attempt < 5)) || { echo "cannot pull $image" >&2; return 1; }
@@ -243,7 +245,7 @@ EOF
 
   # The sidecar exactly as the chart runs it.
   docker create --name "$P-wg" --network "container:$P-pod" "${SIDECAR_SECURITY[@]}" -v /twg "${firewall_env[@]}" \
-    --entrypoint /bin/bash "$WG_IMAGE" -c '/twg/scripts/firewall.sh apply && exec /init' >/dev/null
+    --entrypoint /bin/bash "$SIDECAR_IMAGE" -c '/twg/scripts/firewall.sh apply && exec /init' >/dev/null
   docker cp "$STAGE/wg/." "$P-wg:/" >/dev/null
   docker start "$P-wg" >/dev/null
   wait_until 90 via_vpn || { echo "the tunnel never came up; nothing would mean anything" >&2; return 1; }

@@ -221,6 +221,20 @@ issuer:
 
 If you already have an issuer, leave `issuer.enabled` false and reference your issuer in `ingress.annotations`.
 
+## Sidecar image
+
+`image/wireguard` builds the sidecar's image: Alpine with `wg-quick`, iptables and nftables, iproute2, `resolvconf` and `natpmpc`, and nothing else. It has no init system, no package manager and no busybox network clients. Its `/init` brings `wg0` up and takes it down on stop; the kill switch, installed before that, stays either way.
+
+Every change runs the Docker and cluster leak tests against it and scans it with Trivy (fixable HIGH and CRITICAL fail the build). Merges to main and a weekly rebuild, for Alpine's fixes, publish it to `ghcr.io/czprz/twg-wireguard` for amd64 and arm64. Each published image is signed with cosign and has a build provenance attestation:
+
+```bash
+cosign verify ghcr.io/czprz/twg-wireguard@sha256:<digest> \
+  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/sidecar-image\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+To use it before it becomes the chart's default, set `images.wireguard.repository: ghcr.io/czprz/twg-wireguard` and `images.wireguard.digest` to a published digest.
+
 ## Security notes
 
 - `replicaCount` must be 1: replicas would share one WireGuard key.
