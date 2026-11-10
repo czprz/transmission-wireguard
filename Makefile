@@ -27,11 +27,15 @@ test: lint validate
 CNI ?= kindnet
 SIDECAR ?= privileged
 FILTER ?=
-BATS_ARGS = $(if $(FILTER),--filter '$(FILTER)')
+# From the environment, so any quote in it reaches bats as it is.
+export FILTER
+BATS_ARGS = $(if $(FILTER),--filter "$$FILTER")
 BATS = tests/e2e/node_modules/.bin/bats
 
+# touch: npm leaves the lockfile newer than bats, so it would reinstall every run.
 $(BATS): tests/e2e/package-lock.json
 	npm ci --prefix tests/e2e --no-audit --no-fund
+	touch $@
 
 # SIDECAR=unprivileged runs it with NET_ADMIN + NET_RAW instead of privileged.
 e2e-docker: $(BATS)

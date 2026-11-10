@@ -12,6 +12,10 @@ load helpers
 into_tunnel() {
   as_root nft list chain ip twgreply out 2>/dev/null | sed -nE 's/.*counter packets ([0-9]+).*/\1/p'
 }
+# Connection requests to the web UI that arrived on eth0, before any rule.
+web_ui_syns() {
+  as_root nft list chain ip twgreply in 2>/dev/null | sed -nE 's/.*counter packets ([0-9]+).*/\1/p'
+}
 web_ui() {
   from_cluster curl -sS -m 4 -o /dev/null -w '%{http_code}' "http://$POD_IP:$WEB_PORT/transmission/web/" 2>/dev/null || true
 }
@@ -28,10 +32,15 @@ web_ui_via_gateway() {
 setup_file() {
   ensure_healthy
   as_root sh -c "nft add table ip twgreply && nft add chain ip twgreply out '{ type filter hook postrouting priority 400; }' &&
-    nft add rule ip twgreply out oifname wg0 ip saddr $POD_IP counter"
+    nft add rule ip twgreply out oifname wg0 ip saddr $POD_IP counter &&
+    nft add chain ip twgreply in '{ type filter hook prerouting priority -400; }' &&
+    nft add rule ip twgreply in iifname eth0 ip daddr $POD_IP tcp dport $WEB_PORT 'tcp flags & (syn | ack) == syn' counter"
+  as_root sh -c 'echo "$(sysctl -n net.ipv4.conf.all.rp_filter) $(sysctl -n net.ipv4.conf.eth0.rp_filter)"' >"$BATS_FILE_TMPDIR/rp_filter"
 }
 teardown() {
-  as_root sysctl -qw net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.eth0.rp_filter=0 || true
+  local all eth0
+  read -r all eth0 <"$BATS_FILE_TMPDIR/rp_filter"
+  as_root sysctl -qw "net.ipv4.conf.all.rp_filter=$all" "net.ipv4.conf.eth0.rp_filter=$eth0" || true
   dump_logs_if_failed
 }
 teardown_file() {
@@ -63,12 +72,16 @@ teardown_file() {
   # A flushed mangle OUTPUT chain is the moment while the kill switch
   # re-applies its mangle rules: replies are unmarked and would follow
   # wg-quick's rules into the tunnel.
-  local before after code
+  # (ensure_healthy restores the chain: the kill switch's check sees it.)
+  local before after syns_before syns_after code
   before=$(into_tunnel)
+  syns_before=$(web_ui_syns)
   as_root iptables -t mangle -F TWG-MANGLE-OUTPUT
   code=$(web_ui)
   after=$(into_tunnel)
-  [[ -n $before && -n $after ]] || fail "could not read the tunnel sensor"
+  syns_after=$(web_ui_syns)
+  [[ -n $before && -n $after && -n $syns_before && -n $syns_after ]] || fail "could not read the sensors"
+  ((syns_after > syns_before)) || fail "the web UI's request never reached the pod (client: '$code'), so this proves nothing"
   ((after == before)) || fail "LEAK: $((after - before)) web UI reply packet(s) went into the tunnel"
-  [[ ! $code =~ ^(200|301|401|409)$ ]] || fail "the web UI answered without its reply marks (HTTP $code), so the window was not reproduced"
+  [[ $code == 000 ]] || fail "the web UI answered without its reply marks (HTTP '$code'), so the window was not reproduced"
 }

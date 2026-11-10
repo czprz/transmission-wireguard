@@ -30,17 +30,23 @@ teardown_file() {
 }
 
 # Marked, so routed out eth0 to the endpoint's own address, but not
-# WireGuard: TCP and other UDP to the server must not pass.
+# WireGuard: TCP and other UDP to the server must not pass. Nothing listens
+# on the server's port 80, so a refused request is no proof by itself: the
+# server's sensor must not have counted it either.
 @test "marked TCP to the VPN server's address does not pass" {
+  hits_mark "$BATS_TEST_TMPDIR/hits"
   expect_blocked egress "http://$SERVER_IP/"
+  hits_check "with marked TCP to the VPN server" "$BATS_TEST_TMPDIR/hits"
 }
 
 @test "marked IPv6 TCP to the VPN server's address does not pass" {
+  hits_mark "$BATS_TEST_TMPDIR/hits"
   expect_blocked egress -6 "http://[$SERVER_IP6]/"
+  hits_check "with marked IPv6 TCP to the VPN server" "$BATS_TEST_TMPDIR/hits"
 }
 
 @test "probe notices a rule appended to mangle OUTPUT" {
-  ! as_root /twg/scripts/firewall.sh check 2>/dev/null || fail "probe did not notice a rule appended to mangle OUTPUT"
+  probe_fails as_root /twg/scripts/firewall.sh check || fail "probe did not notice a rule appended to mangle OUTPUT"
 }
 
 # Other marked UDP to the server has no answer to look at: only the server's
