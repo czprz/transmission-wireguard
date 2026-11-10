@@ -397,7 +397,8 @@ set_netpol() {
   if [[ $want == on ]] && netpol_on; then return 0; fi
   if [[ $want == off ]] && ! netpol_on; then return 0; fi
   chart_args
-  helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${CHART_ARGS[@]}" \
+  # UPGRADE_ARGS as for the first upgrade: a value it sets must stay set.
+  helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${UPGRADE_ARGS[@]}" "${CHART_ARGS[@]}" \
     --set "networkPolicy.enabled=$([[ $want == on ]] && echo true || echo false)" >/dev/null
   [[ $(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.metadata.uid}' 2>/dev/null) == "$POD_UID" ]] ||
     fail "switching the NetworkPolicy $want replaced the pod"
