@@ -1,0 +1,70 @@
+{{- with .Values.monitoring.prometheusRule -}}
+{{- if .enabled -}}
+{{- if not ($.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") -}}
+{{- fail "monitoring.prometheusRule.enabled needs the Prometheus Operator's PrometheusRule CRD (monitoring.coreos.com/v1) in the cluster" -}}
+{{- end -}}
+{{- $name := include "twg.fullname" $ -}}
+{{- $ns := $.Release.Namespace -}}
+{{- /* The Deployment's pods: <name>-<ReplicaSet hash>-<suffix>. */ -}}
+{{- $pods := printf "namespace=%q, pod=~%q" $ns (printf "%s-[a-z0-9]+-[a-z0-9]+" $name) -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "twg.labels" $ | nindent 4 }}
+    {{- with .labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # From kube-state-metrics and the kubelet: nothing in the pod serves
+  # metrics, so nothing new has to pass the kill switch.
+  groups:
+    - name: {{ $name }}
+      rules:
+        # The sidecar is ready only while wg0 is up, wg-quick's policy routing
+        # is in place and the last handshake is recent (wireguard.
+        # handshakeMaxAgeSeconds). Not ready: the kill switch holds and
+        # Transmission's traffic stops.
+        - alert: TransmissionWireguardTunnelDown
+          expr: max by (namespace, pod) (kube_pod_init_container_status_ready{ {{- $pods }}, container="wireguard"}) == 0
+          for: {{ .tunnelDownFor }}
+          labels:
+            severity: {{ .severity }}
+          annotations:
+            summary: "The WireGuard tunnel of {{ "{{" }} $labels.pod {{ "}}" }} has been down for {{ .tunnelDownFor }}"
+            description: "Transmission's traffic is blocked, not leaking: the kill switch holds while the tunnel is down. Check the wireguard container's log (handshakes, endpoint) and the VPN provider."
+        - alert: TransmissionWireguardUnavailable
+          expr: kube_deployment_status_replicas_available{namespace={{ $ns | quote }}, deployment={{ $name | quote }}} < 1
+          for: {{ .unavailableFor }}
+          labels:
+            severity: {{ .severity }}
+          annotations:
+            summary: "{{ $name }} has had no available pod for {{ .unavailableFor }}"
+            description: "The pod is missing or not ready. Its events and the wireguard container's log say why (a refused setting, an image pull, the tunnel)."
+        - alert: TransmissionWireguardRestarting
+          expr: |
+            sum by (namespace, pod) (
+              increase(kube_pod_container_status_restarts_total{ {{- $pods }}}[30m])
+              or increase(kube_pod_init_container_status_restarts_total{ {{- $pods }}}[30m])
+            ) > {{ .restartsPer30m }}
+          labels:
+            severity: {{ .severity }}
+          annotations:
+            summary: "Containers of {{ "{{" }} $labels.pod {{ "}}" }} restarted more than {{ .restartsPer30m }} times in 30 minutes"
+            description: "A failing liveness probe restarts Transmission when it lost its peer port, and the sidecar when the tunnel stays down. See their logs."
+        - alert: TransmissionWireguardVolumeFilling
+          expr: |
+            kubelet_volume_stats_available_bytes{namespace={{ $ns | quote }}, persistentvolumeclaim=~{{ printf "%s(-downloads)?" $name | quote }}}
+              / kubelet_volume_stats_capacity_bytes < {{ .volumeFreeRatio }}
+          for: 15m
+          labels:
+            severity: {{ .severity }}
+          annotations:
+            summary: "PVC {{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} has less than {{ mulf .volumeFreeRatio 100 }}% free"
+            description: "Transmission stops writing when the volume is full."
+        {{- with .extraRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}

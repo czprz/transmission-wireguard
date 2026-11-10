@@ -232,6 +232,19 @@ If you already have an issuer, leave `issuer.enabled` false and reference your i
 - Default images are pinned by digest. Overriding `images.*.repository` or `tag` drops the default digest; set `images.*.digest` to keep pulls immutable.
 - Inline `rpcAuth` credentials are hashed into a pod annotation (so changes roll the pod). Use a strong password, or `rpcAuth.existingSecret`.
 
+## Monitoring
+
+With the Prometheus Operator, kube-state-metrics and the kubelet's volume stats scraped (kube-prometheus-stack does all three), `monitoring.prometheusRule.enabled: true` adds alerts for:
+
+| Alert | When |
+|---|---|
+| `TransmissionWireguardTunnelDown` | The WireGuard sidecar has not been ready for `tunnelDownFor` (5m). It is ready only while `wg0` is up, wg-quick's policy routing is in place and the last handshake is recent. Nothing leaks then; Transmission's traffic just stops. |
+| `TransmissionWireguardUnavailable` | No pod has been available for `unavailableFor` (10m). |
+| `TransmissionWireguardRestarting` | Containers restarted more than `restartsPer30m` (2) times in 30 minutes. |
+| `TransmissionWireguardVolumeFilling` | A release PVC has less than `volumeFreeRatio` (10%) free. |
+
+Set `monitoring.prometheusRule.labels` to what your Prometheus selects rules by (`release: kube-prometheus-stack`, for example). Nothing in the pod serves metrics: an exporter would need a port through the kill switch, or `NET_ADMIN` to read WireGuard's state, which can open it.
+
 ## Verify egress IP
 
 `helm test` checks a running release from inside the cluster. It is off by default, so enable it first:
