@@ -22,10 +22,11 @@ spec:
   groups:
     - name: {{ $name }}
       rules:
-        # The sidecar is ready only while wg0 is up, wg-quick's policy routing
-        # is in place and the last handshake is recent (wireguard.
-        # handshakeMaxAgeSeconds). Not ready: the kill switch holds and
-        # Transmission's traffic stops.
+        # The sidecar is ready only while the kill switch is intact, wg0 is up
+        # and wg-quick's policy routing is in place. Not ready: the kill
+        # switch holds and Transmission's traffic stops. (A tunnel whose
+        # server stopped answering fails the liveness probe instead, after
+        # wireguard.handshakeMaxAgeSeconds: the Restarting alert.)
         - alert: TransmissionWireguardTunnelDown
           expr: max by (namespace, pod) (kube_pod_init_container_status_ready{ {{- $pods }}, container="wireguard"}) == 0
           for: {{ .tunnelDownFor }}
@@ -52,7 +53,7 @@ spec:
             severity: {{ .severity }}
           annotations:
             summary: "Containers of {{ "{{" }} $labels.pod {{ "}}" }} restarted more than {{ .restartsPer30m }} times in 30 minutes"
-            description: "A failing liveness probe restarts Transmission when it lost its peer port, and the sidecar when the tunnel stays down. See their logs."
+            description: "A failing liveness probe restarts Transmission when it lost its peer port, and the sidecar when the VPN server has not answered for wireguard.handshakeMaxAgeSeconds. See their logs."
         - alert: TransmissionWireguardVolumeFilling
           expr: |
             kubelet_volume_stats_available_bytes{namespace={{ $ns | quote }}, persistentvolumeclaim=~{{ printf "%s(-downloads)?" $name | quote }}}
