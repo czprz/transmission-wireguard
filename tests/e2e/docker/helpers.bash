@@ -32,6 +32,8 @@ SIDECAR_IMAGE="${SIDECAR_IMAGE:-$WG_IMAGE}"
 TX_IMAGE="${TX_IMAGE:-$(chart_image transmission)}"
 CANARY_IMAGE="${CANARY_IMAGE:-traefik/whoami:v1.10.3@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c}"
 TRACKER_IMAGE="${TRACKER_IMAGE:-busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec}"
+# The VPN server's NAT-PMP responder (port forwarding).
+NATPMP_IMAGE="${NATPMP_IMAGE:-python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca}"
 # FIREWALL_SH replaces the chart's firewall.sh (tests/e2e/mutation-test.sh).
 FIREWALL_SH=${FIREWALL_SH:-$ROOT/files/firewall.sh}
 
@@ -77,14 +79,24 @@ CANARY_LL=${CANARY_LL:-}
 STAGE=${BATS_SUITE_TMPDIR:-/nonexistent}/stage
 WG_CONF=$STAGE/wg/config/wg_confs/wg0.conf
 
-CONTAINERS=("$P-tx" "$P-l4" "$P-l6" "$P-wg" "$P-pod" "$P-server" "$P-server2" "$P-canary" "$P-dns" "$P-tracker" "$P-pre")
+CONTAINERS=("$P-tx" "$P-l4" "$P-l6" "$P-wg" "$P-pod" "$P-server" "$P-server2" "$P-natpmp" "$P-canary" "$P-dns" "$P-tracker" "$P-pre")
 
+# Port forwarding is tested where the sidecar image has natpmpc (the
+# chart's own image); with another image, 20-port-forwarding skips.
+if [[ -z ${NATPMP:-} ]]; then
+  NATPMP=0
+  docker run --rm --entrypoint sh "$SIDECAR_IMAGE" -c 'command -v natpmpc' >/dev/null 2>&1 && NATPMP=1
+fi
+# The port the test VPN server forwards.
+FORWARDED_PORT=47123
 firewall_env=(
   -e "TWG_WEB_PORT=$WEB_PORT"
   -e "TWG_PEER_PORT=$PEER_PORT"
   -e "TWG_WEB_ALLOWED_CIDRS=$SUBNET_PREFIX.0/24 fc00::/7"
   -e TWG_HANDSHAKE_MAX_AGE=180
 )
+
+((NATPMP)) && firewall_env+=(-e "TWG_NATPMP_GATEWAY=$TUN_SERVER")
 
 # A failed check: the message goes with the test's output.
 fail() {

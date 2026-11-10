@@ -1,0 +1,78 @@
+suite: port forwarding
+
+templates:
+  - templates/deployment.yaml
+  - templates/configmap-scripts.yaml
+  - templates/configmap-settings.yaml
+  - templates/secret-wg.yaml
+  - templates/secret-rpc.yaml
+
+values:
+  - values/base.yaml
+
+# helm-unittest replaces the values files' whole wireguard map with what a
+# test sets under it, so each test sets wg0Conf too.
+tests:
+  - it: is off by default
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_NATPMP_GATEWAY, value: "" }
+      - notContains:
+          path: spec.template.spec.volumes
+          any: true
+          content: { name: forward }
+
+  - it: gives the sidecar the gateway, a forward directory and the RPC credentials
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: &conf |
+        [Interface]
+        PrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+        Address = 10.64.0.2/32
+        [Peer]
+        PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+        PersistentKeepalive = 25
+      wireguard.portForwarding.natpmpGateway: 10.2.0.1
+      transmission.rpcAuth.allowAnonymous: false
+      transmission.rpcAuth.existingSecret: tx-rpc
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_NATPMP_GATEWAY, value: 10.2.0.1 }
+      - contains:
+          path: spec.template.spec.initContainers[1].volumeMounts
+          content: { name: forward, mountPath: /twg/forward }
+      - contains:
+          path: spec.template.spec.initContainers[1].volumeMounts
+          content: { name: rpc-auth, mountPath: /twg/rpc, readOnly: true }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: forward, mountPath: /twg/forward, readOnly: true }
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: rpc-auth
+            secret:
+              secretName: tx-rpc
+              defaultMode: 0400
+              items:
+                - { key: username, path: username }
+                - { key: password, path: password }
+
+  - it: mounts no credentials when the web UI needs none
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: *conf
+      wireguard.portForwarding.natpmpGateway: 10.2.0.1
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: forward, emptyDir: { medium: Memory, sizeLimit: 1Mi } }
+      - notContains:
+          path: spec.template.spec.volumes
+          any: true
+          content: { name: rpc-auth }

@@ -186,6 +186,15 @@ wireguard:
   #  - ip: 203.0.113.10
   #    port: 51820
 
+  # VPN port forwarding over NAT-PMP (Proton VPN, among others): the gateway
+  # inside the tunnel, e.g. 10.2.0.1 for Proton. Empty: off. The sidecar's
+  # liveness probe renews the mapping every 30 s, opens that one port on wg0
+  # and sets it as Transmission's peer port (so announces carry it). Needs
+  # the chart's sidecar image (images.wireguard: ghcr.io/czprz/twg-wireguard),
+  # which has natpmpc, and a VPN server that allows port forwarding.
+  portForwarding:
+    natpmpGateway: ""
+
   # Restart the WireGuard sidecar when the newest handshake is older than this
   # many seconds (0 disables, else at least 180: WireGuard re-handshakes only
   # every 2 minutes). A restart re-reads the Endpoint, so a tunnel whose

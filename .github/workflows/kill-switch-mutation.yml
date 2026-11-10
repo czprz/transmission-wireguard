@@ -16,6 +16,7 @@ on:
       - tests/e2e/docker-test.sh
       - tests/e2e/mutation-test.sh
       - tests/e2e/mutation-baseline.txt
+      - image/wireguard/**
       - .github/workflows/kill-switch-mutation.yml
 
 permissions:
@@ -87,10 +88,17 @@ jobs:
       - name: Install bats
         run: npm ci --prefix tests/e2e --no-audit --no-fund
 
+      # The chart's own sidecar image: with natpmpc, so the port-forwarding
+      # rules have checks that can kill their mutants.
+      - name: Build the sidecar image
+        run: docker build -t twg-wireguard:ci image/wireguard
+
       - name: Leak test without each of firewall.sh lines ${{ matrix.lines }}
         run: |
           set -o pipefail
           tests/e2e/mutation-test.sh ${{ matrix.lines }} | tee -a "$GITHUB_STEP_SUMMARY"
+        env:
+          SIDECAR_IMAGE: twg-wireguard:ci
 
   # One result to look at (and to require, if you want it on the PRs above).
   mutation-passed:
