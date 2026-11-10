@@ -76,6 +76,18 @@ ingress:
 helm install transmission ./transmission-wireguard -f values.yaml
 ```
 
+### Verify the chart
+
+Releases from 1.0.0 on are signed with Sigstore (keyless, with the release workflow's GitHub identity) and carry a build provenance attestation. Before installing a version:
+
+```bash
+VERSION=1.0.0
+cosign verify ghcr.io/czprz/transmission-wireguard:$VERSION \
+  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/helm-release\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/czprz/transmission-wireguard:$VERSION --repo czprz/transmission-wireguard
+```
+
 ## WireGuard config notes
 
 The sidecar refuses to start unless the following hold. The chart checks the same rules when it renders an inline `wg0Conf`; with `existingSecret` it can't see the config, so only the sidecar checks it.
