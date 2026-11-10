@@ -101,10 +101,27 @@ jobs:
           sudo aa-status 2>/dev/null | grep -iE 'wg|wireguard|readlink|ip$' || true
           sudo aa-teardown || sudo systemctl stop apparmor || true
 
+      - name: Install bats
+        run: npm ci --prefix tests/e2e --no-audit --no-fund
+
       - name: Kill switch leak test (Docker, ${{ matrix.sidecar }} sidecar)
-        run: tests/e2e/netns-leak-test.sh
+        run: tests/e2e/docker-test.sh
         env:
           SIDECAR: ${{ matrix.sidecar }}
+          JUNIT_DIR: ${{ runner.temp }}/junit
+
+      # One line per failed check in the run's summary, and the full report.
+      - name: Test report
+        if: always()
+        run: tests/e2e/junit-summary.sh "$RUNNER_TEMP/junit" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: junit-docker-${{ matrix.runner }}-${{ matrix.sidecar }}
+          path: ${{ runner.temp }}/junit
+          if-no-files-found: ignore
 
   # The kind test runs on each NetworkPolicy implementation, on the oldest
   # Kubernetes the chart supports (1.29) up to the newest kind ships, with
@@ -208,8 +225,8 @@ jobs:
           KIND="$(go env GOPATH)/bin/kind" NODE_IMAGE="${{ matrix.node }}" tests/e2e/kind-cluster.sh ${{ matrix.cni }}
 
       # The API server validates the manifests, unknown fields included.
-      # (The helm test pod needs its ServiceAccount to exist; kind-test.sh
-      # runs it for real.)
+      # (The helm test pod needs its ServiceAccount to exist; the cluster
+      # suite runs it for real.)
       - name: Server-side validation
         run: |
           helm template transmission-wireguard . -f ci/default-values.yaml --set persistence.downloads.enabled=true |
@@ -223,12 +240,28 @@ jobs:
           mkdir -p "$RUNNER_TEMP/previous"
           git archive "$tag" | tar -x -C "$RUNNER_TEMP/previous"
 
+      - name: Install bats
+        run: npm ci --prefix tests/e2e --no-audit --no-fund
+
       - name: Kill switch leak test (kind, ${{ matrix.cni }})
-        run: tests/e2e/kind-test.sh
+        run: tests/e2e/cluster-test.sh
         env:
           IPV6: ${{ matrix.ipv6 }}
           UPGRADE_FROM: ${{ matrix.upgrade && format('{0}/previous', runner.temp) || '' }}
           UPGRADE_FLAGS: ${{ matrix.upgrade_flags }}
+          JUNIT_DIR: ${{ runner.temp }}/junit
+
+      - name: Test report
+        if: always()
+        run: tests/e2e/junit-summary.sh "$RUNNER_TEMP/junit" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: junit-kind-${{ matrix.cni }}-${{ matrix.k8s }}-${{ matrix.helm }}${{ matrix.upgrade && '-upgrade' || '' }}
+          path: ${{ runner.temp }}/junit
+          if-no-files-found: ignore
 
   # Not a test: the merge gate. Require this one job in branch protection,
   # because GitHub counts a skipped job (e2e after a failed verify) as passed.

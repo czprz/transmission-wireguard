@@ -1,0 +1,8 @@
+{
+  "name": "transmission-wireguard-e2e",
+  "private": true,
+  "description": "Test runner for the e2e suites: npm ci --prefix tests/e2e, then tests/e2e/node_modules/.bin/bats",
+  "devDependencies": {
+    "bats": "1.13.0"
+  }
+}

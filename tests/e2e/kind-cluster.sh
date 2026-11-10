@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Creates the kind cluster for kind-test.sh with the given CNI, so the leak
+# Creates the kind cluster for cluster-test.sh with the given CNI, so the leak
 # test runs against each NetworkPolicy implementation.
 #
-#   kindnet  kind's default CNI, dual-stack (run kind-test.sh with IPV6=1)
+#   kindnet  kind's default CNI, dual-stack (run cluster-test.sh with IPV6=1)
 #   calico   Calico (iptables dataplane), IPv4
 #   cilium   Cilium (eBPF dataplane), IPv4
 #
