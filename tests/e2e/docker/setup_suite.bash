@@ -67,6 +67,12 @@ pod_ready() {
     ! ip route show | grep -q '^$SUBNET_PREFIX.0/24' && grep -q '^nameserver $TUN_SERVER' /etc/resolv.conf"
 }
 
+# A link-local address on eth0 of container $1, past duplicate address detection.
+ll_ready() {
+  docker run --rm --network "container:$1" --entrypoint "" "$WG_IMAGE" ip -6 -o addr show dev eth0 scope link |
+    grep ' fe80::' | grep -qv tentative
+}
+
 # Each path is tried twice (the docker client can lose a probe's output);
 # a failure names the path, so a broken harness says where.
 baseline_ok() {
@@ -224,7 +230,12 @@ EOF
   chmod 0600 "$WG_CONF"
 
   # The canary's link-local address: on-link via eth0 in the main table, so
-  # the policy routing does not send it into the tunnel.
+  # the policy routing does not send it into the tunnel. Both ends must have
+  # finished duplicate address detection, or the baseline probe races it.
+  if ! wait_until 30 ll_ready "$P-canary" || ! wait_until 30 ll_ready "$P-pod"; then
+    echo "no usable link-local address on eth0 of the canary or the pod" >&2
+    return 1
+  fi
   CANARY_LL=$(docker run --rm --network "container:$P-canary" --entrypoint "" "$WG_IMAGE" ip -6 -o addr show dev eth0 scope link |
     sed -n 's|.* inet6 \(fe80::[0-9a-f:]*\)/.*|\1|p' | head -n1)
   export CANARY_LL
