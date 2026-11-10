@@ -238,9 +238,9 @@ With the Prometheus Operator, kube-state-metrics and the kubelet's volume stats 
 
 | Alert | When |
 |---|---|
-| `TransmissionWireguardTunnelDown` | The WireGuard sidecar has not been ready for `tunnelDownFor` (5m). It is ready only while `wg0` is up, wg-quick's policy routing is in place and the last handshake is recent. Nothing leaks then; Transmission's traffic just stops. |
+| `TransmissionWireguardTunnelDown` | The WireGuard sidecar has not been ready for `tunnelDownFor` (5m). It is ready only while the kill switch is intact, `wg0` is up and wg-quick's policy routing is in place. Nothing leaks then; Transmission's traffic just stops. |
 | `TransmissionWireguardUnavailable` | No pod has been available for `unavailableFor` (10m). |
-| `TransmissionWireguardRestarting` | Containers restarted more than `restartsPer30m` (2) times in 30 minutes. |
+| `TransmissionWireguardRestarting` | Containers restarted more than `restartsPer30m` (2) times in 30 minutes. This is also how a VPN server that stopped answering shows: its last handshake gets older than `wireguard.handshakeMaxAgeSeconds`, and the liveness probe restarts the sidecar. |
 | `TransmissionWireguardVolumeFilling` | A release PVC has less than `volumeFreeRatio` (10%) free. |
 
 Set `monitoring.prometheusRule.labels` to what your Prometheus selects rules by (`release: kube-prometheus-stack`, for example). Nothing in the pod serves metrics: an exporter would need a port through the kill switch, or `NET_ADMIN` to read WireGuard's state, which can open it.
