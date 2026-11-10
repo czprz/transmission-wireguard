@@ -51,6 +51,8 @@ DNS_CANARY_IP=$SUBNET_PREFIX.11
 TRACKER_IP=$SUBNET_PREFIX.12
 SERVER_IP=$SUBNET_PREFIX.20
 SERVER2_IP=$SUBNET_PREFIX.21
+# Another server of the same VPN account (its own key), for failover.
+FAILOVER_IP=$SUBNET_PREFIX.22
 POD_IP=$SUBNET_PREFIX.30
 CLIENT_IP=$SUBNET_PREFIX.40
 SUBNET6_PREFIX=fd31:$NET_ID:
@@ -59,12 +61,16 @@ CANARY_IP6=$SUBNET6_PREFIX:10
 DNS_CANARY_IP6=$SUBNET6_PREFIX:11
 TRACKER_IP6=$SUBNET6_PREFIX:12
 SERVER_IP6=$SUBNET6_PREFIX:20
+FAILOVER_IP6=$SUBNET6_PREFIX:22
 POD_IP6=$SUBNET6_PREFIX:30
 CLIENT_IP6=$SUBNET6_PREFIX:40
 TUN_SERVER=10.99.0.1
 TUN_CLIENT=10.99.0.2
 TUN_SERVER6=fd99::1
 TUN_CLIENT6=fd99::2
+# A test-only key pair: the failover server's.
+FAILOVER_KEY=kEcjsuwvTe+shMpTw1JzQXLXQ8HFsKLsJ+dyvN3fYlQ=
+FAILOVER_PUB=8FXIJVRVW8zPb1gsAdwNGtpEvVCwK3mw8X1D75+7ilg=
 WEB_PORT=9091
 PEER_PORT=51413
 # Built by setup_suite, read by the tests: wg0.conf, settings.json, tunnel.env.
@@ -73,13 +79,16 @@ CANARY_LL=${CANARY_LL:-}
 STAGE=${BATS_SUITE_TMPDIR:-/nonexistent}/stage
 WG_CONF=$STAGE/wg/config/wg_confs/wg0.conf
 
-CONTAINERS=("$P-tx" "$P-l4" "$P-l6" "$P-wg" "$P-pod" "$P-server" "$P-server2" "$P-canary" "$P-dns" "$P-tracker" "$P-pre")
+CONTAINERS=("$P-tx" "$P-l4" "$P-l6" "$P-wg" "$P-pod" "$P-server" "$P-server2" "$P-failover" "$P-canary" "$P-dns" "$P-tracker" "$P-pre")
 
 firewall_env=(
   -e "TWG_WEB_PORT=$WEB_PORT"
   -e "TWG_PEER_PORT=$PEER_PORT"
   -e "TWG_WEB_ALLOWED_CIDRS=$SUBNET_PREFIX.0/24 fc00::/7"
   -e TWG_HANDSHAKE_MAX_AGE=180
+  # 30 s, the least firewall.sh allows (the chart: 180), so 19-failover is quick.
+  -e "TWG_FAILOVER_PEERS=$FAILOVER_PUB@$FAILOVER_IP:51820"
+  -e TWG_FAILOVER_AFTER=30
 )
 
 # A failed check: the message goes with the test's output.

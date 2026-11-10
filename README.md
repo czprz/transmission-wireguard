@@ -107,6 +107,24 @@ Endpoint = 203.0.113.10:51820
 PersistentKeepalive = 25
 ```
 
+### Failover to other servers
+
+A VPN account's key usually works on all of its provider's servers. List others, and the sidecar switches to the next when the current one stops answering:
+
+```yaml
+wireguard:
+  failover:
+    afterSeconds: 180   # at least 180, less than handshakeMaxAgeSeconds
+    peers:
+      - publicKey: "<ANOTHER_SERVER_PUBLIC_KEY>"
+        ip: 198.51.100.20
+        port: 51820
+```
+
+Once the current server's last handshake is `afterSeconds` old, the sidecar's liveness probe replaces the peer with the next in the list, and after the last one with `wg0.conf`'s again. Only `PublicKey` and `Endpoint` change: the key, the addresses and `AllowedIPs` stay those of `wg0.conf`, so Transmission keeps its bindings. The kill switch and the NetworkPolicy let WireGuard reach every listed server and nothing else. A new peer gets the whole `handshakeMaxAgeSeconds` to answer before the probe fails. A restart of the sidecar goes back to `wg0.conf`'s peer.
+
+It needs `PersistentKeepalive` and a single `[Peer]` without `PresharedKey`. A working tunnel handshakes only every 2 minutes, so `afterSeconds` can't be lower than 180, and a failover takes 3 to 4 minutes.
+
 ## How traffic is kept in the tunnel
 
 | Layer | What it does |

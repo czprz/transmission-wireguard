@@ -383,6 +383,41 @@
             }
           }
         },
+        "failover": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "afterSeconds": {
+              "type": "integer",
+              "minimum": 180
+            },
+            "peers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "publicKey",
+                  "ip"
+                ],
+                "properties": {
+                  "publicKey": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$"
+                  },
+                  "ip": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  }
+                }
+              }
+            }
+          }
+        },
         "handshakeMaxAgeSeconds": {
           "type": "integer",
           "anyOf": [

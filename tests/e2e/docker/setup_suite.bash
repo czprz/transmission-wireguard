@@ -18,6 +18,31 @@
 # shellcheck source=tests/e2e/docker/helpers.bash
 source "$(dirname "${BASH_SOURCE[0]}")/helpers.bash"
 
+# A WireGuard server ($1, at $2 and $3, private key $4) for the pod's key,
+# NATing tunnel traffic to the "internet" (the canary).
+vpn_server() {
+  docker run -d --name "$1" --network "$NET" --ip "$2" --ip6 "$3" --privileged \
+    --entrypoint bash "$WG_IMAGE" -c "
+      set -e
+      echo '$4' > /tmp/k
+      ip link add wg0 type wireguard
+      wg set wg0 listen-port 51820 private-key /tmp/k peer '$CLIENT_PUB' allowed-ips $TUN_CLIENT/32,$TUN_CLIENT6/128
+      ip addr add $TUN_SERVER/24 dev wg0
+      ip addr add $TUN_SERVER6/64 dev wg0
+      ip link set wg0 up
+      sysctl -qw net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
+      # Only tunnel traffic is forwarded and NATed, like a real VPN server: a
+      # plaintext packet routed via the server must not come out as its own.
+      for ipt in iptables ip6tables; do
+        \$ipt -P FORWARD DROP
+        \$ipt -A FORWARD -i wg0 -o eth0 -j ACCEPT
+        \$ipt -A FORWARD -i eth0 -o wg0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      done
+      iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o eth0 -j MASQUERADE
+      ip6tables -t nat -A POSTROUTING -s fd99::/64 -o eth0 -j MASQUERADE
+      exec sleep infinity" >/dev/null
+}
+
 cleanup() {
   docker rm -f -v "${CONTAINERS[@]}" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
@@ -174,26 +199,10 @@ CGI
   for c in "$P-canary" "$P-dns" "$P-tracker"; do count_from_pod "$c"; done
 
   # VPN server: terminates the tunnel and NATs to the "internet" (the canary).
-  docker run -d --name "$P-server" --network "$NET" --ip "$SERVER_IP" --ip6 "$SERVER_IP6" --privileged \
-    --entrypoint bash "$WG_IMAGE" -c "
-      set -e
-      echo '$SERVER_KEY' > /tmp/k
-      ip link add wg0 type wireguard
-      wg set wg0 listen-port 51820 private-key /tmp/k peer '$CLIENT_PUB' allowed-ips $TUN_CLIENT/32,$TUN_CLIENT6/128
-      ip addr add $TUN_SERVER/24 dev wg0
-      ip addr add $TUN_SERVER6/64 dev wg0
-      ip link set wg0 up
-      sysctl -qw net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
-      # Only tunnel traffic is forwarded and NATed, like a real VPN server: a
-      # plaintext packet routed via the server must not come out as its own.
-      for ipt in iptables ip6tables; do
-        \$ipt -P FORWARD DROP
-        \$ipt -A FORWARD -i wg0 -o eth0 -j ACCEPT
-        \$ipt -A FORWARD -i eth0 -o wg0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-      done
-      iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o eth0 -j MASQUERADE
-      ip6tables -t nat -A POSTROUTING -s fd99::/64 -o eth0 -j MASQUERADE
-      exec sleep infinity" >/dev/null
+  vpn_server "$P-server" "$SERVER_IP" "$SERVER_IP6" "$SERVER_KEY"
+  # The failover server: the same, with its own key. Idle until 19-failover
+  # stops the first one.
+  vpn_server "$P-failover" "$FAILOVER_IP" "$FAILOVER_IP6" "$FAILOVER_KEY"
   count_plaintext
 
   # Pod sandbox, routed like a CNI: only a host route to the gateway.
