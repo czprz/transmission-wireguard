@@ -55,7 +55,9 @@ jobs:
             lines=$(tests/e2e/mutation-test.sh --list)
           fi
           echo "Mutants: ${lines//$'\n'/ }"
-          echo "batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | if length == 0 then [] else [_nwise(8) | join(" ")] end' <<<"$lines")" >> "$GITHUB_OUTPUT"
+          # Assigned first, so a jq error fails the step.
+          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | [range(0; length; 8) as $i | .[$i:$i + 8] | join(" ")]' <<<"$lines")
+          echo "batches=$batches" >> "$GITHUB_OUTPUT"
         env:
           EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
