@@ -219,16 +219,14 @@ apply_family() {
 # web UI rule. The connmark alone is not enough: anything that sets it on
 # another connection (a stray CONNMARK rule, conntrack -U) would then let that
 # connection out eth0. Only the reply direction, from the web port, to the
-# allowed sources, plus ICMP errors about such connections, may pass.
+# allowed sources may pass. (No ICMP errors: the pod is an endpoint, not a
+# router, so it sends none about these connections.)
 local_replies() {
-  local ipt=$1 table=$2 chain=$3 target=$4 fam=$5 icmp=icmp cidr
-  [[ $fam == 6 ]] && icmp=ipv6-icmp
+  local ipt=$1 table=$2 chain=$3 target=$4 fam=$5 cidr
   while read -r cidr; do
     [[ -n $cidr ]] || continue
     "$ipt" -w -t "$table" -A "$chain" -d "$cidr" -p tcp --sport "$WEB_PORT" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" \
       -m conntrack --ctstate ESTABLISHED --ctdir REPLY -j "$target"
-    "$ipt" -w -t "$table" -A "$chain" -d "$cidr" -p "$icmp" -m connmark --mark "$LOCAL_MARK/$LOCAL_MARK" \
-      -m conntrack --ctstate RELATED -j "$target"
   done < <(cidrs_for "$fam")
 }
 
