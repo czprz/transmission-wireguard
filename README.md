@@ -14,11 +14,23 @@ Run Transmission through a WireGuard client sidecar in the same Pod. This chart 
 ## Requirements
 
 - Kubernetes 1.29+ (native sidecar containers)
-- Helm 3
+- Helm 3.14+ or Helm 4
 - Linux 5.6+ on the nodes (kernel WireGuard)
 - A CNI that enforces NetworkPolicy (Calico, Cilium, ...) for the second layer of protection
 - A namespace at the `privileged` Pod Security level: the sidecar is privileged, or adds `NET_ADMIN`, and both are outside `baseline`. In a `baseline` or `restricted` namespace the pod is never created, and the reason only shows in the ReplicaSet's events. Label the namespace: `kubectl label namespace <ns> pod-security.kubernetes.io/enforce=privileged`
 - cert-manager (optional, only if you enable the issuer template)
+
+CI tests every change, and every week, on these combinations (`.github/workflows/helm-chart.yaml`):
+
+| Kubernetes | Helm | CNI | Also |
+|---|---|---|---|
+| 1.29 | 3.14 | kindnet | the oldest supported versions |
+| 1.32 | 3.22 | Calico | |
+| 1.34 | 4.3 | Cilium | |
+| 1.37 | 3.22 | kindnet | upgrade from the last release |
+| 1.37 | 4.3 | kindnet | fresh install, and upgrade from the last release |
+
+The kill switch itself is also tested on Docker: on amd64 with a privileged and an unprivileged sidecar, and on arm64. Report security problems as [SECURITY.md](SECURITY.md) describes.
 
 ## Install
 
