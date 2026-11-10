@@ -1,0 +1,8 @@
+# Firewall rules the mutation test may leave alive: no leak check can tell
+# them from their absence, because another rule already covers every packet
+# they match. They stay as defense in depth. Each line: the rule exactly as
+# it appears in files/firewall.sh (without indentation), a tab, the reason.
+# A rule that a check starts catching must be removed from here.
+"$ipt" -w -A "$IN" -m conntrack --ctstate INVALID -j DROP	defense in depth: an INVALID packet matches no later accept rule (not ESTABLISHED, no connmark), so the chain's final DROP takes it anyway
+"$ipt" -w -A "$OUT" -m conntrack --ctstate INVALID -j DROP	defense in depth: an INVALID packet leaves only into wg0 (as any unmarked packet may) or meets the final REJECT here and the DROP in mangle POSTROUTING
+"$ipt" -w -t mangle -A "$PRE" -i lo -j RETURN	keeps loopback connections out of the "arrived from outside" connmark; loopback is accepted before any rule that reads the mark, so nothing observable changes

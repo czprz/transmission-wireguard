@@ -1,8 +1,10 @@
 name: Kill switch mutation test
 
-# Proves the leak tests guard every firewall rule: each job turns one rule
-# off and runs the Docker leak test, which must then fail. Runs weekly, by
-# hand, and on pull requests that change the firewall or its leak test.
+# Proves the leak tests guard every firewall rule: each mutant turns one rule
+# off and runs the Docker leak test, which must then fail. Rules listed in
+# tests/e2e/mutation-baseline.txt may survive. Weekly and by hand it runs
+# every mutant; on a pull request only the mutants on changed lines of
+# files/firewall.sh, or all of them if the leak test itself changed.
 on:
   schedule:
     - cron: "0 4 * * 0"
@@ -10,8 +12,10 @@ on:
   pull_request:
     paths:
       - files/firewall.sh
-      - tests/e2e/netns-leak-test.sh
+      - tests/e2e/docker/**
+      - tests/e2e/docker-test.sh
       - tests/e2e/mutation-test.sh
+      - tests/e2e/mutation-baseline.txt
       - .github/workflows/kill-switch-mutation.yml
 
 permissions:
@@ -26,25 +30,49 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      lines: ${{ steps.list.outputs.lines }}
+      batches: ${{ steps.list.outputs.batches }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+        with:
+          fetch-depth: 0
 
+      # Batches of 8: each job sets up the Docker test once per mutant, and
+      # at most 4 jobs run at once, so the main suite still gets runners.
       - name: List mutants
         id: list
-        run: echo "lines=$(tests/e2e/mutation-test.sh --list | jq -cRs 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+        run: |
+          base=""
+          if [ "$EVENT" = pull_request ] &&
+            ! git diff --quiet "$BASE_SHA" HEAD -- tests/e2e/docker tests/e2e/docker-test.sh tests/e2e/mutation-test.sh tests/e2e/mutation-baseline.txt; then
+            echo "The leak test changed: every mutant runs."
+          elif [ "$EVENT" = pull_request ]; then
+            base=$BASE_SHA
+          fi
+          if [ -n "$base" ]; then
+            lines=$(tests/e2e/mutation-test.sh --list --changed "$base")
+          else
+            lines=$(tests/e2e/mutation-test.sh --list)
+          fi
+          echo "Mutants: ${lines//$'\n'/ }"
+          # Assigned first, so a jq error fails the step.
+          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | [range(0; length; 8) as $i | .[$i:$i + 8] | join(" ")]' <<<"$lines")
+          echo "batches=$batches" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
 
   mutant:
-    name: mutant firewall.sh:${{ matrix.line }}
+    name: mutants ${{ matrix.lines }}
     needs: mutants
+    if: needs.mutants.outputs.batches != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 12
+      max-parallel: 4
       matrix:
-        line: ${{ fromJSON(needs.mutants.outputs.lines) }}
+        lines: ${{ fromJSON(needs.mutants.outputs.batches) }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
@@ -56,8 +84,13 @@ jobs:
       - name: Unload host AppArmor profiles
         run: sudo aa-teardown || sudo systemctl stop apparmor || true
 
-      - name: Leak test without firewall.sh line ${{ matrix.line }}
-        run: tests/e2e/mutation-test.sh ${{ matrix.line }}
+      - name: Install bats
+        run: npm ci --prefix tests/e2e --no-audit --no-fund
+
+      - name: Leak test without each of firewall.sh lines ${{ matrix.lines }}
+        run: |
+          set -o pipefail
+          tests/e2e/mutation-test.sh ${{ matrix.lines }} | tee -a "$GITHUB_STEP_SUMMARY"
 
   # One result to look at (and to require, if you want it on the PRs above).
   mutation-passed:
@@ -66,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Every mutant was killed
-        run: jq -e 'to_entries | all(.value.result == "success")' <<<"$NEEDS" >/dev/null || { echo "$NEEDS"; exit 1; }
+      - name: Every mutant was killed or is in the baseline
+        run: jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")' <<<"$NEEDS" >/dev/null || { echo "$NEEDS"; exit 1; }
         env:
           NEEDS: ${{ toJSON(needs) }}

@@ -31,6 +31,30 @@ graph TD
 - The pod opts out of Istio (sidecar and ambient) and Linkerd: a mesh proxy can't reach its control plane through the kill switch, and ambient mode would add its own rules to the namespace.
 - The NetworkPolicy is a second, independent layer enforced by the CNI outside the pod.
 - `templates/tests/leak-test.yaml` is the `helm test`: it execs into the running pod to check the rules, `eth0`, DNS and the public address.
-- Tests: `tests/*.yaml` (helm-unittest), `tests/schema-test.sh`, `tests/metadata-test.sh`, `tests/package-test.sh` (the package's contents), `tests/e2e/netns-leak-test.sh` (Docker, amd64 and arm64, and with an unprivileged sidecar), `tests/e2e/kind-test.sh` on clusters from `tests/e2e/kind-cluster.sh` (kindnet dual-stack, Calico, Cilium; Kubernetes 1.29 to 1.37, Helm 3 and 4; also as an upgrade from the last release), and `tests/e2e/mutation-test.sh`, which turns off one firewall rule at a time and requires the Docker test to fail. The e2e tests count leaked packets where they would arrive: at every canary, at the VPN server (plaintext from the pod) and in the pod itself (every new flow out `eth0` other than WireGuard's, whatever its destination), each with a positive control.
+- Tests: `tests/*.yaml` (helm-unittest), `tests/schema-test.sh`, `tests/metadata-test.sh`, `tests/package-test.sh` (the package's contents), the bats suites `tests/e2e/docker/` (Docker, amd64 and arm64, and with an unprivileged sidecar; `tests/e2e/docker-test.sh`) and `tests/e2e/cluster/` (`tests/e2e/cluster-test.sh`) on kind clusters from `tests/e2e/kind-cluster.sh` (kindnet dual-stack, Calico, Cilium; Kubernetes 1.29 to 1.37, Helm 3 and 4; also as an upgrade from the last release) or a local k3d cluster from `tests/e2e/k3d-cluster.sh`, and `tests/e2e/mutation-test.sh`, which turns off one firewall rule at a time and requires the Docker suite to fail (except for the rules in `tests/e2e/mutation-baseline.txt`, each with its reason). Each suite builds its environment once; each check is one named test that leaves the environment healthy. The e2e tests count leaked packets where they would arrive: at every canary, at the VPN server (plaintext from the pod) and in the pod itself (every new flow out `eth0` other than WireGuard's, whatever its destination), each with a positive control.
+## Threats and the tests that cover them
+
+Each way traffic could get out, or the release could break, and where it is tested (`docker/` and `cluster/` are the suites under `tests/e2e/`). A new threat needs a row and a test; a new firewall rule needs a check that fails without it (`make mutation LINES=<line>`).
+
+| Threat | Covered by |
+|---|---|
+| An app socket bound to `eth0`, or sent to a more specific or link-local route | `docker/02-egress`, `cluster/20-egress` |
+| DNS or other UDP outside the tunnel | `docker/03-dns`, `cluster/20-egress`, `cluster/30-dns-and-service` |
+| ICMP outside the tunnel | `docker/02-egress`, `docker/05`, `docker/07`, `docker/16` |
+| IPv6 when the tunnel has none, or router advertisements adding routes past it | `docker/16-ipv4-only-tunnel`, `docker/01-setup` |
+| Transmission's own trackers and peers outside the tunnel; peers unable to reach it through the tunnel (TCP and UDP) | `docker/04-transmission`, `docker/05-policy-rule-gone` |
+| Transmission started while the tunnel address was missing, never binding its peer port | `docker/09-transmission-tunnel-down`, `cluster/80-liveness` |
+| The tunnel's routing gone: wg-quick's policy rule deleted, `wg0` deleted, the sidecar restarted or SIGKILLed | `docker/05`, `docker/06`, `docker/07`, `docker/08`, `cluster/50-restarts` |
+| The firewall tampered with: rules inserted, nft rules duplicating packets, filter OUTPUT flushed, every packet marked, nat re-routes | `docker/10` to `docker/13`, `cluster/55-marked-packets`, `cluster/40-helm-test` |
+| The VPN server roaming to another address; a stale tunnel without handshakes | `docker/15-server-roaming`, `docker/14-stale-handshake` |
+| An unsafe `wg0.conf` or setting (hooks, split tunnels, hostnames, marks, tables, MTU, a changed `Address`) | `docker/17-refusals`, `cluster/70-refusals` |
+| Web UI replies to cluster clients leaving by the wrong path (into the tunnel, or blocked by strict reverse-path filtering), or the web UI reachable from the VPN side | `docker/04-transmission`, `docker/18-web-ui-replies`, `cluster/30-dns-and-service` |
+| Cluster DNS or the Kubernetes API reached outside the tunnel | `cluster/30-dns-and-service` |
+| The in-pod kill switch gone entirely (the NetworkPolicy must hold) | `cluster/60-networkpolicy` |
+| Leaks while the pod shuts down; Transmission killed instead of stopping cleanly | `cluster/90-termination` |
+| Start order: Transmission before the kill switch and tunnel | `cluster/10-start` |
+| An upgrade from the last release failing, or losing the downloads | `cluster/10-start` (upgrade runs) |
+| A rule no test depends on | `tests/e2e/mutation-test.sh` |
+
 - CI downloads nothing from GitHub releases: tools come from container images by digest, the Go module proxy (kind) or dl.k8s.io (kubectl), and the CNI manifests from jsDelivr and quay.io, each pinned by checksum.
 - CI: require the `ci-passed` job in branch protection; it fails unless every test job passed (GitHub counts a skipped job as passed).
