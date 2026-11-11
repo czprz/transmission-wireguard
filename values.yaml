@@ -194,6 +194,22 @@ wireguard:
   # tunnel stops handshaking. Restarts are safe: the kill switch stays up.
   handshakeMaxAgeSeconds: 300
 
+  # Other servers of the same VPN account, for when the one in wg0.conf stops
+  # answering: once its last handshake is afterSeconds old, the sidecar's
+  # liveness probe replaces the peer with the next one in the list (and
+  # after the last, wg0.conf's again). They share wg0.conf's [Interface]
+  # (key and Address) and AllowedIPs; only PublicKey and Endpoint differ.
+  # The kill switch and the NetworkPolicy let WireGuard reach all of them.
+  # Needs PersistentKeepalive and a single [Peer] without PresharedKey.
+  # A restart of the sidecar starts again with wg0.conf's peer.
+  failover:
+    # At least 180: a working tunnel re-handshakes only every 2 minutes.
+    afterSeconds: 180
+    peers: []
+    #  - publicKey: "base64 public key of the server"
+    #    ip: 198.51.100.20
+    #    port: 51820
+
   env:
     TZ: "UTC"
     PUID: "1000"

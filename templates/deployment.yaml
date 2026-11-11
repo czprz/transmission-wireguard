@@ -129,6 +129,12 @@ spec:
               value: {{ .Values.firewall.allowConfHooks | quote }}
             - name: TWG_HANDSHAKE_MAX_AGE
               value: {{ .Values.wireguard.handshakeMaxAgeSeconds | int64 | toString | quote }}
+            {{- with include "twg.failoverPeers" . }}
+            - name: TWG_FAILOVER_PEERS
+              value: {{ . | quote }}
+            - name: TWG_FAILOVER_AFTER
+              value: {{ $.Values.wireguard.failover.afterSeconds | int64 | toString | quote }}
+            {{- end }}
           volumeMounts:
             - name: scripts
               mountPath: /twg/scripts

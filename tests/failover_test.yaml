@@ -1,0 +1,124 @@
+suite: failover
+
+templates:
+  - templates/deployment.yaml
+  - templates/networkpolicy.yaml
+  - templates/configmap-scripts.yaml
+  - templates/configmap-settings.yaml
+  - templates/secret-wg.yaml
+  - templates/secret-rpc.yaml
+
+values:
+  - values/base.yaml
+
+# helm-unittest replaces the values files' whole wireguard map with what a
+# test sets under it, so each test sets wg0Conf too.
+tests:
+  - it: passes no failover peers by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.initContainers[1].env
+          any: true
+          content: { name: TWG_FAILOVER_PEERS }
+
+  - it: gives the sidecar the failover peers and the threshold
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: &conf |
+        [Interface]
+        PrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+        Address = 10.64.0.2/32, fd00:64::2/128
+        [Peer]
+        PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+        AllowedIPs = 0.0.0.0/0, ::/0
+        Endpoint = 203.0.113.10:51820
+        PersistentKeepalive = 25
+      wireguard.failover.afterSeconds: 200
+      wireguard.failover.peers: &peers
+        - publicKey: kEcjsuwvTe+shMpTw1JzQXLXQ8HFsKLsJ+dyvN3fYlQ=
+          ip: 198.51.100.20
+        - publicKey: xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+          ip: 2001:db8::20
+          port: 1637
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content:
+            name: TWG_FAILOVER_PEERS
+            value: "kEcjsuwvTe+shMpTw1JzQXLXQ8HFsKLsJ+dyvN3fYlQ=@198.51.100.20:51820 xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=@[2001:db8::20]:1637"
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_FAILOVER_AFTER, value: "200" }
+
+  - it: lets the NetworkPolicy reach the failover peers too
+    template: templates/networkpolicy.yaml
+    set:
+      wireguard.wg0Conf: *conf
+      wireguard.failover.peers: *peers
+    asserts:
+      - equal:
+          path: spec.egress
+          value:
+            - to: [{ ipBlock: { cidr: 203.0.113.10/32 } }]
+              ports: [{ protocol: UDP, port: 51820 }]
+            - to: [{ ipBlock: { cidr: 198.51.100.20/32 } }]
+              ports: [{ protocol: UDP, port: 51820 }]
+            - to: [{ ipBlock: { cidr: 2001:db8::20/128 } }]
+              ports: [{ protocol: UDP, port: 1637 }]
+
+  - it: refuses a hostname (DNS is blocked until the tunnel is up)
+    template: templates/networkpolicy.yaml
+    set:
+      wireguard.wg0Conf: *conf
+      wireguard.failover.peers:
+        - publicKey: kEcjsuwvTe+shMpTw1JzQXLXQ8HFsKLsJ+dyvN3fYlQ=
+          ip: vpn.example.com
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.failover.peers ip vpn.example.com must be an IP address because DNS is blocked until the tunnel is up"
+
+  - it: refuses a threshold the liveness probe would beat
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: *conf
+      wireguard.handshakeMaxAgeSeconds: 240
+      wireguard.failover.afterSeconds: 240
+      wireguard.failover.peers: *peers
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.failover.afterSeconds (240) must be less than wireguard.handshakeMaxAgeSeconds (240), or the liveness probe restarts the sidecar before it can fail over"
+
+  - it: refuses a wg0.conf without PersistentKeepalive
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        PrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+        Address = 10.64.0.2/32
+        [Peer]
+        PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+      wireguard.failover.peers: *peers
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.failover needs PersistentKeepalive in wg0Conf. Without it an idle tunnel stops handshaking and would look dead"
+
+  - it: refuses a PresharedKey
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: |
+        [Interface]
+        PrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+        Address = 10.64.0.2/32
+        [Peer]
+        PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+        PresharedKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+        PersistentKeepalive = 25
+      wireguard.failover.peers: *peers
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.failover cannot be used with a PresharedKey in wg0Conf, because the failover peers would need their own"
