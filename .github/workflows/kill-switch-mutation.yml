@@ -16,6 +16,8 @@ on:
       - tests/e2e/docker-test.sh
       - tests/e2e/mutation-test.sh
       - tests/e2e/mutation-baseline.txt
+      - tests/e2e/package.json
+      - tests/e2e/package-lock.json
       - image/wireguard/**
       - .github/workflows/kill-switch-mutation.yml
 
@@ -45,7 +47,7 @@ jobs:
         run: |
           base=""
           if [ "$EVENT" = pull_request ] &&
-            ! git diff --quiet "$BASE_SHA" HEAD -- tests/e2e/docker tests/e2e/docker-test.sh tests/e2e/mutation-test.sh tests/e2e/mutation-baseline.txt; then
+            ! git diff --quiet "$BASE_SHA" HEAD -- tests/e2e/docker tests/e2e/docker-test.sh tests/e2e/mutation-test.sh tests/e2e/mutation-baseline.txt tests/e2e/package.json tests/e2e/package-lock.json; then
             echo "The leak test changed: every mutant runs."
           elif [ "$EVENT" = pull_request ]; then
             base=$BASE_SHA

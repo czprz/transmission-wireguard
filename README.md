@@ -14,11 +14,23 @@ Run Transmission through a WireGuard client sidecar in the same Pod. This chart 
 ## Requirements
 
 - Kubernetes 1.29+ (native sidecar containers)
-- Helm 3
+- Helm 3.14+ or Helm 4
 - Linux 5.6+ on the nodes (kernel WireGuard)
 - A CNI that enforces NetworkPolicy (Calico, Cilium, ...) for the second layer of protection
 - A namespace at the `privileged` Pod Security level: the sidecar is privileged, or adds `NET_ADMIN`, and both are outside `baseline`. In a `baseline` or `restricted` namespace the pod is never created, and the reason only shows in the ReplicaSet's events. Label the namespace: `kubectl label namespace <ns> pod-security.kubernetes.io/enforce=privileged`
 - cert-manager (optional, only if you enable the issuer template)
+
+CI tests every change, and every week, on these combinations (`.github/workflows/helm-chart.yaml`):
+
+| Kubernetes | Helm | CNI | Also |
+|---|---|---|---|
+| 1.29 | 3.14 | kindnet | the oldest supported versions |
+| 1.32 | 3.22 | Calico | |
+| 1.34 | 4.3 | Cilium | |
+| 1.37 | 3.22 | kindnet | upgrade from the last release |
+| 1.37 | 4.3 | kindnet | fresh install, and upgrade from the last release |
+
+The kill switch itself is also tested on Docker: on amd64 with a privileged and an unprivileged sidecar, and on arm64. Report security problems as [SECURITY.md](SECURITY.md) describes.
 
 ## Install
 
@@ -106,6 +118,24 @@ AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = 203.0.113.10:51820
 PersistentKeepalive = 25
 ```
+
+### Failover to other servers
+
+A VPN account's key usually works on all of its provider's servers. List others, and the sidecar switches to the next when the current one stops answering:
+
+```yaml
+wireguard:
+  failover:
+    afterSeconds: 180   # at least 180, less than handshakeMaxAgeSeconds
+    peers:
+      - publicKey: "<ANOTHER_SERVER_PUBLIC_KEY>"
+        ip: 198.51.100.20
+        port: 51820
+```
+
+Once the current server's last handshake is `afterSeconds` old, the sidecar's liveness probe replaces the peer with the next in the list, and after the last one with `wg0.conf`'s again. Only `PublicKey` and `Endpoint` change: the key, the addresses and `AllowedIPs` stay those of `wg0.conf`, so Transmission keeps its bindings. The kill switch and the NetworkPolicy let WireGuard reach every listed server and nothing else. A new peer gets the whole `handshakeMaxAgeSeconds` to answer before the probe fails. A restart of the sidecar goes back to `wg0.conf`'s peer.
+
+It needs `PersistentKeepalive` and a single `[Peer]` without `PresharedKey`. A working tunnel handshakes only every 2 minutes, so `afterSeconds` can't be lower than 180, and a failover takes 3 to 4 minutes.
 
 ### Port forwarding
 
@@ -267,6 +297,19 @@ To use it before it becomes the chart's default, set `images.wireguard.repositor
 - Anyone who can `kubectl exec` into the WireGuard sidecar is root with `NET_ADMIN` there and can open the kill switch. So can anyone who can add an ephemeral container (`kubectl debug --profile=netadmin` or `sysadmin`), which shares the pod's network namespace. Limit `pods/exec` and `pods/ephemeralcontainers` in the namespace.
 - Default images are pinned by digest. Overriding `images.*.repository` or `tag` drops the default digest; set `images.*.digest` to keep pulls immutable.
 - Inline `rpcAuth` credentials are hashed into a pod annotation (so changes roll the pod). Use a strong password, or `rpcAuth.existingSecret`.
+
+## Monitoring
+
+With the Prometheus Operator, kube-state-metrics and the kubelet's volume stats scraped (kube-prometheus-stack does all three), `monitoring.prometheusRule.enabled: true` adds alerts for:
+
+| Alert | When |
+|---|---|
+| `TransmissionWireguardTunnelDown` | The WireGuard sidecar has not been ready for `tunnelDownFor` (5m). It is ready only while the kill switch is intact, `wg0` is up and wg-quick's policy routing is in place. Nothing leaks then; Transmission's traffic just stops. |
+| `TransmissionWireguardUnavailable` | No pod has been available for `unavailableFor` (10m). |
+| `TransmissionWireguardRestarting` | Containers restarted more than `restartsPer30m` (2) times in 30 minutes. This is also how a VPN server that stopped answering shows: its last handshake gets older than `wireguard.handshakeMaxAgeSeconds`, and the liveness probe restarts the sidecar. |
+| `TransmissionWireguardVolumeFilling` | A release PVC has less than `volumeFreeRatio` (10%) free. |
+
+Set `monitoring.prometheusRule.labels` to what your Prometheus selects rules by (`release: kube-prometheus-stack`, for example). Nothing in the pod serves metrics: an exporter would need a port through the kill switch, or `NET_ADMIN` to read WireGuard's state, which can open it.
 
 ## Verify egress IP
 

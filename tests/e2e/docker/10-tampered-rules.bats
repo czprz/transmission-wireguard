@@ -15,7 +15,7 @@ teardown() {
 
 @test "probe notices a rule inserted inside the kill switch chain" {
   as_root ip6tables -I TWG-OUTPUT 1 -j ACCEPT
-  ! as_root /twg/scripts/firewall.sh check 2>/dev/null || fail "probe did not notice an ACCEPT inserted into TWG-OUTPUT"
+  probe_fails as_root /twg/scripts/firewall.sh check || fail "probe did not notice an ACCEPT inserted into TWG-OUTPUT"
 }
 
 @test "probe passes again once the rule is removed" {
@@ -30,5 +30,5 @@ teardown() {
     as_root nft add chain ip twgtest out '{ type filter hook output priority 0; }' &&
     as_root nft add rule ip twgtest out ip daddr 198.51.100.8 dup to "$GW" device eth0 2>/dev/null ||
     fail "could not add an nft dup rule (kernel without nf_dup?), so the dup check is untested"
-  ! as_root /twg/scripts/firewall.sh check 2>/dev/null || fail "probe did not notice an nft rule duplicating packets"
+  probe_fails as_root /twg/scripts/firewall.sh check || fail "probe did not notice an nft rule duplicating packets"
 }

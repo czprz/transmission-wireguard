@@ -10,6 +10,8 @@
 #        firewall.sh check   exit non-zero if the rules are missing or altered
 #        firewall.sh tunnel  check + the WireGuard interface is up
 #        firewall.sh live    tunnel + latest handshake is recent (if configured);
+#                            with failover peers, switches to the next one
+#                            when the current one stopped answering
 #                            with a NAT-PMP gateway, renews the forwarded port
 set -euo pipefail
 
@@ -25,6 +27,15 @@ ALLOW_CONF_HOOKS="${TWG_ALLOW_CONF_HOOKS:-false}"
 CONF="${TWG_WG_CONF:-/config/wg_confs/${WG_IFACE}.conf}"
 # The addresses Transmission is bound to, written by the init container.
 TUNNEL_ENV="${TWG_TUNNEL_ENV:-/twg/run/tunnel.env}"
+# Other servers of the same VPN account, as "publickey@ip:port" words: when
+# the current peer has not answered for FAILOVER_AFTER seconds, live()
+# switches to the next. The firewall lets UDP through to all of them.
+FAILOVER_PEERS="${TWG_FAILOVER_PEERS:-}"
+FAILOVER_AFTER="${TWG_FAILOVER_AFTER:-0}"
+# "publickey since switched": the current peer, since when it is watched,
+# and 1 if fail_over set it. In the container (exec probes run there), so a
+# restart, which re-reads wg0.conf, starts over.
+FAILOVER_STATE="${TWG_FAILOVER_STATE:-/run/twg-failover}"
 # VPN port forwarding: the NAT-PMP gateway inside the tunnel (empty: off).
 # live() renews the mapping, opens only that port on wg0 (in FWD, which
 # check() lets hold nothing else), writes it to FORWARD_DIR/port and sets
@@ -314,7 +325,8 @@ split_endpoint() {
   is_ip "$EP_HOST" || { echo "Endpoint ${ep} is not an IP address. DNS is blocked until the tunnel is up, so the endpoint must be a literal IP."; return 1; }
 }
 
-# "host port" of every usable Endpoint of IP family $1.
+# "host port" of every usable Endpoint of IP family $1, failover peers'
+# included.
 endpoints() {
   local ep
   [[ -r $CONF ]] || return 0
@@ -323,7 +335,13 @@ endpoints() {
     if [[ $1 == 4 && $EP_HOST != *:* ]] || [[ $1 == 6 && $EP_HOST == *:* ]]; then
       echo "$EP_HOST $EP_PORT"
     fi
-  done < <(conf_value Endpoint)
+  done < <(conf_value Endpoint; failover_peers | sed 's/^[^@]*@//')
+}
+
+# The failover peers, one "publickey@endpoint" per line.
+failover_peers() {
+  local p
+  for p in $FAILOVER_PEERS; do echo "$p"; done
 }
 
 # Reject configs that would weaken or bypass the kill switch.
@@ -349,6 +367,18 @@ preflight() {
     err=$(split_endpoint "$ep") || die "$err"
   done < <(conf_value Endpoint)
 
+  if [[ -n $FAILOVER_PEERS ]]; then
+    if ! [[ $FAILOVER_AFTER =~ ^[0-9]+$ ]] || ((FAILOVER_AFTER < 30)); then
+      die "wireguard.failover.afterSeconds ${FAILOVER_AFTER} must be at least 30"
+    fi
+    (($(grep -ciE '^[[:space:]]*\[Peer\]' "$CONF") == 1)) || die "wireguard.failover needs exactly one [Peer] in ${CONF}: it replaces that peer with the next one"
+    ! grep -qiE '^[[:space:]]*PresharedKey[[:space:]]*=' "$CONF" || die "wireguard.failover cannot be used with a PresharedKey: the failover peers would need their own"
+    keepalive_on || die "wireguard.failover needs PersistentKeepalive in ${CONF}: without it an idle tunnel stops handshaking and would look dead"
+    while read -r ep; do
+      [[ ${ep%%@*} =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$ ]] || die "wireguard.failover peer ${ep%%@*} is not a WireGuard public key"
+      err=$(split_endpoint "${ep#*@}") || die "wireguard.failover: $err"
+    done < <(failover_peers)
+  fi
   if [[ -n $NATPMP_GATEWAY ]]; then
     [[ $NATPMP_GATEWAY =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "wireguard.portForwarding.natpmpGateway ${NATPMP_GATEWAY} must be an IPv4 address"
     for f in natpmpc curl timeout iptables-restore; do
@@ -511,6 +541,39 @@ tunnel() {
   [[ $rules == *"not from all fwmark $(printf '0x%x' "$WG_FWMARK") lookup"* ]] || { log "wg-quick policy routing is not in place"; return 1; }
 }
 
+# With failover peers: once the current peer has not handshaked for
+# FAILOVER_AFTER seconds since it was set, replace it with the next one
+# (wg0.conf's peer first, then the failover peers, round). Only the peer
+# changes: the address, the routing and the firewall stay as they are.
+fail_over() {
+  local now cur hs key since _ ring next i allowed ka
+  [[ -n $FAILOVER_PEERS ]] || return 0
+  now=$(date +%s)
+  cur=$(wg show "$WG_IFACE" peers | head -n1)
+  [[ -n $cur ]] || return 0
+  read -r key since _ <"$FAILOVER_STATE" 2>/dev/null || true
+  # A peer this container has not seen yet (wg-quick just came up): from now.
+  if [[ ${key:-} != "$cur" ]]; then
+    echo "$cur $now 0" >"$FAILOVER_STATE"
+    return 0
+  fi
+  hs=$(wg show "$WG_IFACE" latest-handshakes | awk -v p="$cur" '$1 == p { print $2 }')
+  ((${hs:-0} > since)) && since=$hs
+  ((now - since >= FAILOVER_AFTER)) || return 0
+
+  mapfile -t ring < <(echo "$(conf_value PublicKey | tail -n1)@$(conf_value Endpoint | tail -n1)"; failover_peers)
+  next=${ring[0]}
+  for i in "${!ring[@]}"; do
+    [[ ${ring[i]%%@*} == "$cur" ]] && next=${ring[(i + 1) % ${#ring[@]}]}
+  done
+  allowed=$(wg show "$WG_IFACE" allowed-ips | awk -v p="$cur" '$1 == p { $1 = ""; sub(/^ /, ""); gsub(/ /, ","); print }')
+  ka=$(wg show "$WG_IFACE" persistent-keepalive | awk -v p="$cur" '$1 == p { print $2 }')
+  [[ $ka =~ ^[0-9]+$ ]] || ka=""
+  wg set "$WG_IFACE" peer "$cur" remove peer "${next%%@*}" endpoint "${next#*@}" allowed-ips "$allowed" ${ka:+persistent-keepalive "$ka"}
+  echo "${next%%@*} $now 1" >"$FAILOVER_STATE"
+  log "no handshake with peer ${cur} for ${FAILOVER_AFTER}s: switched to ${next#*@}"
+}
+
 # Transmission's RPC on loopback (the firewall allows lo).
 tx_rpc() {
   local url="http://127.0.0.1:${WEB_PORT}/transmission/rpc" cfg sid user=""
@@ -567,12 +630,18 @@ EOF
 }
 
 live() {
-  local now hs newest=0
+  local now hs newest=0 key since switched
   tunnel
+  fail_over
   port_forward
   ((HANDSHAKE_MAX_AGE > 0)) && keepalive_on || return 0
   now=$(date +%s)
   while read -r _ hs; do ((hs > newest)) && newest=$hs; done < <(wg show "$WG_IFACE" latest-handshakes)
+  # A peer fail_over set gets the whole window to answer.
+  if [[ -n $FAILOVER_PEERS ]] && read -r key since switched <"$FAILOVER_STATE" 2>/dev/null &&
+    [[ $switched == 1 && $key == $(wg show "$WG_IFACE" peers | head -n1) ]]; then
+    ((since > newest)) && newest=$since
+  fi
   ((newest > 0 && now - newest < HANDSHAKE_MAX_AGE)) || { log "no handshake within ${HANDSHAKE_MAX_AGE}s"; return 1; }
 }
 

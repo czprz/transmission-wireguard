@@ -23,7 +23,7 @@ setup_file() {
   outcome control positive_control "$r"
   # Only adds the NetworkPolicy; the pod spec is unchanged, so no rollout.
   chart_args
-  helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${CHART_ARGS[@]}" --set networkPolicy.enabled=true >/dev/null
+  helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${UPGRADE_ARGS[@]}" "${CHART_ARGS[@]}" --set networkPolicy.enabled=true >/dev/null
   outcome enabled policy_created
   outcome same-pod same_pod
   # The CNI programs the policy some time after the API has it: wait until

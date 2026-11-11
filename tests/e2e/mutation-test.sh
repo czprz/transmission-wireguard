@@ -5,7 +5,8 @@
 #
 #   tests/e2e/mutation-test.sh --list [--changed BASE]
 #       the mutants (line numbers in files/firewall.sh); with --changed only
-#       those on lines changed since git revision BASE
+#       those on lines changed since git revision BASE, or all of them if
+#       anything else in firewall.sh changed (a continued line, a variable)
 #   tests/e2e/mutation-test.sh [LINE...]
 #       run them (default: all)
 #
@@ -33,11 +34,14 @@ list() {
   } | cut -d: -f1 | sort -n
 }
 
-# Line numbers of firewall.sh that are new or changed since revision $1.
+# Line numbers of firewall.sh that are new or changed since revision $1;
+# "deleted" for a hunk that only removes lines.
 changed_since() {
-  git -C "$ROOT" diff -U0 "$1" -- files/firewall.sh |
-    sed -nE 's/^@@ -[0-9,]+ \+([0-9]+)(,([0-9]+))? @@.*/\1 \3/p' |
+  local diff start count
+  diff=$(git -C "$ROOT" diff -U0 "$1" -- files/firewall.sh) || return
+  sed -nE 's/^@@ -[0-9,]+ \+([0-9]+)(,([0-9]+))? @@.*/\1 \3/p' <<<"$diff" |
     while read -r start count; do
+      ((${count:-1})) || echo deleted
       for ((i = 0; i < ${count:-1}; i++)); do echo $((start + i)); done
     done
 }
@@ -49,7 +53,8 @@ code_at() { sed -n "${1}p" "$FW" | sed -E 's/^ +//; s/ +$//'; }
 baseline_reason() {
   local code
   code=$(code_at "$1")
-  awk -F '\t' -v c="$code" '!/^#/ && $1 == c { print $2; found = 1 } END { exit !found }' "$BASELINE"
+  # ENVIRON, not -v: -v would expand the backslashes of a continued rule.
+  CODE=$code awk -F '\t' '!/^#/ && $1 == ENVIRON["CODE"] { print $2; found = 1 } END { exit !found }' "$BASELINE"
 }
 
 # The firewall.sh with line $1 turned into a no-op (the command becomes an
@@ -62,7 +67,15 @@ mutate() {
 
 if [[ ${1:-} == --list ]]; then
   if [[ ${2:-} == --changed ]]; then
-    comm -12 <(list | sort) <(changed_since "${3:?--changed needs a git revision}" | sort) | sort -n
+    # Assigned first, so a bad revision fails instead of listing nothing.
+    changed=$(changed_since "${3:?--changed needs a git revision}")
+    others=$(comm -23 <(sort -u <<<"$changed" | grep .) <(list | sort) || true)
+    if [[ -n $others ]]; then
+      echo "firewall.sh changed outside the rules' own lines: every mutant runs" >&2
+      list
+    else
+      comm -12 <(list | sort) <(sort -u <<<"$changed" | grep .) | sort -n
+    fi
   else
     list
   fi
@@ -70,6 +83,10 @@ if [[ ${1:-} == --list ]]; then
 fi
 lines=("$@")
 ((${#lines[@]})) || mapfile -t lines < <(list)
+
+# What the Docker daemon or a registry says when the run, not the mutant,
+# went wrong.
+INFRA_ERRORS='pull access denied|toomanyrequests|no space left|cannot connect to the docker daemon|TLS handshake timeout|net/http: request canceled|i/o timeout|unexpected EOF'
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -84,7 +101,12 @@ for n in "${lines[@]}"; do
   # suite (about 18 minutes) would prove nothing more. teardown_suite still runs.
   FIREWALL_SH=$TMP/firewall.sh "$ROOT/tests/e2e/docker-test.sh" --abort --formatter tap >"$TMP/log" 2>&1 || rc=$?
   failed=$(grep -m1 -E '^not ok [0-9]+ ' "$TMP/log" | sed -E 's/^not ok [0-9]+ //' || true)
-  if ((rc == 0)); then
+  if ((rc != 0)) && grep -qiE "$INFRA_ERRORS" "$TMP/log"; then
+    # Wherever it happened: a check that failed for this proves nothing.
+    echo "   ERROR     stopped by the test infrastructure, not by a check; this proves nothing:"
+    grep -iE "$INFRA_ERRORS" "$TMP/log" | head -n 5 | sed 's/^/             /'
+    errors=$((errors + 1))
+  elif ((rc == 0)); then
     if [[ -n $reason ]]; then
       echo "   survived  (baseline: $reason)"
     else
@@ -98,7 +120,7 @@ for n in "${lines[@]}"; do
       failed="the setup of $(grep -m1 -oE "in test file [^,]+" "$TMP/log" | sed 's/in test file //; s|.*/||')"
     echo "   killed    by: $failed"
     [[ -z $reason ]] || { echo "   STALE     the baseline lists this rule, but a check now catches it: remove it from $BASELINE"; stale=$((stale + 1)); }
-  elif [[ $failed == setup_suite ]] && ! grep -qiE 'cannot pull|error response from daemon|toomanyrequests|no space left' "$TMP/log"; then
+  elif [[ $failed == setup_suite ]]; then
     echo "   killed    at setup: $(grep -m1 -E '^#   FAIL|^# .*(never|refus|FATAL)' "$TMP/log" | sed 's/^# *//' | cut -c1-160)"
   else
     echo "   ERROR     stopped by the test infrastructure, not by a check; this proves nothing:"
@@ -106,6 +128,12 @@ for n in "${lines[@]}"; do
     errors=$((errors + 1))
   fi
 done
+# A baseline entry whose rule is gone (deleted or reworded) excuses nothing.
+while IFS=$'\t' read -r code _; do
+  [[ -n $code && $code != \#* ]] || continue
+  grep -qxF -- "$code" < <(sed -E 's/^ +//; s/ +$//' "$FW") ||
+    { echo "   STALE     no rule in firewall.sh reads like this baseline entry: $code"; stale=$((stale + 1)); }
+done <"$BASELINE"
 echo
 echo "${#lines[@]} mutant(s): $survived survived, $errors error(s), $stale stale baseline entr$( ((stale == 1)) && echo y || echo ies)"
 ((survived + errors + stale == 0))
