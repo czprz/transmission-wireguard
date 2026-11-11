@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # The chart's WireGuard sidecar: wg-quick and the tools the kill switch
 # (files/firewall.sh, mounted by the chart) runs, nothing else. No init
 # system, no package manager and no busybox network clients at run time.
