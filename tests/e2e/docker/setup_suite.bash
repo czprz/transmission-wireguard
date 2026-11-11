@@ -46,7 +46,7 @@ vpn_server() {
 cleanup() {
   docker rm -f -v "${CONTAINERS[@]}" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
-  docker volume rm "$P-torrent" >/dev/null 2>&1 || true
+  docker volume rm "$P-torrent" "$P-forward" >/dev/null 2>&1 || true
 }
 
 # Every canary counts packets that do not come from the VPN server (only
@@ -155,14 +155,16 @@ baseline() {
 
 setup_suite() {
   [[ ${#SIDECAR_SECURITY[@]} -gt 0 ]] || { echo "SIDECAR must be privileged or unprivileged" >&2; return 1; }
-  export WG_IMAGE SIDECAR_IMAGE TX_IMAGE CANARY_IMAGE TRACKER_IMAGE FIREWALL_SH
+  export WG_IMAGE SIDECAR_IMAGE TX_IMAGE CANARY_IMAGE TRACKER_IMAGE NATPMP_IMAGE NATPMP FIREWALL_SH
   cleanup
   mkdir -p "$STAGE"
 
   # Pull up front with retries: registries rate-limit bursts of pulls, so
   # back off between attempts.
   local image attempt
-  for image in "$WG_IMAGE" "$SIDECAR_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE" "$TRACKER_IMAGE"; do
+  local images=("$WG_IMAGE" "$SIDECAR_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE" "$TRACKER_IMAGE")
+  ((NATPMP)) && images+=("$NATPMP_IMAGE")
+  for image in "${images[@]}"; do
     # A sidecar image built here (image/wireguard) is not pulled.
     [[ $image != "$SIDECAR_IMAGE" || $image == "$WG_IMAGE" ]] || ! docker image inspect "$image" >/dev/null 2>&1 || continue
     for attempt in 1 2 3 4 5; do
@@ -253,7 +255,10 @@ EOF
   baseline
 
   # The sidecar exactly as the chart runs it.
-  docker create --name "$P-wg" --network "container:$P-pod" "${SIDECAR_SECURITY[@]}" -v /twg "${firewall_env[@]}" \
+  # The forwarded port, written by the sidecar and read by Transmission.
+  local forward=() forward_ro=()
+  if ((NATPMP)); then forward=(-v "$P-forward:/twg/forward"); forward_ro=(-v "$P-forward:/twg/forward:ro"); fi
+  docker create --name "$P-wg" --network "container:$P-pod" "${SIDECAR_SECURITY[@]}" -v /twg "${forward[@]}" "${firewall_env[@]}" \
     --entrypoint /bin/bash "$SIDECAR_IMAGE" -c '/twg/scripts/firewall.sh apply && exec /init' >/dev/null
   docker cp "$STAGE/wg/." "$P-wg:/" >/dev/null
   docker start "$P-wg" >/dev/null
@@ -281,7 +286,7 @@ EOF
   stage_scripts "$STAGE/tx"
   # Capabilities as the chart allows them: everything dropped but these.
   docker create --name "$P-tx" --network "container:$P-pod" --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
-    -e PUID=1000 -e PGID=1000 "$TX_IMAGE" >/dev/null
+    "${forward_ro[@]}" -e PUID=1000 -e PGID=1000 "$TX_IMAGE" >/dev/null
   docker cp "$STAGE/tx/." "$P-tx:/" >/dev/null
   docker start "$P-tx" >/dev/null
   wait_until 120 tx_listening

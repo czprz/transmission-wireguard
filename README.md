@@ -137,6 +137,28 @@ Once the current server's last handshake is `afterSeconds` old, the sidecar's li
 
 It needs `PersistentKeepalive` and a single `[Peer]` without `PresharedKey`. A working tunnel handshakes only every 2 minutes, so `afterSeconds` can't be lower than 180, and a failover takes 3 to 4 minutes.
 
+### Port forwarding
+
+Without an inbound port, peers can't connect to you, and seeding suffers. VPN providers that forward a port over NAT-PMP (Proton VPN, among others) work with:
+
+```yaml
+images:
+  wireguard:
+    repository: ghcr.io/czprz/twg-wireguard   # has natpmpc; the linuxserver image does not
+    digest: sha256:<a published digest>
+wireguard:
+  portForwarding:
+    natpmpGateway: 10.2.0.1   # Proton's gateway inside the tunnel
+```
+
+Use a server that allows port forwarding (Proton: a P2P server, with NAT-PMP enabled when you create the WireGuard config).
+
+- The sidecar's liveness probe renews the mapping every 30 seconds; a mapping lasts 60.
+- It opens just that port, just on `wg0`, in a chain that the kill switch's check lets hold nothing else.
+- It sets the port as Transmission's peer port over RPC on loopback, with the web UI's credentials, so announces carry it.
+
+A gateway that doesn't answer is logged and retried; downloads still work without a forwarded port. NAT-PMP is IPv4 only.
+
 ## How traffic is kept in the tunnel
 
 | Layer | What it does |

@@ -8,7 +8,7 @@ on:
   pull_request:
     paths:
       - image/wireguard/**
-      - files/firewall.sh
+      - files/**
       - tests/e2e/docker/**
       - tests/e2e/docker-test.sh
       - .github/workflows/sidecar-image.yml

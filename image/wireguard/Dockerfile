@@ -6,7 +6,8 @@ FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5
 
 # iptables on nf_tables, as wg-quick's own rules (nft) are: one backend.
 # openresolv: wg-quick needs resolvconf for a DNS line in wg0.conf.
-# libnatpmp: natpmpc, for VPN port forwarding.
+# libnatpmp: natpmpc, for VPN port forwarding; curl sets the forwarded
+# port in Transmission over its RPC on loopback.
 RUN apk add --no-cache \
       bash \
       iproute2 \
@@ -16,6 +17,7 @@ RUN apk add --no-cache \
       wireguard-tools-wg-quick \
       openresolv \
       libnatpmp \
+      curl \
     && rm -rf /sbin/apk /etc/apk /lib/apk /usr/share/apk /var/cache/apk \
     && for a in nc wget telnet ftpget ftpput tftp whois nslookup traceroute traceroute6 ping ping6 udhcpc udhcpc6 ntpd; do \
          for d in /bin /sbin /usr/bin /usr/sbin; do [ ! -L "$d/$a" ] || rm "$d/$a"; done; \
