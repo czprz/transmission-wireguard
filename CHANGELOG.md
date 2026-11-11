@@ -1,3 +1,34 @@
+# [1.0.0](https://github.com/czprz/transmission-wireguard/compare/v0.9.5...v1.0.0) (2026-11-11)
+
+* feat!: enforce VPN-only egress with a chart-managed kill switch (#17) ([aa6d3eb](https://github.com/czprz/transmission-wireguard/commit/aa6d3eb112f830fb48ba38f49254bd85be3d5136)), closes [#17](https://github.com/czprz/transmission-wireguard/issues/17)
+
+### Bug Fixes
+
+* let no ICMP out eth0 for web UI connections ([#20](https://github.com/czprz/transmission-wireguard/issues/20)) ([717bc73](https://github.com/czprz/transmission-wireguard/commit/717bc73813772a6d5b2217ce64d908a7b7ba976a)), closes [#19](https://github.com/czprz/transmission-wireguard/issues/19)
+
+### Features
+
+* a minimal WireGuard sidecar image, tested, scanned, signed ([#26](https://github.com/czprz/transmission-wireguard/issues/26)) ([c35f29b](https://github.com/czprz/transmission-wireguard/commit/c35f29b6f91d8419c8c86414b58a4791e9f5cc17))
+* fail over to other servers of the VPN account ([#25](https://github.com/czprz/transmission-wireguard/issues/25)) ([d7bc35b](https://github.com/czprz/transmission-wireguard/commit/d7bc35b7eaefa33dd5ebc342648501f2399591f9))
+* optional alerts for the tunnel, availability, restarts and full volumes ([#24](https://github.com/czprz/transmission-wireguard/issues/24)) ([b98d8a8](https://github.com/czprz/transmission-wireguard/commit/b98d8a8a8327908b609b72b1bfefdf6a5842cf97))
+* VPN port forwarding over NAT-PMP ([#27](https://github.com/czprz/transmission-wireguard/issues/27)) ([535ce34](https://github.com/czprz/transmission-wireguard/commit/535ce34ecdd9e69734233fac016f8469c46ff594))
+
+### BREAKING CHANGES
+
+* requires Kubernetes >= 1.29. networkPolicy is enabled
+  by default, so wireguard.existingSecret users must set
+  wireguard.endpoints. wg0.conf files with iptables/nft in
+  PreUp/PostUp/PreDown/PostDown are rejected. DNS override is on by
+  default. An exposed web UI requires RPC auth. Peer ports are no longer
+  on the Service. kernelMode mountLibModules/mountTun default to false.
+* RPC auth is required by default, unknown values are
+  refused, bindToTunnel must be true, and AllowedIPs ::/0 requires an IPv6
+  Address.
+* transmission.securityContext must drop ALL capabilities,
+  and wireguard.dns.override=false is refused.
+* wg0.conf hooks are refused by default and
+  firewall.allowConfFirewallHooks is renamed to firewall.allowConfHooks.
+
 ## [0.9.5](https://github.com/czprz/transmission-wireguard/compare/v0.9.4...v0.9.5) (2026-09-04)
 
 ## [0.9.4](https://github.com/czprz/transmission-wireguard/compare/v0.9.3...v0.9.4) (2026-06-26)

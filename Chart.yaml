@@ -3,7 +3,7 @@ name: transmission-wireguard
 description: Transmission forced through a WireGuard client sidecar (wg-quick) in the same Pod with a kill switch.
 type: application
 kubeVersion: ">=1.29.0-0"
-version: 0.9.5
+version: 1.0.0
 # The default Transmission version (tests/metadata-test.sh checks it).
 appVersion: "4.1.3"
 home: https://github.com/czprz/transmission-wireguard
