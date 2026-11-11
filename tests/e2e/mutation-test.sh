@@ -97,7 +97,9 @@ for n in "${lines[@]}"; do
   chmod 0755 "$TMP/firewall.sh"
   reason=$(baseline_reason "$n" || true)
   rc=0
-  FIREWALL_SH=$TMP/firewall.sh "$ROOT/tests/e2e/docker-test.sh" --formatter tap >"$TMP/log" 2>&1 || rc=$?
+  # --abort: the first failed check kills the mutant, so the rest of the
+  # suite (about 18 minutes) would prove nothing more. teardown_suite still runs.
+  FIREWALL_SH=$TMP/firewall.sh "$ROOT/tests/e2e/docker-test.sh" --abort --formatter tap >"$TMP/log" 2>&1 || rc=$?
   failed=$(grep -m1 -E '^not ok [0-9]+ ' "$TMP/log" | sed -E 's/^not ok [0-9]+ //' || true)
   if ((rc != 0)) && grep -qiE "$INFRA_ERRORS" "$TMP/log"; then
     # Wherever it happened: a check that failed for this proves nothing.

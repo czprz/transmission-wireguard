@@ -58,7 +58,7 @@ jobs:
           fi
           echo "Mutants: ${lines//$'\n'/ }"
           # Assigned first, so a jq error fails the step.
-          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | [range(0; length; 8) as $i | .[$i:$i + 8] | join(" ")]' <<<"$lines")
+          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | [range(0; length; 6) as $i | .[$i:$i + 6] | join(" ")]' <<<"$lines")
           echo "batches=$batches" >> "$GITHUB_OUTPUT"
         env:
           EVENT: ${{ github.event_name }}
@@ -69,7 +69,7 @@ jobs:
     needs: mutants
     if: needs.mutants.outputs.batches != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       max-parallel: 4
