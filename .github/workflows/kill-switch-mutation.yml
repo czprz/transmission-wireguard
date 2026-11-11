@@ -81,17 +81,18 @@ jobs:
       - name: Load WireGuard kernel module
         run: sudo modprobe wireguard
 
+      # The chart's own sidecar image: with natpmpc, so the port-forwarding
+      # rules have checks that can kill their mutants. Built before
+      # AppArmor is unloaded: runc cannot start the build's containers after.
+      - name: Build the sidecar image
+        run: docker build -t twg-wireguard:ci image/wireguard
+
       # As in helm-chart.yaml: the runner's AppArmor profiles break wg-quick.
       - name: Unload host AppArmor profiles
         run: sudo aa-teardown || sudo systemctl stop apparmor || true
 
       - name: Install bats
         run: npm ci --prefix tests/e2e --no-audit --no-fund
-
-      # The chart's own sidecar image: with natpmpc, so the port-forwarding
-      # rules have checks that can kill their mutants.
-      - name: Build the sidecar image
-        run: docker build -t twg-wireguard:ci image/wireguard
 
       - name: Leak test without each of firewall.sh lines ${{ matrix.lines }}
         run: |
