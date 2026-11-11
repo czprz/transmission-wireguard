@@ -495,6 +495,54 @@
         }
       }
     },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "severity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tunnelDownFor": {
+              "type": "string",
+              "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$"
+            },
+            "unavailableFor": {
+              "type": "string",
+              "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$"
+            },
+            "restartsPer30m": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "volumeFreeRatio": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1
+            },
+            "extraRules": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
     "podSecurityContext": {
       "type": "object"
     },
