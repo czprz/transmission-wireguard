@@ -20,7 +20,9 @@ K3D_KUBECONFIG=${K3D_KUBECONFIG:-$ROOT/tests/e2e/.k3d/$K3D_CLUSTER.kubeconfig}
 K3S_IMAGE=${K3S_IMAGE:-rancher/k3s:v1.31.5-k3s1@sha256:53cf744fe2fabf140cee240d2db70d13a4f2d98f1a13c98f58f457f423096917}
 
 if [[ ${1:-create} == delete ]]; then
-  "$K3D" cluster delete "$K3D_CLUSTER"
+  # k3d delete also removes the cluster from the default kubeconfig, which
+  # rewrites that file: point it at this cluster's own.
+  KUBECONFIG=$K3D_KUBECONFIG "$K3D" cluster delete "$K3D_CLUSTER"
   rm -f "$K3D_KUBECONFIG"
   exit 0
 fi

@@ -26,6 +26,8 @@ teardown() { dump_on_failure; }
   [[ -n $UPGRADE_FROM ]] || skip "not an upgrade run (UPGRADE_FROM is unset)"
   [[ $(kubectl -n "$NS" get pvc "$RELEASE-transmission-wireguard" -o jsonpath='{.metadata.uid}') == "$OLD_PVC_UID" ]] ||
     fail "the upgrade replaced the release's PVC"
+  [[ $(kx transmission cat /data/.twg-upgrade-marker 2>/dev/null) == "$UPGRADE_MARKER" ]] ||
+    fail "the earlier release's file on its PVC is not at /data after the upgrade"
   pass "the upgrade keeps the release's PVC, and the downloads on it"
 }
 

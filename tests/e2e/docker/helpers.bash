@@ -117,6 +117,15 @@ tx_remote() { docker run --rm --network "container:$P-pod" --cap-drop ALL --entr
 as_raw() { docker run --rm --network "container:$P-pod" --cap-drop ALL --cap-add NET_RAW --entrypoint "" "$WG_IMAGE" "$@"; }
 # The chart's liveness probe of the Transmission container.
 tx_live() { docker exec "$P-tx" /bin/sh /twg/scripts/transmission-live.sh; }
+# True only if probe $@ says no (exit 1): one that could not run (docker's
+# 125-127, a stopped container) proves nothing either way.
+probe_fails() {
+  local rc=0
+  "$@" >/dev/null 2>&1 || rc=$?
+  ((rc == 1)) && return 0
+  ((rc == 0)) || echo "the probe could not run (exit $rc): $*" >&2
+  return 1
+}
 tx_listening() { as_app nc -z 127.0.0.1 "$WEB_PORT"; }
 
 # Source address the canary saw for a request from the pod (empty if blocked).
@@ -399,10 +408,28 @@ tunnel_up() {
 }
 # A firewall.sh that fails its own check even freshly applied (a mutant) is
 # what "startup/readiness/liveness probes pass" reports; restarting cannot
-# fix it, so from then on only the rest of the state is restored and every
-# leak check still runs against it.
+# fix it. For it the rules as freshly applied stand in for the check: any
+# rule a test changed since still counts as broken, and is restored.
 CHECK_BROKEN=$STAGE/check-broken
-kill_switch_intact() { [[ -e $CHECK_BROKEN ]] || as_root /twg/scripts/firewall.sh check; }
+# Every iptables and ip6tables rule and chain policy, without counters.
+all_rules() {
+  as_root sh -c 'iptables-save; ip6tables-save' | grep -E '^[-:*]' | sed -E 's/ \[[0-9]+:[0-9]+\]$//'
+}
+kill_switch_intact() {
+  if [[ -e $CHECK_BROKEN ]]; then
+    diff -q "$CHECK_BROKEN" <(all_rules) >/dev/null
+  else
+    as_root /twg/scripts/firewall.sh check
+  fi
+}
+# Called with the kill switch freshly applied: a check that fails twice is
+# the firewall.sh's, not a moment's.
+note_if_check_broken() {
+  as_root /twg/scripts/firewall.sh check >/dev/null 2>&1 && return 0
+  sleep 2
+  as_root /twg/scripts/firewall.sh check >/dev/null 2>&1 && return 0
+  all_rules >"$CHECK_BROKEN"
+}
 healthy_but_check() {
   running "$P-wg" && running "$P-tx" && running "$P-l6" && tunnel_up && via_vpn && tx_listening && tx_live
 }
@@ -432,9 +459,9 @@ ensure_healthy() {
   if healthy_but_check >/dev/null 2>&1; then
     # Not a failure here: "startup/readiness/liveness probes pass" and the
     # tests' own teardowns report it.
-    echo "# the kill switch still fails its check after a restart ($(as_root /twg/scripts/firewall.sh check 2>&1 | tail -n1));" \
-      "not restarting for it again" >&2
-    touch "$CHECK_BROKEN"
+    echo "# the kill switch fails its own check even freshly applied ($(as_root /twg/scripts/firewall.sh check 2>&1 | tail -n1));" \
+      "its rules as applied stand in for the check from now on" >&2
+    note_if_check_broken
     return 0
   fi
   dump_logs >&2

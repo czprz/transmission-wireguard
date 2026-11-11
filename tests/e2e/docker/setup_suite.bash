@@ -249,7 +249,10 @@ EOF
   wait_until 90 via_vpn || { echo "the tunnel never came up; nothing would mean anything" >&2; return 1; }
   # A firewall.sh failing its own check (a mutant): reported by 01-setup, but
   # every leak check still runs against it.
-  as_root /twg/scripts/firewall.sh check >/dev/null 2>&1 || touch "$CHECK_BROKEN"
+  note_if_check_broken
+  # From here on nothing may leak, Transmission's start-up and its first
+  # torrent (discovery, DHT, port mapping) included: 04 checks it.
+  hits_mark "$STAGE/hits-tunnel-up"
 
   # settings-init with RPC credentials from the Secret.
   run_settings_init "$WG_CONF" "$STAGE" -e RPC_USERNAME=admin -e RPC_PASSWORD=s3cret
@@ -284,8 +287,6 @@ EOF
   docker run --rm --network container:"$P-pod" --cap-drop ALL -v "$P-torrent:/t" --entrypoint transmission-remote "$TX_IMAGE" \
     "127.0.0.1:$WEB_PORT" -a /t/test.torrent >/dev/null || { echo "could not add the test torrent" >&2; return 1; }
   wait_until 60 tx_live
-  # Everything up: 02-04 check that nothing leaked from here on.
-  hits_mark "$STAGE/hits-tunnel-up"
 }
 
 teardown_suite() {

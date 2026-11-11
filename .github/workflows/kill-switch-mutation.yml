@@ -16,6 +16,8 @@ on:
       - tests/e2e/docker-test.sh
       - tests/e2e/mutation-test.sh
       - tests/e2e/mutation-baseline.txt
+      - tests/e2e/package.json
+      - tests/e2e/package-lock.json
       - .github/workflows/kill-switch-mutation.yml
 
 permissions:
@@ -44,7 +46,7 @@ jobs:
         run: |
           base=""
           if [ "$EVENT" = pull_request ] &&
-            ! git diff --quiet "$BASE_SHA" HEAD -- tests/e2e/docker tests/e2e/docker-test.sh tests/e2e/mutation-test.sh tests/e2e/mutation-baseline.txt; then
+            ! git diff --quiet "$BASE_SHA" HEAD -- tests/e2e/docker tests/e2e/docker-test.sh tests/e2e/mutation-test.sh tests/e2e/mutation-baseline.txt tests/e2e/package.json tests/e2e/package-lock.json; then
             echo "The leak test changed: every mutant runs."
           elif [ "$EVENT" = pull_request ]; then
             base=$BASE_SHA
@@ -56,7 +58,7 @@ jobs:
           fi
           echo "Mutants: ${lines//$'\n'/ }"
           # Assigned first, so a jq error fails the step.
-          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | [range(0; length; 8) as $i | .[$i:$i + 8] | join(" ")]' <<<"$lines")
+          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | [range(0; length; 6) as $i | .[$i:$i + 6] | join(" ")]' <<<"$lines")
           echo "batches=$batches" >> "$GITHUB_OUTPUT"
         env:
           EVENT: ${{ github.event_name }}
@@ -67,7 +69,7 @@ jobs:
     needs: mutants
     if: needs.mutants.outputs.batches != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       max-parallel: 4
