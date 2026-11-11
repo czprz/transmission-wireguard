@@ -25,7 +25,10 @@ run_apply() {
   fi
   docker rm -f "$P-pre" >/dev/null 2>&1 || true
   # shellcheck disable=SC2154 # firewall_env: helpers.bash
-  docker create --name "$P-pre" --privileged --network none "${firewall_env[@]}" "${APPLY_ENV[@]}" --entrypoint /bin/bash "$WG_IMAGE" \
+  # The sidecar's image, as firewall.sh runs there (with port forwarding,
+  # it also needs natpmpc and its forward directory).
+  docker create --name "$P-pre" --privileged --network none --tmpfs /twg/forward "${firewall_env[@]}" "${APPLY_ENV[@]}" \
+    --entrypoint /bin/bash "$SIDECAR_IMAGE" \
     -c 'eval "${TWG_TEST_PRE:-}"; /twg/scripts/firewall.sh apply; rc=$?; /twg/scripts/firewall.sh check && echo RULES_OK; echo "RC=$rc"
       for c in INPUT FORWARD OUTPUT; do iptables -S $c | head -n1; ip6tables -S $c | head -n1; done | sed "s/^/POLICY /"' >/dev/null
   docker cp "$dir/." "$P-pre:/" >/dev/null

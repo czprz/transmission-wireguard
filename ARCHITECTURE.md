@@ -43,10 +43,12 @@ Each way traffic could get out, or the release could break, and where it is test
 | ICMP outside the tunnel | `docker/02-egress`, `docker/05`, `docker/07`, `docker/16` |
 | IPv6 when the tunnel has none, or router advertisements adding routes past it | `docker/16-ipv4-only-tunnel`, `docker/01-setup` |
 | Transmission's own trackers and peers outside the tunnel; peers unable to reach it through the tunnel (TCP and UDP) | `docker/04-transmission`, `docker/05-policy-rule-gone` |
-| Transmission started while the tunnel address was missing, never binding its peer port | `docker/09-transmission-tunnel-down`, `cluster/80-liveness` |
+| Transmission started while the tunnel address was missing, never binding its peer port | `docker/09-transmission-tunnel-down` |
 | The tunnel's routing gone: wg-quick's policy rule deleted, `wg0` deleted, the sidecar restarted or SIGKILLed | `docker/05`, `docker/06`, `docker/07`, `docker/08`, `cluster/50-restarts` |
 | The firewall tampered with: rules inserted, nft rules duplicating packets, filter OUTPUT flushed, every packet marked, nat re-routes | `docker/10` to `docker/13`, `cluster/55-marked-packets`, `cluster/40-helm-test` |
 | The VPN server roaming to another address; a stale tunnel without handshakes | `docker/15-server-roaming`, `docker/14-stale-handshake` |
+| Failing over to another server: switching too early, not at all, or leaking while it switches | `docker/19-failover` |
+| Port forwarding opening more than the forwarded port, or opening it outside the tunnel | `docker/20-port-forwarding` (with the chart's sidecar image) |
 | An unsafe `wg0.conf` or setting (hooks, split tunnels, hostnames, marks, tables, MTU, a changed `Address`) | `docker/17-refusals`, `cluster/70-refusals` |
 | Web UI replies to cluster clients leaving by the wrong path (into the tunnel, or blocked by strict reverse-path filtering), or the web UI reachable from the VPN side | `docker/04-transmission`, `docker/18-web-ui-replies`, `cluster/30-dns-and-service` |
 | Cluster DNS or the Kubernetes API reached outside the tunnel | `cluster/30-dns-and-service` |

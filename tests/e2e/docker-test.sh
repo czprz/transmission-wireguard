@@ -28,5 +28,9 @@ fi
 # bats exits non-zero when any test (or the suite's setup) fails.
 # The whole suite, unless files or directories of it are named.
 paths=("$HERE/docker")
-for a in "$@"; do [[ $a == *.bats || -d $a ]] && paths=(); done
+for a in "$@"; do
+  # Every test shares one pod: files run in parallel would break each other.
+  [[ $a != -j* && $a != --jobs* && $a != --parallel-* ]] || { echo "$0: the tests cannot run in parallel ($a)" >&2; exit 2; }
+  [[ $a == *.bats || -d $a ]] && paths=()
+done
 exec "$BATS" "${args[@]}" "$@" "${paths[@]}"

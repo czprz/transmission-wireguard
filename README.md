@@ -14,11 +14,23 @@ Run Transmission through a WireGuard client sidecar in the same Pod. This chart 
 ## Requirements
 
 - Kubernetes 1.29+ (native sidecar containers)
-- Helm 3
+- Helm 3.14+ or Helm 4
 - Linux 5.6+ on the nodes (kernel WireGuard)
 - A CNI that enforces NetworkPolicy (Calico, Cilium, ...) for the second layer of protection
 - A namespace at the `privileged` Pod Security level: the sidecar is privileged, or adds `NET_ADMIN`, and both are outside `baseline`. In a `baseline` or `restricted` namespace the pod is never created, and the reason only shows in the ReplicaSet's events. Label the namespace: `kubectl label namespace <ns> pod-security.kubernetes.io/enforce=privileged`
 - cert-manager (optional, only if you enable the issuer template)
+
+CI tests every change, and every week, on these combinations (`.github/workflows/helm-chart.yaml`):
+
+| Kubernetes | Helm | CNI | Also |
+|---|---|---|---|
+| 1.29 | 3.14 | kindnet | the oldest supported versions |
+| 1.32 | 3.22 | Calico | |
+| 1.34 | 4.3 | Cilium | |
+| 1.37 | 3.22 | kindnet | upgrade from the last release |
+| 1.37 | 4.3 | kindnet | fresh install, and upgrade from the last release |
+
+The kill switch itself is also tested on Docker: on amd64 with a privileged and an unprivileged sidecar, and on arm64. Report security problems as [SECURITY.md](SECURITY.md) describes.
 
 ## Install
 
@@ -118,6 +130,46 @@ AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = 203.0.113.10:51820
 PersistentKeepalive = 25
 ```
+
+### Failover to other servers
+
+A VPN account's key usually works on all of its provider's servers. List others, and the sidecar switches to the next when the current one stops answering:
+
+```yaml
+wireguard:
+  failover:
+    afterSeconds: 180   # at least 180, less than handshakeMaxAgeSeconds
+    peers:
+      - publicKey: "<ANOTHER_SERVER_PUBLIC_KEY>"
+        ip: 198.51.100.20
+        port: 51820
+```
+
+Once the current server's last handshake is `afterSeconds` old, the sidecar's liveness probe replaces the peer with the next in the list, and after the last one with `wg0.conf`'s again. Only `PublicKey` and `Endpoint` change: the key, the addresses and `AllowedIPs` stay those of `wg0.conf`, so Transmission keeps its bindings. The kill switch and the NetworkPolicy let WireGuard reach every listed server and nothing else. A new peer gets the whole `handshakeMaxAgeSeconds` to answer before the probe fails. A restart of the sidecar goes back to `wg0.conf`'s peer.
+
+It needs `PersistentKeepalive` and a single `[Peer]` without `PresharedKey`. A working tunnel handshakes only every 2 minutes, so `afterSeconds` can't be lower than 180, and a failover takes 3 to 4 minutes.
+
+### Port forwarding
+
+Without an inbound port, peers can't connect to you, and seeding suffers. VPN providers that forward a port over NAT-PMP (Proton VPN, among others) work with:
+
+```yaml
+images:
+  wireguard:
+    repository: ghcr.io/czprz/twg-wireguard   # has natpmpc; the linuxserver image does not
+    digest: sha256:<a published digest>
+wireguard:
+  portForwarding:
+    natpmpGateway: 10.2.0.1   # Proton's gateway inside the tunnel
+```
+
+Use a server that allows port forwarding (Proton: a P2P server, with NAT-PMP enabled when you create the WireGuard config).
+
+- The sidecar's liveness probe renews the mapping every 30 seconds; a mapping lasts 60.
+- It opens just that port, just on `wg0`, in a chain that the kill switch's check lets hold nothing else.
+- It sets the port as Transmission's peer port over RPC on loopback, with the web UI's credentials, so announces carry it.
+
+A gateway that doesn't answer is logged and retried; downloads still work without a forwarded port. NAT-PMP is IPv4 only.
 
 ## How traffic is kept in the tunnel
 
@@ -233,6 +285,20 @@ issuer:
 
 If you already have an issuer, leave `issuer.enabled` false and reference your issuer in `ingress.annotations`.
 
+## Sidecar image
+
+`image/wireguard` builds the sidecar's image: Alpine with `wg-quick`, iptables and nftables, iproute2, `resolvconf` and `natpmpc`, and nothing else. It has no init system, no package manager and no busybox network clients. Its `/init` brings `wg0` up and takes it down on stop; the kill switch, installed before that, stays either way.
+
+Every change runs the Docker and cluster leak tests against it and scans it with Trivy (fixable HIGH and CRITICAL fail the build). Merges to main and a weekly rebuild, for Alpine's fixes, publish it to `ghcr.io/czprz/twg-wireguard` for amd64 and arm64. Each published image is signed with cosign and has a build provenance attestation:
+
+```bash
+cosign verify ghcr.io/czprz/twg-wireguard@sha256:<digest> \
+  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/sidecar-image\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+To use it before it becomes the chart's default, set `images.wireguard.repository: ghcr.io/czprz/twg-wireguard` and `images.wireguard.digest` to a published digest.
+
 ## Security notes
 
 - `replicaCount` must be 1: replicas would share one WireGuard key.
@@ -243,6 +309,19 @@ If you already have an issuer, leave `issuer.enabled` false and reference your i
 - Anyone who can `kubectl exec` into the WireGuard sidecar is root with `NET_ADMIN` there and can open the kill switch. So can anyone who can add an ephemeral container (`kubectl debug --profile=netadmin` or `sysadmin`), which shares the pod's network namespace. Limit `pods/exec` and `pods/ephemeralcontainers` in the namespace.
 - Default images are pinned by digest. Overriding `images.*.repository` or `tag` drops the default digest; set `images.*.digest` to keep pulls immutable.
 - Inline `rpcAuth` credentials are hashed into a pod annotation (so changes roll the pod). Use a strong password, or `rpcAuth.existingSecret`.
+
+## Monitoring
+
+With the Prometheus Operator, kube-state-metrics and the kubelet's volume stats scraped (kube-prometheus-stack does all three), `monitoring.prometheusRule.enabled: true` adds alerts for:
+
+| Alert | When |
+|---|---|
+| `TransmissionWireguardTunnelDown` | The WireGuard sidecar has not been ready for `tunnelDownFor` (5m). It is ready only while the kill switch is intact, `wg0` is up and wg-quick's policy routing is in place. Nothing leaks then; Transmission's traffic just stops. |
+| `TransmissionWireguardUnavailable` | No pod has been available for `unavailableFor` (10m). |
+| `TransmissionWireguardRestarting` | Containers restarted more than `restartsPer30m` (2) times in 30 minutes. This is also how a VPN server that stopped answering shows: its last handshake gets older than `wireguard.handshakeMaxAgeSeconds`, and the liveness probe restarts the sidecar. |
+| `TransmissionWireguardVolumeFilling` | A release PVC has less than `volumeFreeRatio` (10%) free. |
+
+Set `monitoring.prometheusRule.labels` to what your Prometheus selects rules by (`release: kube-prometheus-stack`, for example). Nothing in the pod serves metrics: an exporter would need a port through the kill switch, or `NET_ADMIN` to read WireGuard's state, which can open it.
 
 ## Verify egress IP
 

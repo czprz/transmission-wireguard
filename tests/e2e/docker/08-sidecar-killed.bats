@@ -17,9 +17,10 @@ teardown_file() { ensure_healthy; }
 # recovery must bring both families back, so start with neither.
 start_after_kill() {
   [[ ! -e $BATS_FILE_TMPDIR/started ]] || return 0
-  touch "$BATS_FILE_TMPDIR/started"
-  as_root sh -c 'ip route del default; ip -6 route del default'
+  as_root sh -c 'ip route del default; ip -6 route del default; true'
   docker start "$P-wg" >/dev/null
+  # Only once it started: a failure above leaves the next test to try again.
+  touch "$BATS_FILE_TMPDIR/started"
 }
 
 @test "SIGKILL leaves wg0 and wg-quick's policy rules behind (the state recovery must handle)" {
@@ -46,7 +47,8 @@ start_after_kill() {
 
 @test "no duplicate wg-quick policy rules after the restart" {
   start_after_kill
-  poll 90 as_root /twg/scripts/firewall.sh tunnel || true
+  # Only a recovered sidecar shows whether it left duplicates.
+  wait_until 90 as_root /twg/scripts/firewall.sh tunnel || fail "did not recover after SIGKILL, so this proves nothing"
   [[ $(as_root ip -4 rule show | grep -c 'lookup 51820') == 1 ]] ||
     fail "stale wg-quick policy rules left behind: $(as_root ip -4 rule show | tr '\n' ';')"
 }

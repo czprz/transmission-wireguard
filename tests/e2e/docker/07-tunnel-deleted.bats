@@ -45,5 +45,5 @@ teardown_file() { ensure_healthy; }
 }
 
 @test "readiness/liveness probe fails while the tunnel is down" {
-  ! as_root /twg/scripts/firewall.sh tunnel 2>/dev/null || fail "probe did not notice the missing tunnel"
+  probe_fails as_root /twg/scripts/firewall.sh tunnel || fail "probe did not notice the missing tunnel"
 }

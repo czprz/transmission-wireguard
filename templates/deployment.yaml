@@ -129,6 +129,14 @@ spec:
               value: {{ .Values.firewall.allowConfHooks | quote }}
             - name: TWG_HANDSHAKE_MAX_AGE
               value: {{ .Values.wireguard.handshakeMaxAgeSeconds | int64 | toString | quote }}
+            {{- with include "twg.failoverPeers" . }}
+            - name: TWG_FAILOVER_PEERS
+              value: {{ . | quote }}
+            - name: TWG_FAILOVER_AFTER
+              value: {{ $.Values.wireguard.failover.afterSeconds | int64 | toString | quote }}
+            {{- end }}
+            - name: TWG_NATPMP_GATEWAY
+              value: {{ .Values.wireguard.portForwarding.natpmpGateway | quote }}
           volumeMounts:
             - name: scripts
               mountPath: /twg/scripts
@@ -139,6 +147,17 @@ spec:
             - name: settings-run
               mountPath: /twg/run
               readOnly: true
+            {{- if .Values.wireguard.portForwarding.natpmpGateway }}
+            # The forwarded port, for Transmission's liveness probe.
+            - name: forward
+              mountPath: /twg/forward
+            {{- with include "twg.rpcSecretName" . }}
+            # To set the forwarded port as Transmission's peer port.
+            - name: rpc-auth
+              mountPath: /twg/rpc
+              readOnly: true
+            {{- end }}
+            {{- end }}
             {{- if and .Values.wireguard.kernelMode.enabled .Values.wireguard.kernelMode.mountTun }}
             - name: dev-net-tun
               mountPath: /dev/net/tun
@@ -250,6 +269,11 @@ spec:
             - name: settings-run
               mountPath: /twg/run
               readOnly: true
+            {{- if .Values.wireguard.portForwarding.natpmpGateway }}
+            - name: forward
+              mountPath: /twg/forward
+              readOnly: true
+            {{- end }}
             {{- with .Values.transmission.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -285,6 +309,23 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        {{- if .Values.wireguard.portForwarding.natpmpGateway }}
+        - name: forward
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- with include "twg.rpcSecretName" . }}
+        - name: rpc-auth
+          secret:
+            secretName: {{ . }}
+            defaultMode: 0400
+            items:
+              - key: {{ $.Values.transmission.rpcAuth.usernameKey }}
+                path: username
+              - key: {{ $.Values.transmission.rpcAuth.passwordKey }}
+                path: password
+        {{- end }}
+        {{- end }}
 
         {{- if .Values.persistence.enabled }}
         - name: transmission-storage

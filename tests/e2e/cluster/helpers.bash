@@ -31,17 +31,20 @@ case $CLUSTER in
   kind)
     CLUSTER_NET=${CLUSTER_NET:-${KIND_NET:-kind}}
     NODE_CONTAINER=${NODE_CONTAINER:-kind-control-plane}
+    P=twg-kind
     ;;
   k3d)
     K3D_CLUSTER=${K3D_CLUSTER:-twg-k3d}
     CLUSTER_NET=${CLUSTER_NET:-k3d-$K3D_CLUSTER}
     NODE_CONTAINER=${NODE_CONTAINER:-k3d-$K3D_CLUSTER-server-0}
     export KUBECONFIG=${K3D_KUBECONFIG:-$ROOT/tests/e2e/.k3d/$K3D_CLUSTER.kubeconfig}
+    P=twg-k3d
     ;;
 esac  # any other CLUSTER fails setup_suite
 NS="${NS:-twg-e2e}"
 RELEASE=twg
-P=twg-kind
+# P (above) is per cluster, so a kind and a k3d run do not remove each
+# other's containers.
 TUN_SERVER=10.99.0.1
 TUN_CLIENT=10.99.0.2
 TUN_SERVER6=fd99::1
@@ -81,7 +84,7 @@ wait_until() {
 # $1=wait: block until the namespace is gone, so a rerun can recreate it.
 # Releases the termination test's finalizer, or the namespace never goes.
 cleanup() {
-  docker rm -f $P-server $P-canary $P-udp >/dev/null 2>&1 || true
+  docker rm -f "$P-server" "$P-canary" "$P-udp" >/dev/null 2>&1 || true
   kubectl -n "$NS" get pods -o name 2>/dev/null | xargs -r kubectl -n "$NS" patch --type=merge \
     -p '{"metadata":{"finalizers":null}}' >/dev/null 2>&1 || true
   kubectl delete namespace "$NS" --ignore-not-found --wait="${1:-false}" --timeout=3m >/dev/null 2>&1 || true
@@ -91,11 +94,12 @@ dump_state() {
   kubectl -n "$NS" get pods -o wide || true
   [[ -z ${POD:-} ]] || kubectl -n "$NS" describe pod "$POD" | tail -30 || true
   [[ -z ${POD:-} ]] || kubectl -n "$NS" logs "$POD" -c wireguard --tail 40 || true
-  docker logs --tail 20 $P-server 2>&1 | sed 's/^/  server | /' || true
+  docker logs --tail 20 "$P-server" 2>&1 | sed 's/^/  server | /' || true
 }
 # For a test file's teardown: the state above, if the test failed.
 dump_on_failure() {
-  [[ -n ${BATS_TEST_COMPLETED:-} || -n ${BATS_TEST_SKIPPED+x} ]] || dump_state
+  # bats sets BATS_TEST_SKIPPED (empty) for every test: only a value counts.
+  [[ -n ${BATS_TEST_COMPLETED:-} || -n ${BATS_TEST_SKIPPED:-} ]] || dump_state
 }
 # The kubelet's log of the last $1 seconds.
 kubelet_log() {
@@ -109,6 +113,24 @@ wg_tool() { docker run --rm -i --entrypoint wg "$WG_IMAGE" "$@"; }
 container_ip() { docker inspect -f "{{(index .NetworkSettings.Networks \"$CLUSTER_NET\").IPAddress}}" "$1"; }
 container_ip6() { docker inspect -f "{{(index .NetworkSettings.Networks \"$CLUSTER_NET\").GlobalIPv6Address}}" "$1"; }
 kx() { kubectl -n "$NS" exec "$POD" -c "$1" -- "${@:2}"; }
+# Writes $3 to file $2 at the root of PVC $1, from a pod of its own.
+write_on_pvc() {
+  kubectl -n "$NS" apply -f - >/dev/null <<YAML || return 1
+apiVersion: v1
+kind: Pod
+metadata: { name: twg-pvc-writer }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: write
+      image: $WG_IMAGE
+      command: [sh, -c, 'printf %s "\$0" >"/pvc/$2"', "$3"]
+      volumeMounts: [{ name: pvc, mountPath: /pvc }]
+  volumes: [{ name: pvc, persistentVolumeClaim: { claimName: $1 } }]
+YAML
+  kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'=Succeeded pod/twg-pvc-writer --timeout 3m >/dev/null || return 1
+  kubectl -n "$NS" delete pod twg-pvc-writer --wait=false >/dev/null
+}
 # The release's values. The persistence choice only on a fresh install: an
 # upgraded release keeps its earlier defaults and PVC.
 chart_args() {
@@ -122,6 +144,11 @@ chart_args() {
     --set tests.enabled=true
     --set "tests.ipEchoUrl=http://$CANARY_IP/cgi-bin/ip"
   )
+  # A sidecar image built here (image/wireguard), loaded into the cluster.
+  if [[ -n ${SIDECAR_IMAGE:-} ]]; then
+    CHART_ARGS+=(--set "images.wireguard.repository=${SIDECAR_IMAGE%:*}" --set "images.wireguard.tag=${SIDECAR_IMAGE##*:}"
+      --set images.wireguard.pullPolicy=Never)
+  fi
   if [[ -z $UPGRADE_FROM ]]; then
     # /config on an emptyDir and the downloads on a PVC of their own.
     CHART_ARGS+=(--set persistence.enabled=false --set persistence.downloads.enabled=true)
@@ -167,7 +194,7 @@ udp_seen() {
   # cannot be waited for, so this window is what "none arrived" means.
   sleep 1
   # Every source that sent the tag, not just the last.
-  docker logs $P-udp 2>&1 | grep -B1 -x "$tag" | sed -n 's/^Connection received on \(::ffff:\)\{0,1\}\([^ ]*\) .*/\2/p' |
+  docker logs "$P-udp" 2>&1 | grep -B1 -x "$tag" | sed -n 's/^Connection received on \(::ffff:\)\{0,1\}\([^ ]*\) .*/\2/p' |
     sort -u | paste -sd' ' - || true
 }
 # Records probe results while traffic must not leak; result_summary then
@@ -375,7 +402,8 @@ set_netpol() {
   if [[ $want == on ]] && netpol_on; then return 0; fi
   if [[ $want == off ]] && ! netpol_on; then return 0; fi
   chart_args
-  helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${CHART_ARGS[@]}" \
+  # UPGRADE_ARGS as for the first upgrade: a value it sets must stay set.
+  helm upgrade $RELEASE "$ROOT" -n "$NS" --wait --timeout 5m "${UPGRADE_ARGS[@]}" "${CHART_ARGS[@]}" \
     --set "networkPolicy.enabled=$([[ $want == on ]] && echo true || echo false)" >/dev/null
   [[ $(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.metadata.uid}' 2>/dev/null) == "$POD_UID" ]] ||
     fail "switching the NetworkPolicy $want replaced the pod"

@@ -383,6 +383,51 @@
             }
           }
         },
+        "failover": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "afterSeconds": {
+              "type": "integer",
+              "minimum": 180
+            },
+            "peers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "publicKey",
+                  "ip"
+                ],
+                "properties": {
+                  "publicKey": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$"
+                  },
+                  "ip": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  }
+                }
+              }
+            }
+          }
+        },
+        "portForwarding": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "natpmpGateway": {
+              "type": "string",
+              "pattern": "^$|^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$"
+            }
+          }
+        },
         "handshakeMaxAgeSeconds": {
           "type": "integer",
           "anyOf": [
@@ -492,6 +537,54 @@
             "pattern": "^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$|^([0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}$"
           },
           "description": "Your VPN's exit addresses; when set, helm test requires the pod's egress to be one of them"
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "severity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tunnelDownFor": {
+              "type": "string",
+              "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$"
+            },
+            "unavailableFor": {
+              "type": "string",
+              "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$"
+            },
+            "restartsPer30m": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "volumeFreeRatio": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 1
+            },
+            "extraRules": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
         }
       }
     },

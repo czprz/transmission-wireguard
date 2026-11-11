@@ -18,10 +18,35 @@
 # shellcheck source=tests/e2e/docker/helpers.bash
 source "$(dirname "${BASH_SOURCE[0]}")/helpers.bash"
 
+# A WireGuard server ($1, at $2 and $3, private key $4) for the pod's key,
+# NATing tunnel traffic to the "internet" (the canary).
+vpn_server() {
+  docker run -d --name "$1" --network "$NET" --ip "$2" --ip6 "$3" --privileged \
+    --entrypoint bash "$WG_IMAGE" -c "
+      set -e
+      echo '$4' > /tmp/k
+      ip link add wg0 type wireguard
+      wg set wg0 listen-port 51820 private-key /tmp/k peer '$CLIENT_PUB' allowed-ips $TUN_CLIENT/32,$TUN_CLIENT6/128
+      ip addr add $TUN_SERVER/24 dev wg0
+      ip addr add $TUN_SERVER6/64 dev wg0
+      ip link set wg0 up
+      sysctl -qw net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
+      # Only tunnel traffic is forwarded and NATed, like a real VPN server: a
+      # plaintext packet routed via the server must not come out as its own.
+      for ipt in iptables ip6tables; do
+        \$ipt -P FORWARD DROP
+        \$ipt -A FORWARD -i wg0 -o eth0 -j ACCEPT
+        \$ipt -A FORWARD -i eth0 -o wg0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      done
+      iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o eth0 -j MASQUERADE
+      ip6tables -t nat -A POSTROUTING -s fd99::/64 -o eth0 -j MASQUERADE
+      exec sleep infinity" >/dev/null
+}
+
 cleanup() {
   docker rm -f -v "${CONTAINERS[@]}" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
-  docker volume rm "$P-torrent" >/dev/null 2>&1 || true
+  docker volume rm "$P-torrent" "$P-forward" >/dev/null 2>&1 || true
 }
 
 # Every canary counts packets that do not come from the VPN server (only
@@ -130,14 +155,18 @@ baseline() {
 
 setup_suite() {
   [[ ${#SIDECAR_SECURITY[@]} -gt 0 ]] || { echo "SIDECAR must be privileged or unprivileged" >&2; return 1; }
-  export WG_IMAGE TX_IMAGE CANARY_IMAGE TRACKER_IMAGE FIREWALL_SH
+  export WG_IMAGE SIDECAR_IMAGE TX_IMAGE CANARY_IMAGE TRACKER_IMAGE NATPMP_IMAGE NATPMP FIREWALL_SH
   cleanup
   mkdir -p "$STAGE"
 
   # Pull up front with retries: registries rate-limit bursts of pulls, so
   # back off between attempts.
   local image attempt
-  for image in "$WG_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE" "$TRACKER_IMAGE"; do
+  local images=("$WG_IMAGE" "$SIDECAR_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE" "$TRACKER_IMAGE")
+  ((NATPMP)) && images+=("$NATPMP_IMAGE")
+  for image in "${images[@]}"; do
+    # A sidecar image built here (image/wireguard) is not pulled.
+    [[ $image != "$SIDECAR_IMAGE" || $image == "$WG_IMAGE" ]] || ! docker image inspect "$image" >/dev/null 2>&1 || continue
     for attempt in 1 2 3 4 5; do
       docker pull -q "$image" >/dev/null && break
       ((attempt < 5)) || { echo "cannot pull $image" >&2; return 1; }
@@ -174,26 +203,10 @@ CGI
   for c in "$P-canary" "$P-dns" "$P-tracker"; do count_from_pod "$c"; done
 
   # VPN server: terminates the tunnel and NATs to the "internet" (the canary).
-  docker run -d --name "$P-server" --network "$NET" --ip "$SERVER_IP" --ip6 "$SERVER_IP6" --privileged \
-    --entrypoint bash "$WG_IMAGE" -c "
-      set -e
-      echo '$SERVER_KEY' > /tmp/k
-      ip link add wg0 type wireguard
-      wg set wg0 listen-port 51820 private-key /tmp/k peer '$CLIENT_PUB' allowed-ips $TUN_CLIENT/32,$TUN_CLIENT6/128
-      ip addr add $TUN_SERVER/24 dev wg0
-      ip addr add $TUN_SERVER6/64 dev wg0
-      ip link set wg0 up
-      sysctl -qw net.ipv4.ip_forward=1 net.ipv6.conf.all.forwarding=1
-      # Only tunnel traffic is forwarded and NATed, like a real VPN server: a
-      # plaintext packet routed via the server must not come out as its own.
-      for ipt in iptables ip6tables; do
-        \$ipt -P FORWARD DROP
-        \$ipt -A FORWARD -i wg0 -o eth0 -j ACCEPT
-        \$ipt -A FORWARD -i eth0 -o wg0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-      done
-      iptables -t nat -A POSTROUTING -s 10.99.0.0/24 -o eth0 -j MASQUERADE
-      ip6tables -t nat -A POSTROUTING -s fd99::/64 -o eth0 -j MASQUERADE
-      exec sleep infinity" >/dev/null
+  vpn_server "$P-server" "$SERVER_IP" "$SERVER_IP6" "$SERVER_KEY"
+  # The failover server: the same, with its own key. Idle until 19-failover
+  # stops the first one.
+  vpn_server "$P-failover" "$FAILOVER_IP" "$FAILOVER_IP6" "$FAILOVER_KEY"
   count_plaintext
 
   # Pod sandbox, routed like a CNI: only a host route to the gateway.
@@ -242,14 +255,20 @@ EOF
   baseline
 
   # The sidecar exactly as the chart runs it.
-  docker create --name "$P-wg" --network "container:$P-pod" "${SIDECAR_SECURITY[@]}" -v /twg "${firewall_env[@]}" \
-    --entrypoint /bin/bash "$WG_IMAGE" -c '/twg/scripts/firewall.sh apply && exec /init' >/dev/null
+  # The forwarded port, written by the sidecar and read by Transmission.
+  local forward=() forward_ro=()
+  if ((NATPMP)); then forward=(-v "$P-forward:/twg/forward"); forward_ro=(-v "$P-forward:/twg/forward:ro"); fi
+  docker create --name "$P-wg" --network "container:$P-pod" "${SIDECAR_SECURITY[@]}" -v /twg "${forward[@]}" "${firewall_env[@]}" \
+    --entrypoint /bin/bash "$SIDECAR_IMAGE" -c '/twg/scripts/firewall.sh apply && exec /init' >/dev/null
   docker cp "$STAGE/wg/." "$P-wg:/" >/dev/null
   docker start "$P-wg" >/dev/null
   wait_until 90 via_vpn || { echo "the tunnel never came up; nothing would mean anything" >&2; return 1; }
   # A firewall.sh failing its own check (a mutant): reported by 01-setup, but
   # every leak check still runs against it.
-  as_root /twg/scripts/firewall.sh check >/dev/null 2>&1 || touch "$CHECK_BROKEN"
+  note_if_check_broken
+  # From here on nothing may leak, Transmission's start-up and its first
+  # torrent (discovery, DHT, port mapping) included: 04 checks it.
+  hits_mark "$STAGE/hits-tunnel-up"
 
   # settings-init with RPC credentials from the Secret.
   run_settings_init "$WG_CONF" "$STAGE" -e RPC_USERNAME=admin -e RPC_PASSWORD=s3cret
@@ -267,7 +286,7 @@ EOF
   stage_scripts "$STAGE/tx"
   # Capabilities as the chart allows them: everything dropped but these.
   docker create --name "$P-tx" --network "container:$P-pod" --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
-    -e PUID=1000 -e PGID=1000 "$TX_IMAGE" >/dev/null
+    "${forward_ro[@]}" -e PUID=1000 -e PGID=1000 "$TX_IMAGE" >/dev/null
   docker cp "$STAGE/tx/." "$P-tx:/" >/dev/null
   docker start "$P-tx" >/dev/null
   wait_until 120 tx_listening
@@ -284,8 +303,6 @@ EOF
   docker run --rm --network container:"$P-pod" --cap-drop ALL -v "$P-torrent:/t" --entrypoint transmission-remote "$TX_IMAGE" \
     "127.0.0.1:$WEB_PORT" -a /t/test.torrent >/dev/null || { echo "could not add the test torrent" >&2; return 1; }
   wait_until 60 tx_live
-  # Everything up: 02-04 check that nothing leaked from here on.
-  hits_mark "$STAGE/hits-tunnel-up"
 }
 
 teardown_suite() {

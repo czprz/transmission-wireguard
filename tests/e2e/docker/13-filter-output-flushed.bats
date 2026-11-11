@@ -26,7 +26,7 @@ teardown_file() { ensure_healthy; }
 }
 
 @test "liveness probe fails on a flushed firewall" {
-  ! as_root /twg/scripts/firewall.sh live 2>/dev/null || fail "liveness probe did not notice the flushed firewall"
+  probe_fails as_root /twg/scripts/firewall.sh live || fail "liveness probe did not notice the flushed firewall"
 }
 
 @test "restart re-applies the kill switch" {

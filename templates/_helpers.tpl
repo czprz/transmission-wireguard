@@ -119,7 +119,25 @@ Endpoint line parsed from an inline wg0Conf.
 {{- $out = append $out (dict "ip" $host "port" $port) -}}
 {{- end -}}
 {{- end -}}
+{{- range .Values.wireguard.failover.peers -}}
+{{- $ip := .ip | toString -}}
+{{- if not (regexMatch (include "twg.ipPattern" $) $ip) -}}
+{{- fail (printf "wireguard.failover.peers ip %s must be an IP address because DNS is blocked until the tunnel is up" $ip) -}}
+{{- end -}}
+{{- $out = append $out (dict "ip" $ip "port" (int (default 51820 .port))) -}}
+{{- end -}}
 {{- toJson $out -}}
+{{- end -}}
+
+{{/* The failover peers as firewall.sh reads them: "publickey@endpoint" words. */}}
+{{- define "twg.failoverPeers" -}}
+{{- $out := list -}}
+{{- range .Values.wireguard.failover.peers -}}
+{{- $ip := .ip | toString -}}
+{{- $host := ternary (printf "[%s]" $ip) $ip (contains ":" $ip) -}}
+{{- $out = append $out (printf "%s@%s:%d" .publicKey $host (int (default 51820 .port))) -}}
+{{- end -}}
+{{- join " " $out -}}
 {{- end -}}
 
 {{/* RPC auth is configured through rpcAuth or, the pre-1.0 way, settings. */}}
@@ -190,6 +208,25 @@ true
 {{- range regexFindAll "(?mi)^[ \\t]*Address[ \\t]*=[^#\\r\\n]*" . -1 }}{{ $addrs = append $addrs (regexReplaceAll "(?i)^[ \\t]*Address[ \\t]*=" . "") }}{{ end -}}
 {{- if not (regexMatch "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+" (join "," $addrs)) -}}
 {{- fail "wireguard.wg0Conf Address has no IPv4 address. Without one, traffic into the tunnel would carry the pod's own IPv4 address to the VPN" -}}
+{{- end -}}
+{{- end -}}
+{{- with .Values.wireguard.failover -}}
+{{- if .peers -}}
+{{- $max := int64 $.Values.wireguard.handshakeMaxAgeSeconds -}}
+{{- if and (gt $max 0) (ge (int64 .afterSeconds) $max) -}}
+{{- fail (printf "wireguard.failover.afterSeconds (%d) must be less than wireguard.handshakeMaxAgeSeconds (%d), or the liveness probe restarts the sidecar before it can fail over" (int64 .afterSeconds) $max) -}}
+{{- end -}}
+{{- with $.Values.wireguard.wg0Conf -}}
+{{- if ne (len (regexFindAll "(?mi)^[ \\t]*\\[Peer\\]" . -1)) 1 -}}
+{{- fail "wireguard.failover needs exactly one [Peer] in wg0Conf, since it replaces that peer with the next one" -}}
+{{- end -}}
+{{- if regexMatch "(?mi)^[ \\t]*PresharedKey[ \\t]*=" . -}}
+{{- fail "wireguard.failover cannot be used with a PresharedKey in wg0Conf, because the failover peers would need their own" -}}
+{{- end -}}
+{{- if not (regexMatch "(?mi)^[ \\t]*PersistentKeepalive[ \\t]*=[ \\t]*[1-9]" .) -}}
+{{- fail "wireguard.failover needs PersistentKeepalive in wg0Conf. Without it an idle tunnel stops handshaking and would look dead" -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if and .Values.networkPolicy.enabled (eq (len $endpoints) 0) -}}

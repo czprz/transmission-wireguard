@@ -45,7 +45,7 @@ restart_while_down() {
 
 @test "the probe fails once the tunnel is back and Transmission has no peer port (the kubelet restarts it)" {
   restart_while_down
-  ! tx_live >/dev/null 2>&1 || fail "the probe missed that Transmission never bound its peer port"
+  probe_fails tx_live || fail "the probe missed that Transmission never bound its peer port"
 }
 
 @test "restarted, Transmission listens for peers on the tunnel address again" {

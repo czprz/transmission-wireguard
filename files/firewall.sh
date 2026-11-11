@@ -9,7 +9,10 @@
 # Usage: firewall.sh apply   install rules, then validate the tunnel config
 #        firewall.sh check   exit non-zero if the rules are missing or altered
 #        firewall.sh tunnel  check + the WireGuard interface is up
-#        firewall.sh live    tunnel + latest handshake is recent (if configured)
+#        firewall.sh live    tunnel + latest handshake is recent (if configured);
+#                            with failover peers, switches to the next one
+#                            when the current one stopped answering
+#                            with a NAT-PMP gateway, renews the forwarded port
 set -euo pipefail
 
 WG_IFACE="${TWG_WG_IFACE:-wg0}"
@@ -24,12 +27,30 @@ ALLOW_CONF_HOOKS="${TWG_ALLOW_CONF_HOOKS:-false}"
 CONF="${TWG_WG_CONF:-/config/wg_confs/${WG_IFACE}.conf}"
 # The addresses Transmission is bound to, written by the init container.
 TUNNEL_ENV="${TWG_TUNNEL_ENV:-/twg/run/tunnel.env}"
+# Other servers of the same VPN account, as "publickey@ip:port" words: when
+# the current peer has not answered for FAILOVER_AFTER seconds, live()
+# switches to the next. The firewall lets UDP through to all of them.
+FAILOVER_PEERS="${TWG_FAILOVER_PEERS:-}"
+FAILOVER_AFTER="${TWG_FAILOVER_AFTER:-0}"
+# "publickey since switched": the current peer, since when it is watched,
+# and 1 if fail_over set it. In the container (exec probes run there), so a
+# restart, which re-reads wg0.conf, starts over.
+FAILOVER_STATE="${TWG_FAILOVER_STATE:-/run/twg-failover}"
+# VPN port forwarding: the NAT-PMP gateway inside the tunnel (empty: off).
+# live() renews the mapping, opens only that port on wg0 (in FWD, which
+# check() lets hold nothing else), writes it to FORWARD_DIR/port and sets
+# it as Transmission's peer port over RPC, with the credentials in RPC_DIR
+# if the web UI needs them.
+NATPMP_GATEWAY="${TWG_NATPMP_GATEWAY:-}"
+FORWARD_DIR="${TWG_FORWARD_DIR:-/twg/forward}"
+RPC_DIR="${TWG_RPC_DIR:-/twg/rpc}"
 
 IN=TWG-INPUT
 OUT=TWG-OUTPUT
 PRE=TWG-PREROUTING
 MOUT=TWG-MANGLE-OUTPUT
 POST=TWG-POSTROUTING
+FWD=TWG-FORWARDED
 
 log() { echo "[twg-firewall] $*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
@@ -132,6 +153,11 @@ apply_family() {
   "$ipt" -w -A "$IN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   "$ipt" -w -A "$IN" -i "$WG_IFACE" -p tcp --dport "$PEER_PORT" -j ACCEPT
   "$ipt" -w -A "$IN" -i "$WG_IFACE" -p udp --dport "$PEER_PORT" -j ACCEPT
+  # The port the VPN forwards (NAT-PMP is IPv4 only), from the tunnel only.
+  if [[ $fam == 4 && -n $NATPMP_GATEWAY ]]; then
+    "$ipt" -w -N "$FWD" 2>/dev/null || "$ipt" -w -F "$FWD"
+    "$ipt" -w -A "$IN" -i "$WG_IFACE" -j "$FWD"
+  fi
   while read -r cidr; do
     [[ -n $cidr ]] || continue
     # The connmark (set in mangle PREROUTING) routes the replies back out
@@ -299,7 +325,8 @@ split_endpoint() {
   is_ip "$EP_HOST" || { echo "Endpoint ${ep} is not an IP address. DNS is blocked until the tunnel is up, so the endpoint must be a literal IP."; return 1; }
 }
 
-# "host port" of every usable Endpoint of IP family $1.
+# "host port" of every usable Endpoint of IP family $1, failover peers'
+# included.
 endpoints() {
   local ep
   [[ -r $CONF ]] || return 0
@@ -308,7 +335,13 @@ endpoints() {
     if [[ $1 == 4 && $EP_HOST != *:* ]] || [[ $1 == 6 && $EP_HOST == *:* ]]; then
       echo "$EP_HOST $EP_PORT"
     fi
-  done < <(conf_value Endpoint)
+  done < <(conf_value Endpoint; failover_peers | sed 's/^[^@]*@//')
+}
+
+# The failover peers, one "publickey@endpoint" per line.
+failover_peers() {
+  local p
+  for p in $FAILOVER_PEERS; do echo "$p"; done
 }
 
 # Reject configs that would weaken or bypass the kill switch.
@@ -333,6 +366,26 @@ preflight() {
     [[ -n $ep ]] || continue
     err=$(split_endpoint "$ep") || die "$err"
   done < <(conf_value Endpoint)
+
+  if [[ -n $FAILOVER_PEERS ]]; then
+    if ! [[ $FAILOVER_AFTER =~ ^[0-9]+$ ]] || ((FAILOVER_AFTER < 30)); then
+      die "wireguard.failover.afterSeconds ${FAILOVER_AFTER} must be at least 30"
+    fi
+    (($(grep -ciE '^[[:space:]]*\[Peer\]' "$CONF") == 1)) || die "wireguard.failover needs exactly one [Peer] in ${CONF}: it replaces that peer with the next one"
+    ! grep -qiE '^[[:space:]]*PresharedKey[[:space:]]*=' "$CONF" || die "wireguard.failover cannot be used with a PresharedKey: the failover peers would need their own"
+    keepalive_on || die "wireguard.failover needs PersistentKeepalive in ${CONF}: without it an idle tunnel stops handshaking and would look dead"
+    while read -r ep; do
+      [[ ${ep%%@*} =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$ ]] || die "wireguard.failover peer ${ep%%@*} is not a WireGuard public key"
+      err=$(split_endpoint "${ep#*@}") || die "wireguard.failover: $err"
+    done < <(failover_peers)
+  fi
+  if [[ -n $NATPMP_GATEWAY ]]; then
+    [[ $NATPMP_GATEWAY =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "wireguard.portForwarding.natpmpGateway ${NATPMP_GATEWAY} must be an IPv4 address"
+    for f in natpmpc curl timeout iptables-restore; do
+      command -v "$f" >/dev/null || die "port forwarding needs ${f}, which this image lacks: use the chart's sidecar image (ghcr.io/czprz/twg-wireguard)"
+    done
+    [[ -d $FORWARD_DIR && -w $FORWARD_DIR ]] || die "port forwarding needs ${FORWARD_DIR} writable"
+  fi
 
   # Captured first: grep -q exiting on the first match would SIGPIPE tr and,
   # with pipefail, randomly refuse a valid config.
@@ -434,6 +487,20 @@ check_family() {
   rules=$("$ipt" -w -t mangle -S PREROUTING)
   [[ $(sed -n 2p <<<"$rules") == "-A PREROUTING -j $PRE" ]] || { log "IPv$fam mangle PREROUTING does not jump to $PRE first"; return 1; }
 
+  # The forwarded port's chain: empty, or that one port from the tunnel.
+  if [[ $fam == 4 && -n $NATPMP_GATEWAY ]]; then
+    rules=$("$ipt" -w -S "$FWD" 2>/dev/null) || { log "IPv4 $FWD is missing"; return 1; }
+    rules=$(sed 1d <<<"$rules")
+    if [[ -n $rules ]]; then
+      local tcp="^-A $FWD -i $WG_IFACE -p tcp -m tcp --dport ([0-9]+) -j ACCEPT"$'\n'
+      local udp="-A $FWD -i $WG_IFACE -p udp -m udp --dport ([0-9]+) -j ACCEPT$"
+      if ! [[ $rules =~ $tcp$udp && ${BASH_REMATCH[1]} == "${BASH_REMATCH[2]}" ]]; then
+        log "IPv4 $FWD holds more than the forwarded port"
+        return 1
+      fi
+    fi
+  fi
+
   for spec in "filter $IN DROP" "filter $OUT REJECT" "mangle $PRE RETURN" "mangle $MOUT RETURN" "mangle $POST DROP"; do
     read -r table chain target <<<"$spec"
     rules=$("$ipt" -w -t "$table" -S "$chain")
@@ -474,12 +541,107 @@ tunnel() {
   [[ $rules == *"not from all fwmark $(printf '0x%x' "$WG_FWMARK") lookup"* ]] || { log "wg-quick policy routing is not in place"; return 1; }
 }
 
+# With failover peers: once the current peer has not handshaked for
+# FAILOVER_AFTER seconds since it was set, replace it with the next one
+# (wg0.conf's peer first, then the failover peers, round). Only the peer
+# changes: the address, the routing and the firewall stay as they are.
+fail_over() {
+  local now cur hs key since _ ring next i allowed ka
+  [[ -n $FAILOVER_PEERS ]] || return 0
+  now=$(date +%s)
+  cur=$(wg show "$WG_IFACE" peers | head -n1)
+  [[ -n $cur ]] || return 0
+  read -r key since _ <"$FAILOVER_STATE" 2>/dev/null || true
+  # A peer this container has not seen yet (wg-quick just came up): from now.
+  if [[ ${key:-} != "$cur" ]]; then
+    echo "$cur $now 0" >"$FAILOVER_STATE"
+    return 0
+  fi
+  hs=$(wg show "$WG_IFACE" latest-handshakes | awk -v p="$cur" '$1 == p { print $2 }')
+  ((${hs:-0} > since)) && since=$hs
+  ((now - since >= FAILOVER_AFTER)) || return 0
+
+  mapfile -t ring < <(echo "$(conf_value PublicKey | tail -n1)@$(conf_value Endpoint | tail -n1)"; failover_peers)
+  next=${ring[0]}
+  for i in "${!ring[@]}"; do
+    [[ ${ring[i]%%@*} == "$cur" ]] && next=${ring[(i + 1) % ${#ring[@]}]}
+  done
+  allowed=$(wg show "$WG_IFACE" allowed-ips | awk -v p="$cur" '$1 == p { $1 = ""; sub(/^ /, ""); gsub(/ /, ","); print }')
+  ka=$(wg show "$WG_IFACE" persistent-keepalive | awk -v p="$cur" '$1 == p { print $2 }')
+  [[ $ka =~ ^[0-9]+$ ]] || ka=""
+  wg set "$WG_IFACE" peer "$cur" remove peer "${next%%@*}" endpoint "${next#*@}" allowed-ips "$allowed" ${ka:+persistent-keepalive "$ka"}
+  echo "${next%%@*} $now 1" >"$FAILOVER_STATE"
+  log "no handshake with peer ${cur} for ${FAILOVER_AFTER}s: switched to ${next#*@}"
+}
+
+# Transmission's RPC on loopback (the firewall allows lo).
+tx_rpc() {
+  local url="http://127.0.0.1:${WEB_PORT}/transmission/rpc" cfg sid user=""
+  if [[ -r $RPC_DIR/username && -r $RPC_DIR/password ]]; then
+    user="$(cat "$RPC_DIR/username"):$(cat "$RPC_DIR/password")"
+    user=${user//\\/\\\\}
+    user=${user//\"/\\\"}
+  fi
+  # The credentials go in a config on a pipe, not on the command line.
+  cfg=${user:+user = \"$user\"}
+  sid=$(curl -s -m 3 -K - -o /dev/null -D - "$url" <<<"$cfg" | sed -n 's/^X-Transmission-Session-Id: *\([^[:space:]]*\).*/\1/Ip')
+  curl -sf -m 3 -K - -H "X-Transmission-Session-Id: $sid" -d "$1" "$url" <<<"$cfg"
+}
+
+# Renews the NAT-PMP mapping (it lasts 60 s; live runs every 30 s), opens
+# the port on wg0 and makes it Transmission's peer port. A gateway that does
+# not answer is logged, not a failure: without a forwarded port Transmission
+# still downloads.
+port_forward() {
+  local out port rules now
+  [[ -n $NATPMP_GATEWAY ]] || return 0
+  if ! out=$(timeout 4 natpmpc -g "$NATPMP_GATEWAY" -a 1 0 udp 60 2>&1 && timeout 4 natpmpc -g "$NATPMP_GATEWAY" -a 1 0 tcp 60 2>&1); then
+    log "NAT-PMP: no mapping from ${NATPMP_GATEWAY}: $(tail -n1 <<<"$out")"
+    return 0
+  fi
+  port=$(sed -n 's/^Mapped public port \([0-9]*\) protocol TCP.*/\1/p' <<<"$out" | tail -n1)
+  if ! [[ $port =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+    log "NAT-PMP: ${NATPMP_GATEWAY} gave no usable port: $(tail -n1 <<<"$out")"
+    return 0
+  fi
+  rules=$(iptables -w -S "$FWD" | sed 1d)
+  if [[ $rules != *"--dport $port -j ACCEPT"* || $(cat "$FORWARD_DIR/port" 2>/dev/null) != "$port" ]]; then
+    # One transaction, so check() never sees half of it.
+    iptables-restore -w --noflush <<EOF
+*filter
+-F $FWD
+-A $FWD -i $WG_IFACE -p tcp -m tcp --dport $port -j ACCEPT
+-A $FWD -i $WG_IFACE -p udp -m udp --dport $port -j ACCEPT
+COMMIT
+EOF
+    echo "$port" >"$FORWARD_DIR/port.new"
+    mv "$FORWARD_DIR/port.new" "$FORWARD_DIR/port"
+    log "NAT-PMP: ${NATPMP_GATEWAY} forwards port ${port}"
+  fi
+  now=$(tx_rpc '{"method":"session-get","arguments":{"fields":["peer-port"]}}' 2>/dev/null |
+    sed -n 's/.*"peer-port": *\([0-9]*\).*/\1/p') || true
+  if [[ $now != "$port" ]]; then
+    if tx_rpc "{\"method\":\"session-set\",\"arguments\":{\"peer-port\":$port}}" >/dev/null 2>&1; then
+      log "Transmission's peer port: ${port}"
+    else
+      log "could not set Transmission's peer port to ${port} yet (is it starting?)"
+    fi
+  fi
+}
+
 live() {
-  local now hs newest=0
+  local now hs newest=0 key since switched
   tunnel
+  fail_over
+  port_forward
   ((HANDSHAKE_MAX_AGE > 0)) && keepalive_on || return 0
   now=$(date +%s)
   while read -r _ hs; do ((hs > newest)) && newest=$hs; done < <(wg show "$WG_IFACE" latest-handshakes)
+  # A peer fail_over set gets the whole window to answer.
+  if [[ -n $FAILOVER_PEERS ]] && read -r key since switched <"$FAILOVER_STATE" 2>/dev/null &&
+    [[ $switched == 1 && $key == $(wg show "$WG_IFACE" peers | head -n1) ]]; then
+    ((since > newest)) && newest=$since
+  fi
   ((newest > 0 && now - newest < HANDSHAKE_MAX_AGE)) || { log "no handshake within ${HANDSHAKE_MAX_AGE}s"; return 1; }
 }
 
