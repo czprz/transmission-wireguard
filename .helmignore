@@ -17,6 +17,7 @@ Makefile
 renovate.json
 RELEASE_BODY.md
 CONTRIBUTING.md
+SECURITY.md
 *.conf
 *.conf.*
 *.bak
