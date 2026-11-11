@@ -37,15 +37,19 @@ next() {
 
 # VERSION's section: the commits since the last tag, under VERSION.
 section() {
-  local version=$1 ctx out
+  local version=$1 ctx empty out
   ctx=$(mktemp --suffix .json)
+  # The tool prints its section followed by its infile (CHANGELOG.md by
+  # default): an empty one, so the release notes are the section alone.
+  empty=$(mktemp --suffix .md)
   out=$(mktemp)
   printf '{"version": "%s", "host": "https://github.com", "owner": "%s", "repository": "%s"}\n' \
     "$version" "${REPO%%/*}" "${REPO#*/}" >"$ctx"
-  (cd "$ROOT" && "${CHANGELOG_TOOL[@]}" -p angular -c "$ctx" -r 1 --stdout) >"$out"
-  rm -f "$ctx"
+  (cd "$ROOT" && "${CHANGELOG_TOOL[@]}" -p angular -c "$ctx" -i "$empty" -r 1 --stdout) >"$out"
+  rm -f "$ctx" "$empty"
   # A section without its version is the failure this script exists for.
   grep -q "^#\{1,2\} \[$version\](" "$out" || { echo "the changelog tool did not title the section $version:" >&2; cat "$out" >&2; rm -f "$out"; return 1; }
+  (($(grep -c '^#\{1,2\} \[' "$out") == 1)) || { echo "the changelog tool printed more than the section $version:" >&2; grep '^#\{1,2\} \[' "$out" >&2; rm -f "$out"; return 1; }
   cat "$out"
   rm -f "$out"
 }
