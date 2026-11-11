@@ -24,7 +24,11 @@ chart_image() {
   echo "$repo:$tag@$digest"
 }
 # Resolved once in setup_suite and exported, so every file runs the same.
+# WG_IMAGE is also the tools image for the servers and probes; SIDECAR_IMAGE
+# (default: the same) is the one the sidecar, and the probes that run in it
+# as the kubelet's do, are tested with.
 WG_IMAGE="${WG_IMAGE:-$(chart_image wireguard)}"
+SIDECAR_IMAGE="${SIDECAR_IMAGE:-$WG_IMAGE}"
 TX_IMAGE="${TX_IMAGE:-$(chart_image transmission)}"
 CANARY_IMAGE="${CANARY_IMAGE:-traefik/whoami:v1.10.3@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c}"
 TRACKER_IMAGE="${TRACKER_IMAGE:-busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec}"
@@ -116,7 +120,7 @@ running() { [[ $(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null) == tru
 # it cannot set socket marks or touch the firewall.
 as_app() { docker run --rm --network "container:$P-pod" --cap-drop ALL --user 1000:1000 --entrypoint "" "$WG_IMAGE" "$@"; }
 # Root with NET_ADMIN in the pod and the sidecar's files, like a probe.
-as_root() { docker run --rm --network "container:$P-pod" --privileged --volumes-from "$P-wg" "${firewall_env[@]}" --entrypoint "" "$WG_IMAGE" "$@"; }
+as_root() { docker run --rm --network "container:$P-pod" --privileged --volumes-from "$P-wg" "${firewall_env[@]}" --entrypoint "" "$SIDECAR_IMAGE" "$@"; }
 on_server() { docker run --rm --network "container:$P-server" --entrypoint "" "$WG_IMAGE" "$@"; }
 from_cluster() { docker run --rm --network "$NET" --ip "$CLIENT_IP" --ip6 "$CLIENT_IP6" --entrypoint "" "$WG_IMAGE" "$@"; }
 wg_tool() { docker run --rm -i --entrypoint wg "$WG_IMAGE" "$@"; }

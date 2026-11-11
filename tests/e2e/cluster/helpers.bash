@@ -144,6 +144,11 @@ chart_args() {
     --set tests.enabled=true
     --set "tests.ipEchoUrl=http://$CANARY_IP/cgi-bin/ip"
   )
+  # A sidecar image built here (image/wireguard), loaded into the cluster.
+  if [[ -n ${SIDECAR_IMAGE:-} ]]; then
+    CHART_ARGS+=(--set "images.wireguard.repository=${SIDECAR_IMAGE%:*}" --set "images.wireguard.tag=${SIDECAR_IMAGE##*:}"
+      --set images.wireguard.pullPolicy=Never)
+  fi
   if [[ -z $UPGRADE_FROM ]]; then
     # /config on an emptyDir and the downloads on a PVC of their own.
     CHART_ARGS+=(--set persistence.enabled=false --set persistence.downloads.enabled=true)

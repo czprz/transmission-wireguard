@@ -1,0 +1,24 @@
+#!/bin/bash
+# Brings wg0 up from /config/wg_confs/wg0.conf and keeps it up until the
+# container is stopped. The kill switch was installed before this runs and
+# lives in the pod's network namespace: whatever happens here (wg-quick
+# failing, this process dying, a restart), it fails closed.
+set -euo pipefail
+
+CONF=${TWG_WG_CONF:-/config/wg_confs/wg0.conf}
+
+log() { echo "[twg-wireguard] $*" >&2; }
+
+down() {
+  log "stopping: wg-quick down"
+  wg-quick down "$CONF" || true
+  exit 0
+}
+trap down TERM INT
+
+log "wg-quick up $CONF"
+wg-quick up "$CONF"
+log "tunnel up"
+# Sleep in the background, so the trap runs as soon as a signal arrives.
+sleep infinity &
+wait $!
