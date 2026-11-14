@@ -2,24 +2,447 @@ suite: deployment
 
 templates:
   - templates/deployment.yaml
+  - templates/configmap-scripts.yaml
+  - templates/configmap-settings.yaml
+  - templates/secret-wg.yaml
+  - templates/secret-rpc.yaml
+
+values:
+  - values/base.yaml
 
 tests:
-  - it: should render deployment with two containers
+  - it: runs WireGuard as a native sidecar that Transmission waits for
+    template: templates/deployment.yaml
     asserts:
       - isKind:
           of: Deployment
       - equal:
-          path: spec.template.spec.containers[0].name
+          path: spec.template.spec.initContainers[0].name
+          value: transmission-settings
+      - equal:
+          path: spec.template.spec.initContainers[1].name
           value: wireguard
       - equal:
-          path: spec.template.spec.containers[1].name
+          path: spec.template.spec.initContainers[1].restartPolicy
+          value: Always
+      - equal:
+          path: spec.template.spec.initContainers[1].startupProbe.exec.command
+          value: ["/twg/scripts/firewall.sh", "tunnel"]
+      - lengthEqual:
+          path: spec.template.spec.containers
+          count: 1
+      - equal:
+          path: spec.template.spec.containers[0].name
           value: transmission
 
-  - it: should mount settings config
+  - it: installs the kill switch before s6 starts wg-quick
+    template: templates/deployment.yaml
     asserts:
       - equal:
-          path: spec.template.spec.containers[1].volumeMounts[1].mountPath
-          value: /config/settings.json
+          path: spec.template.spec.initContainers[1].command
+          value: ["/bin/bash", "-c", "/twg/scripts/firewall.sh apply && exec /init"]
       - equal:
-          path: spec.template.spec.containers[1].volumeMounts[1].subPath
-          value: settings.json
+          path: spec.template.spec.initContainers[1].livenessProbe.exec.command
+          value: ["/twg/scripts/firewall.sh", "live"]
+      - equal:
+          path: spec.template.spec.initContainers[1].readinessProbe.exec.command
+          value: ["/twg/scripts/firewall.sh", "tunnel"]
+
+  - it: passes firewall settings to the sidecar
+    template: templates/deployment.yaml
+    set:
+      transmission:
+        settings:
+          peer-port: 6881
+        rpcAuth:
+          allowAnonymous: true
+      firewall.webAllowedCIDRs: ["10.42.0.0/16", "10.0.5.0/24"]
+      wireguard.handshakeMaxAgeSeconds: 300
+      wireguard.wg0Conf: |
+        [Interface]
+        Address = 10.64.0.2/32
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_PEER_PORT, value: "6881" }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_WEB_ALLOWED_CIDRS, value: "10.42.0.0/16 10.0.5.0/24" }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_HANDSHAKE_MAX_AGE, value: "300" }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_ALLOW_CONF_HOOKS, value: "false" }
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: { containerPort: 6881, protocol: UDP }
+
+  - it: restarts Transmission when it never bound its peer port to the tunnel
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.exec.command
+          value: ["/bin/sh", "/twg/scripts/transmission-live.sh"]
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: scripts, mountPath: /twg/scripts, readOnly: true }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: settings-run, mountPath: /twg/run, readOnly: true }
+
+  - it: shows the sidecar the addresses Transmission was bound to
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].volumeMounts
+          content: { name: settings-run, mountPath: /twg/run, readOnly: true }
+
+  - it: opts the pod out of service mesh injection unless overridden
+    template: templates/deployment.yaml
+    set:
+      podAnnotations:
+        linkerd.io/inject: enabled
+        example.com/team: media
+        checksum/wg: forged
+      podLabels:
+        app.kubernetes.io/name: forged
+        example.com/tier: apps
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["sidecar.istio.io/inject"]
+          value: "false"
+      - equal:
+          path: spec.template.metadata.annotations["linkerd.io/inject"]
+          value: enabled
+      - equal:
+          path: spec.template.metadata.annotations["example.com/team"]
+          value: media
+      - notEqual:
+          path: spec.template.metadata.annotations["checksum/wg"]
+          value: forged
+      - equal:
+          path: spec.template.metadata.labels["istio.io/dataplane-mode"]
+          value: none
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/name"]
+          value: transmission-wireguard
+      - equal:
+          path: spec.template.metadata.labels["example.com/tier"]
+          value: apps
+
+  - it: sets pull secrets, priority, grace period and init resources
+    template: templates/deployment.yaml
+    set:
+      imagePullSecrets: [{ name: regcred }]
+      priorityClassName: media
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value: [{ name: regcred }]
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: media
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 60
+      - equal:
+          path: spec.template.spec.initContainers[0].resources.limits.memory
+          value: 64Mi
+
+  - it: mounts extra volumes into Transmission only
+    template: templates/deployment.yaml
+    set:
+      extraVolumes: [{ name: media, nfs: { server: nas.example.internal, path: /media } }]
+      transmission.extraVolumeMounts: [{ name: media, mountPath: /data/complete }]
+      # A list under transmission. replaces that map here, base values included.
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: media, nfs: { server: nas.example.internal, path: /media } }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: media, mountPath: /data/complete }
+      - notContains:
+          path: spec.template.spec.initContainers[1].volumeMounts
+          content: { name: media, mountPath: /data/complete }
+
+  - it: restarts a tunnel without a recent handshake by default
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_HANDSHAKE_MAX_AGE, value: "300" }
+
+  - it: gives the image the RPC credentials it stops Transmission with
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.username: admin
+      transmission.rpcAuth.password: s3cret
+      transmission.rpcAuth.allowAnonymous: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: USER
+            valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: username } }
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PASS
+            valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: password } }
+
+  - it: passes RPC credentials set the pre-1.0 way in settings
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.username: ""
+      transmission.rpcAuth.password: ""
+      transmission.settings.rpc-authentication-required: true
+      transmission.settings.rpc-username: legacy
+      transmission.settings.rpc-password: legacy-pass
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: USER, value: legacy }
+
+  - it: passes no RPC credentials for an anonymous web UI
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.username: ""
+      transmission.rpcAuth.password: ""
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env
+          value:
+            - { name: PGID, value: "1000" }
+            - { name: PUID, value: "1000" }
+            - { name: TZ, value: UTC }
+
+  - it: resolves DNS through the tunnel by default
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: None
+      - equal:
+          path: spec.template.spec.dnsConfig.nameservers
+          value: ["1.1.1.1", "1.0.0.1"]
+
+  - it: hardens the pod
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+      - isNull:
+          path: spec.template.spec.hostNetwork
+      - equal:
+          path: spec.template.spec.volumes[0].secret.defaultMode
+          value: 0400
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: keeps an indented wg0.conf intact in the Secret
+    template: templates/secret-wg.yaml
+    set:
+      wireguard.wg0Conf: "  [Interface]\n  Address = 10.64.0.2/32\n  [Peer]\n  AllowedIPs = 0.0.0.0/0\n  Endpoint = 203.0.113.10:51820\n"
+    asserts:
+      - equal:
+          path: data["wg0.conf"]
+          value: ICBbSW50ZXJmYWNlXQogIEFkZHJlc3MgPSAxMC42NC4wLjIvMzIKICBbUGVlcl0KICBBbGxvd2VkSVBzID0gMC4wLjAuMC8wCiAgRW5kcG9pbnQgPSAyMDMuMC4xMTMuMTA6NTE4MjAK
+
+  - it: needs no host mounts by default
+    template: templates/deployment.yaml
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content: { name: lib-modules, hostPath: { path: /lib/modules, type: Directory } }
+      - notContains:
+          path: spec.template.spec.volumes
+          content: { name: dev-net-tun, hostPath: { path: /dev/net/tun, type: CharDevice } }
+
+  - it: mounts the composed settings read-only
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: settings-run
+            mountPath: /config/settings.json
+            subPath: settings.json
+            readOnly: true
+
+  - it: injects RPC credentials from a Secret
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.existingSecret: tx-rpc
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: RPC_PASSWORD
+            valueFrom: { secretKeyRef: { name: tx-rpc, key: password } }
+
+  - it: pins default images by digest
+    template: templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[1].image
+          pattern: ^ghcr\.io/linuxserver/wireguard:[^@]+@sha256:[0-9a-f]{64}$
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: ^lscr\.io/linuxserver/transmission:[^@]+@sha256:[0-9a-f]{64}$
+
+  - it: drops the default digest when the tag is overridden
+    template: templates/deployment.yaml
+    set:
+      images.transmission.tag: "4.2.0"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: lscr.io/linuxserver/transmission:4.2.0
+
+  - it: uses an explicit digest
+    template: templates/deployment.yaml
+    set:
+      images.wireguard.tag: "1.0.1"
+      images.wireguard.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[1].image
+          value: ghcr.io/linuxserver/wireguard:1.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+  - it: mounts only wg0.conf from the WireGuard Secret
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: wgconf
+            secret:
+              secretName: RELEASE-NAME-transmission-wireguard-wg
+              defaultMode: 0400
+              items:
+                - key: wg0.conf
+                  path: wg0.conf
+
+  - it: rolls the pod when the Secrets change
+    template: templates/deployment.yaml
+    set:
+      transmission.rpcAuth.username: admin
+      transmission.rpcAuth.password: s3cret
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/wg"]
+          pattern: ^[0-9a-f]{64}$
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/rpc"]
+          pattern: ^[0-9a-f]{64}$
+      - notEqual:
+          path: spec.template.metadata.annotations["checksum/rpc"]
+          value: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+  - it: keeps the read-only settings mount without persistence
+    template: templates/deployment.yaml
+    set:
+      persistence.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: transmission-config, mountPath: /config }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: settings-run, mountPath: /config/settings.json, subPath: settings.json, readOnly: true }
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: transmission-config, emptyDir: {} }
+
+  - it: supports hostPath persistence
+    template: templates/deployment.yaml
+    set:
+      persistence.type: hostPath
+      persistence.hostPath.path: /srv/transmission
+      persistence.hostPath.type: Directory
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: transmission-storage, hostPath: { path: /srv/transmission, type: Directory } }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: transmission-storage, mountPath: /config, subPath: config }
+
+  - it: never runs two pods with the same WireGuard key
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: sets every kill switch variable itself
+    template: templates/deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_LOCAL_MARK, value: "0x10000000" }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_WG_CONF, value: /config/wg_confs/wg0.conf }
+
+  - it: mounts the downloads PVC at /data instead of the main volume
+    template: templates/deployment.yaml
+    set:
+      persistence.downloads.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[?(@.name=="transmission")].volumeMounts
+          content:
+            name: transmission-downloads
+            mountPath: /data
+      - notContains:
+          path: spec.template.spec.containers[?(@.name=="transmission")].volumeMounts
+          content:
+            name: transmission-storage
+            mountPath: /data
+      - contains:
+          path: spec.template.spec.containers[?(@.name=="transmission")].volumeMounts
+          content:
+            name: transmission-storage
+            mountPath: /config
+            subPath: config
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: transmission-downloads
+            persistentVolumeClaim:
+              claimName: RELEASE-NAME-transmission-wireguard-downloads
+
+  - it: mounts an existing downloads claim at the configured data path
+    template: templates/deployment.yaml
+    set:
+      persistence.downloads.enabled: true
+      persistence.downloads.existingClaim: media
+      persistence.mounts.data.mountPath: /downloads
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[?(@.name=="transmission")].volumeMounts
+          content:
+            name: transmission-downloads
+            mountPath: /downloads
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: transmission-downloads
+            persistentVolumeClaim:
+              claimName: media

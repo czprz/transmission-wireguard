@@ -1,0 +1,16 @@
+# Values used by CI lint/render/kubeconform. Dummy keys, documentation IPs.
+wireguard:
+  wg0Conf: |
+    [Interface]
+    PrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+    Address = 10.64.0.2/32, fd00:64::2/128
+
+    [Peer]
+    PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+    AllowedIPs = 0.0.0.0/0, ::/0
+    Endpoint = 203.0.113.10:51820
+    PersistentKeepalive = 25
+
+transmission:
+  rpcAuth:
+    allowAnonymous: true

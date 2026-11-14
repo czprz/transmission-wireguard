@@ -1,3 +1,6 @@
 RELEASE_BODY.md
 wg0.conf
 values.local.yaml
+.previous/
+tests/e2e/node_modules/
+tests/e2e/.k3d/

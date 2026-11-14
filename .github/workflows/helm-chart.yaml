@@ -1,52 +1,297 @@
 name: Helm Chart
 
+# main runs it through helm-main.yml, which releases only if it passes.
 on:
   pull_request:
   push:
     branches:
       - dev
+  workflow_call:
+  # Weekly on main, to catch what changes outside the repo: runner kernels
+  # and images, Kubernetes and Helm releases behind unchanged pins.
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to a pull request replaces its older run. Runs of other
+# events (a push to dev, main's release gate) are never cancelled: main
+# releases only if its run finishes.
+concurrency:
+  group: helm-chart-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
         with:
           fetch-depth: 0
 
-      - name: Set up chart-testing
-        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f  # v2.8.0
-
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.14.4
 
       - name: Lint chart
-        run: helm lint . --strict
+        run: helm lint . --strict -f ci/default-values.yaml
 
+      # From its image (pinned by digest), not chart-testing-action, which
+      # downloads cosign and uv from GitHub on every run.
       - name: Chart-testing lint
-        run: ct lint --all --chart-dirs .
-
-      - name: Render chart
-        run: helm template transmission-wireguard . > /tmp/manifest.yaml
-
-      - name: Kubeconform
         run: |
-          KUBECONFORM_VERSION=0.6.7
-          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar -xz
-          sudo mv kubeconform /usr/local/bin/kubeconform
-          kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.29.0 /tmp/manifest.yaml
+          docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+            quay.io/helmpack/chart-testing:v3.14.0@sha256:425ff3058dfc192fffb94e471e732b9bc995c375df963eba417ff01aea594e83 \
+            ct lint --charts . --validate-maintainers=false
 
       - name: Helm unittest
         run: |
           docker run --rm \
             -u "$(id -u):$(id -g)" \
             -v "${GITHUB_WORKSPACE}:/apps" \
-            helmunittest/helm-unittest:3.11.1-0.3.0 .
+            helmunittest/helm-unittest:3.11.1-0.3.0@sha256:97f1d07dad520c9af52e090198469515b7b194622b5085302e40b11a8a930613 .
 
+      - name: Schema test
+        run: tests/schema-test.sh
+
+      - name: appVersion test
+        run: tests/metadata-test.sh
+
+      - name: Package test
+        run: tests/package-test.sh
+
+
+  # Leak tests: try to make traffic escape the tunnel and fail if it does.
+  # The Docker test runs on amd64 and arm64 (the images are multi-arch), and
+  # once with the sidecar unprivileged (NET_ADMIN + NET_RAW and the
+  # src_valid_mark sysctl, as the README documents).
+  e2e-docker:
+    name: e2e-docker (${{ matrix.runner }}, ${{ matrix.sidecar }})
+    runs-on: ${{ matrix.runner }}
+    needs: verify
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            sidecar: privileged
+          - runner: ubuntu-24.04-arm
+            sidecar: privileged
+          - runner: ubuntu-latest
+            sidecar: unprivileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      - name: Load WireGuard kernel module
+        run: sudo modprobe wireguard
+
+      # The runner's AppArmor profiles attach to binaries such as wg and
+      # readlink by path, also inside privileged containers, and deny what
+      # wg-quick needs ("Permission denied"). The tests need a plain host.
+      - name: Unload host AppArmor profiles
+        run: |
+          sudo aa-status 2>/dev/null | grep -iE 'wg|wireguard|readlink|ip$' || true
+          sudo aa-teardown || sudo systemctl stop apparmor || true
+
+      - name: Install bats
+        run: npm ci --prefix tests/e2e --no-audit --no-fund
+
+      - name: Kill switch leak test (Docker, ${{ matrix.sidecar }} sidecar)
+        run: tests/e2e/docker-test.sh
+        env:
+          SIDECAR: ${{ matrix.sidecar }}
+          JUNIT_DIR: ${{ runner.temp }}/junit
+
+      # One line per failed check in the run's summary, and the full report.
+      - name: Test report
+        if: always()
+        run: tests/e2e/junit-summary.sh "$RUNNER_TEMP/junit" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: junit-docker-${{ matrix.runner }}-${{ matrix.sidecar }}
+          path: ${{ runner.temp }}/junit
+          if-no-files-found: ignore
+
+  # The kind test runs on each NetworkPolicy implementation, on the oldest
+  # Kubernetes the chart supports (1.29) up to the newest kind ships, with
+  # Helm 3 and Helm 4, and as an upgrade from the last release. kindnet runs
+  # dual-stack and adds the IPv6 checks. Calico stays on a Kubernetes version
+  # its release supports. Each node image is the digest from its kind
+  # release notes; kubectl matches the cluster's version.
+  e2e-kind:
+    name: e2e-kind (${{ matrix.cni }}, k8s ${{ matrix.k8s }}, helm ${{ matrix.helm }}${{ matrix.upgrade && ', upgrade' || '' }})
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.37"
+            kind: v0.33.0
+            node: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+            kubectl: v1.37.0
+            kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+            helm: v4.3.1
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.29"
+            kind: v0.27.0
+            node: kindest/node:v1.29.14@sha256:8703bd94ee24e51b778d5556ae310c6c0fa67d761fae6379c8e0bb480e6fea29
+            kubectl: v1.29.14
+            kubectl_sha256: a4902c8a454a3678d589b51d95d810ec84791c03ed6b5779969df559c9c0357e
+            helm: v3.14.4
+          - cni: calico
+            ipv6: 0
+            k8s: "1.32"
+            kind: v0.27.0
+            node: kindest/node:v1.32.2@sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f
+            kubectl: v1.32.2
+            kubectl_sha256: 4f6a959dcc5b702135f8354cc7109b542a2933c46b808b248a214c1f69f817ea
+            helm: v3.22.1
+          - cni: cilium
+            ipv6: 0
+            k8s: "1.34"
+            kind: v0.33.0
+            node: kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
+            kubectl: v1.34.11
+            kubectl_sha256: 8efbb9435132a190920eb65a47a8c1ecf755ad85ab57a600c9bedbab460bb7a8
+            helm: v4.3.1
+          # Upgrades from the last release tag, as its users would run them.
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.37"
+            kind: v0.33.0
+            node: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+            kubectl: v1.37.0
+            kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+            helm: v3.22.1
+            upgrade: true
+          # Helm 4 installs with server-side apply, which cannot switch the
+          # Deployment to Recreate; the README's upgrade note says to add
+          # --server-side=false once.
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.37"
+            kind: v0.33.0
+            node: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+            kubectl: v1.37.0
+            kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+            helm: v4.3.1
+            upgrade: true
+            upgrade_flags: --server-side=false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+        with:
+          fetch-depth: 0  # the release tags, for the upgrade runs
+
+      - name: Load WireGuard kernel module
+        run: sudo modprobe wireguard
+
+      - name: Unload host AppArmor profiles
+        run: sudo aa-teardown || sudo systemctl stop apparmor || true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
+        with:
+          version: ${{ matrix.helm }}
+
+      - name: Install kubectl
+        run: |
+          curl -sSLo kubectl "https://dl.k8s.io/release/${{ matrix.kubectl }}/bin/linux/amd64/kubectl"
+          echo "${{ matrix.kubectl_sha256 }}  kubectl" | sha256sum -c -
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          rm kubectl
+
+      # go install verifies kind against the Go checksum database, and
+      # fetches it from the Go module proxy rather than GitHub.
+      - name: Create kind cluster (${{ matrix.cni }}, k8s ${{ matrix.k8s }})
+        run: |
+          go install "sigs.k8s.io/kind@${{ matrix.kind }}"
+          KIND="$(go env GOPATH)/bin/kind" NODE_IMAGE="${{ matrix.node }}" tests/e2e/kind-cluster.sh ${{ matrix.cni }}
+
+      # The API server validates the manifests, unknown fields included.
+      # (The helm test pod needs its ServiceAccount to exist; the cluster
+      # suite runs it for real.)
+      - name: Server-side validation
+        run: |
+          helm template transmission-wireguard . -f ci/default-values.yaml --set persistence.downloads.enabled=true |
+            kubectl apply --dry-run=server --validate=strict -f -
+
+      - name: Check out the last release
+        if: matrix.upgrade
+        run: |
+          # Before HEAD: on a release tag's own run, that tag is HEAD.
+          tag=$(git tag --list 'v*' --sort=-v:refname --merged HEAD --no-contains HEAD | head -n1)
+          echo "Upgrading from $tag"
+          mkdir -p "$RUNNER_TEMP/previous"
+          git archive "$tag" | tar -x -C "$RUNNER_TEMP/previous"
+
+      - name: Install bats
+        run: npm ci --prefix tests/e2e --no-audit --no-fund
+
+      - name: Kill switch leak test (kind, ${{ matrix.cni }})
+        run: tests/e2e/cluster-test.sh
+        env:
+          IPV6: ${{ matrix.ipv6 }}
+          UPGRADE_FROM: ${{ matrix.upgrade && format('{0}/previous', runner.temp) || '' }}
+          UPGRADE_FLAGS: ${{ matrix.upgrade_flags }}
+          JUNIT_DIR: ${{ runner.temp }}/junit
+
+      - name: Test report
+        if: always()
+        run: tests/e2e/junit-summary.sh "$RUNNER_TEMP/junit" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: junit-kind-${{ matrix.cni }}-${{ matrix.k8s }}-${{ matrix.helm }}${{ matrix.upgrade && '-upgrade' || '' }}
+          path: ${{ runner.temp }}/junit
+          if-no-files-found: ignore
+
+  # Not a test: the merge gate. Require this one job in branch protection,
+  # because GitHub counts a skipped job (e2e after a failed verify) as passed.
+  # The release steps helm-main.yml runs after a merge, changing nothing:
+  # a broken changelog tool once stopped every release unnoticed.
+  release-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Next version and its changelog
+        run: ci/release.sh dry-run
+
+  ci-passed:
+    if: always()
+    needs: [verify, release-dry-run, e2e-docker, e2e-kind]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every test job passed
+        run: jq -e 'to_entries | all(.value.result == "success")' <<<"$NEEDS" >/dev/null || { echo "$NEEDS"; exit 1; }
+        env:
+          NEEDS: ${{ toJSON(needs) }}

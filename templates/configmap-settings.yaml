@@ -1,3 +1,15 @@
+{{- $settings := deepCopy .Values.transmission.settings -}}
+{{- if index $settings "rpc-host-whitelist-enabled" -}}
+{{- $fullname := include "twg.fullname" . -}}
+{{- $hosts := splitList "," (index $settings "rpc-host-whitelist" | default "" | toString) -}}
+{{- $hosts = concat $hosts (list $fullname (printf "%s.%s" $fullname .Release.Namespace) (printf "%s.%s.svc" $fullname .Release.Namespace) (printf "%s.%s.svc.cluster.local" $fullname .Release.Namespace)) -}}
+{{- if .Values.ingress.enabled -}}
+{{- range .Values.ingress.hosts -}}
+{{- $hosts = append $hosts .host -}}
+{{- end -}}
+{{- end -}}
+{{- $_ := set $settings "rpc-host-whitelist" (without ($hosts | uniq) "" | join ",") -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -6,4 +18,4 @@ metadata:
     {{- include "twg.labels" . | nindent 4 }}
 data:
   settings.json: |
-    {{- toJson .Values.transmission.settings | nindent 4 }}
+    {{- toJson $settings | nindent 4 }}

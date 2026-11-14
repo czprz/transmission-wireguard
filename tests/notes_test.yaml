@@ -1,0 +1,52 @@
+suite: notes
+
+templates:
+  - templates/NOTES.txt
+
+values:
+  - values/base.yaml
+
+tests:
+  - it: lists the allowed VPN endpoint and DNS
+    asserts:
+      - matchRegexRaw:
+          pattern: 'Egress NetworkPolicy allows only: 203\.0\.113\.10:51820/udp'
+      - matchRegexRaw:
+          pattern: 'DNS: 1\.1\.1\.1, 1\.0\.0\.1 through the tunnel'
+      - matchRegexRaw:
+          pattern: 'add the name to transmission\.settings\.rpc-host-whitelist'
+
+  - it: warns when the NetworkPolicy is off
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - matchRegexRaw:
+          pattern: 'WARNING: networkPolicy is disabled'
+
+  - it: tells existingSecret users to restart after changes
+    set:
+      wireguard.wg0Conf: ""
+      wireguard.existingSecret: wg-client
+      wireguard.endpoints: [{ ip: 203.0.113.10, port: 51820 }]
+    asserts:
+      - matchRegexRaw:
+          pattern: 'restart the pod after changing it'
+
+  - it: points to helm test
+    set:
+      tests.enabled: true
+    asserts:
+      - matchRegexRaw:
+          pattern: 'Check for leaks from inside the cluster:\n  helm test RELEASE-NAME -n NAMESPACE --logs\n\nTo compare the pod''s egress address'
+
+  - it: explains how to enable helm test
+    asserts:
+      - matchRegexRaw:
+          pattern: '--reset-then-reuse-values --set tests.enabled=true\n  helm test RELEASE-NAME'
+
+  - it: contacts no third-party service
+    asserts:
+      - notMatchRegexRaw:
+          pattern: 'ifconfig|wget'
+      - matchRegexRaw:
+          pattern: 'curl -sk -m 5 -o /dev/null --interface "if!eth0"'

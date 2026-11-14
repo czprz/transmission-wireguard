@@ -1,58 +1,100 @@
 name: Helm Release
 
+# Started by helm-main.yml after a release commit; run by hand only to
+# re-publish. Either way the full test suite runs first.
 "on":
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
+  verify:
+    uses: ./.github/workflows/helm-chart.yaml
+    permissions:
+      contents: read
+
   release:
     runs-on: ubuntu-latest
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
+      # Keyless signing and the provenance attestation (Sigstore, with the
+      # workflow's GitHub identity).
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
         with:
           fetch-depth: 0
 
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.14.4
 
-      - name: Install yq
-        run: |
-          YQ_VERSION=4.45.1
-          sudo curl -sSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
-            -o /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
-
       - name: Lint chart
-        run: helm lint . --strict
+        run: helm lint . --strict -f ci/default-values.yaml
 
       - name: Read chart version
         id: chart
-        run: echo "result=$(yq -r '.version' Chart.yaml)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "result=$(helm show chart . | sed -n 's/^version: //p')" >> "$GITHUB_OUTPUT"
 
       - name: Verify tag matches chart version
         run: |
+          if [ "${GITHUB_REF_TYPE}" != tag ]; then
+            echo "Run this on a release tag, not the ${GITHUB_REF_TYPE} ${GITHUB_REF_NAME}."
+            exit 1
+          fi
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           if [ "${TAG_VERSION}" != "${{ steps.chart.outputs.result }}" ]; then
             echo "Tag version (${TAG_VERSION}) does not match Chart.yaml version (${{ steps.chart.outputs.result }})."
             exit 1
           fi
 
+      # helm pushes with its own login; cosign and the attestation use Docker's.
+      - name: Log in to GHCR
+        run: |
+          echo "${GH_TOKEN}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package test
+        run: tests/package-test.sh
+
       - name: Package chart
         run: |
           mkdir -p dist
           helm package . --destination dist
 
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-
       - name: Push chart to GHCR
-        run: helm push dist/*.tgz oci://ghcr.io/dever-labs
+        id: push
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          out=$(helm push dist/*.tgz "oci://${repo}" 2>&1)
+          echo "${out}"
+          digest=$(sed -n 's/^Digest: //p' <<<"${out}")
+          [ -n "${digest}" ] || { echo "helm push printed no digest"; exit 1; }
+          echo "image=${repo}/transmission-wireguard" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      # Users verify it as the README's "Verify the chart" shows.
+      - name: Sign the chart
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        env:
+          IMAGE: ${{ steps.push.outputs.image }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

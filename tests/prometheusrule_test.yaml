@@ -1,0 +1,101 @@
+suite: prometheusrule
+
+templates:
+  - templates/prometheusrule.yaml
+
+values:
+  - values/base.yaml
+
+release:
+  name: twg
+  namespace: media
+
+tests:
+  - it: renders nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: needs the Prometheus Operator's CRD
+    set:
+      monitoring.prometheusRule.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "monitoring.prometheusRule.enabled needs the Prometheus Operator's PrometheusRule CRD (monitoring.coreos.com/v1) in the cluster"
+
+  - it: alerts on the tunnel, availability, restarts and full volumes of this release only
+    capabilities:
+      apiVersions:
+        - monitoring.coreos.com/v1/PrometheusRule
+    set:
+      monitoring.prometheusRule.enabled: true
+      monitoring.prometheusRule.labels:
+        release: kube-prometheus-stack
+    asserts:
+      - isKind:
+          of: PrometheusRule
+      - equal:
+          path: metadata.labels.release
+          value: kube-prometheus-stack
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 4
+      - equal:
+          path: spec.groups[0].rules[0].alert
+          value: TransmissionWireguardTunnelDown
+      - equal:
+          path: spec.groups[0].rules[1].alert
+          value: TransmissionWireguardUnavailable
+      - equal:
+          path: spec.groups[0].rules[2].alert
+          value: TransmissionWireguardRestarting
+      - equal:
+          path: spec.groups[0].rules[3].alert
+          value: TransmissionWireguardVolumeFilling
+      - equal:
+          path: spec.groups[0].rules[0].expr
+          value: max by (namespace, pod) (kube_pod_init_container_status_ready{namespace="media", pod=~"twg-transmission-wireguard-[a-z0-9]+-[a-z0-9]+", container="wireguard"}) == 0
+      - equal:
+          path: spec.groups[0].rules[0].for
+          value: 5m
+      - equal:
+          path: spec.groups[0].rules[1].expr
+          value: kube_deployment_status_replicas_available{namespace="media", deployment="twg-transmission-wireguard"} < 1
+      - matchRegex:
+          path: spec.groups[0].rules[3].expr
+          pattern: 'persistentvolumeclaim=~"twg-transmission-wireguard\(-downloads\)\?"'
+      - equal:
+          path: spec.groups[0].rules[0].annotations.summary
+          value: "The WireGuard tunnel of {{ $labels.pod }} has been down for 5m"
+
+  - it: takes thresholds and extra rules
+    capabilities:
+      apiVersions:
+        - monitoring.coreos.com/v1/PrometheusRule
+    set:
+      monitoring.prometheusRule.enabled: true
+      monitoring.prometheusRule.severity: critical
+      monitoring.prometheusRule.tunnelDownFor: 15m
+      monitoring.prometheusRule.restartsPer30m: 5
+      monitoring.prometheusRule.volumeFreeRatio: 0.05
+      monitoring.prometheusRule.extraRules:
+        - alert: Custom
+          expr: vector(1)
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[0].for
+          value: 15m
+      - equal:
+          path: spec.groups[0].rules[0].labels.severity
+          value: critical
+      - matchRegex:
+          path: spec.groups[0].rules[2].expr
+          pattern: '\) > 5\n?$'
+      - matchRegex:
+          path: spec.groups[0].rules[3].expr
+          pattern: '< 0.05\n?$'
+      - equal:
+          path: spec.groups[0].rules[4]
+          value:
+            alert: Custom
+            expr: vector(1)

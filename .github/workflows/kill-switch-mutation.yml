@@ -1,0 +1,116 @@
+name: Kill switch mutation test
+
+# Proves the leak tests guard every firewall rule: each mutant turns one rule
+# off and runs the Docker leak test, which must then fail. Rules listed in
+# tests/e2e/mutation-baseline.txt may survive. Weekly and by hand it runs
+# every mutant; on a pull request only the mutants on changed lines of
+# files/firewall.sh, or all of them if the leak test itself changed.
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - files/firewall.sh
+      - tests/e2e/docker/**
+      - tests/e2e/docker-test.sh
+      - tests/e2e/mutation-test.sh
+      - tests/e2e/mutation-baseline.txt
+      - tests/e2e/package.json
+      - tests/e2e/package-lock.json
+      - image/wireguard/**
+      - .github/workflows/kill-switch-mutation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      batches: ${{ steps.list.outputs.batches }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+        with:
+          fetch-depth: 0
+
+      # Batches of 8: each job sets up the Docker test once per mutant, and
+      # at most 4 jobs run at once, so the main suite still gets runners.
+      - name: List mutants
+        id: list
+        run: |
+          base=""
+          if [ "$EVENT" = pull_request ] &&
+            ! git diff --quiet "$BASE_SHA" HEAD -- tests/e2e/docker tests/e2e/docker-test.sh tests/e2e/mutation-test.sh tests/e2e/mutation-baseline.txt tests/e2e/package.json tests/e2e/package-lock.json; then
+            echo "The leak test changed: every mutant runs."
+          elif [ "$EVENT" = pull_request ]; then
+            base=$BASE_SHA
+          fi
+          if [ -n "$base" ]; then
+            lines=$(tests/e2e/mutation-test.sh --list --changed "$base")
+          else
+            lines=$(tests/e2e/mutation-test.sh --list)
+          fi
+          echo "Mutants: ${lines//$'\n'/ }"
+          # Assigned first, so a jq error fails the step.
+          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | [range(0; length; 6) as $i | .[$i:$i + 6] | join(" ")]' <<<"$lines")
+          echo "batches=$batches" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+  mutant:
+    name: mutants ${{ matrix.lines }}
+    needs: mutants
+    if: needs.mutants.outputs.batches != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        lines: ${{ fromJSON(needs.mutants.outputs.batches) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      - name: Load WireGuard kernel module
+        run: sudo modprobe wireguard
+
+      # The chart's own sidecar image: with natpmpc, so the port-forwarding
+      # rules have checks that can kill their mutants. Built before
+      # AppArmor is unloaded: runc cannot start the build's containers after.
+      - name: Build the sidecar image
+        run: docker build -t twg-wireguard:ci image/wireguard
+
+      # As in helm-chart.yaml: the runner's AppArmor profiles break wg-quick.
+      - name: Unload host AppArmor profiles
+        run: sudo aa-teardown || sudo systemctl stop apparmor || true
+
+      - name: Install bats
+        run: npm ci --prefix tests/e2e --no-audit --no-fund
+
+      - name: Leak test without each of firewall.sh lines ${{ matrix.lines }}
+        run: |
+          set -o pipefail
+          tests/e2e/mutation-test.sh ${{ matrix.lines }} | tee -a "$GITHUB_STEP_SUMMARY"
+        env:
+          SIDECAR_IMAGE: twg-wireguard:ci
+
+  # One result to look at (and to require, if you want it on the PRs above).
+  mutation-passed:
+    if: always()
+    needs: [mutants, mutant]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every mutant was killed or is in the baseline
+        run: jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")' <<<"$NEEDS" >/dev/null || { echo "$NEEDS"; exit 1; }
+        env:
+          NEEDS: ${{ toJSON(needs) }}

@@ -1,0 +1,75 @@
+suite: storage and ingress
+
+templates:
+  - templates/pvc.yaml
+  - templates/ingress.yaml
+
+values:
+  - values/base.yaml
+
+tests:
+  - it: keeps the PVC with the downloads on helm uninstall
+    template: templates/pvc.yaml
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+
+  - it: lets the PVC go with the release when asked
+    template: templates/pvc.yaml
+    set:
+      persistence.keepOnUninstall: false
+    asserts:
+      - isNull:
+          path: metadata.annotations
+
+  - it: creates only the main PVC by default
+    template: templates/pvc.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: creates a downloads PVC of its own when asked, kept on uninstall
+    template: templates/pvc.yaml
+    set:
+      persistence.downloads.enabled: true
+      persistence.downloads.size: 500Gi
+      persistence.downloads.storageClassName: bulk
+    asserts:
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-transmission-wireguard-downloads
+        documentIndex: 1
+      - equal:
+          path: spec.resources.requests.storage
+          value: 500Gi
+        documentIndex: 1
+      - equal:
+          path: spec.storageClassName
+          value: bulk
+        documentIndex: 1
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+        documentIndex: 1
+
+  - it: uses an existing claim for the downloads without creating one
+    template: templates/pvc.yaml
+    set:
+      persistence.downloads.enabled: true
+      persistence.downloads.existingClaim: media
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: defaults an ingress path's pathType to Prefix
+    template: templates/ingress.yaml
+    set:
+      ingress.enabled: true
+      ingress.hosts: [{ host: tx.example.com, paths: [{ path: / }] }]
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].pathType
+          value: Prefix

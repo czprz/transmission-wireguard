@@ -1,0 +1,158 @@
+suite: helm test
+
+templates:
+  - templates/tests/leak-test.yaml
+
+values:
+  - values/base.yaml
+  - values/helm-test.yaml
+
+tests:
+  - it: runs as a helm test hook
+    asserts:
+      - hasDocuments:
+          count: 4
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: test
+
+  - it: removes the exec Role after a successful run
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          value: before-hook-creation,hook-succeeded,hook-failed
+
+  - it: keeps the test pod until the next run, for helm test --logs
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          value: before-hook-creation
+
+  - it: may only read and exec into pods
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: rules
+          value:
+            - apiGroups: [""]
+              resources: [pods]
+              verbs: [get, list]
+            - apiGroups: [""]
+              resources: [pods/exec]
+              verbs: [get, create]
+
+  - it: keeps the test pod out of the release's selector and NetworkPolicy
+    documentIndex: 3
+    asserts:
+      - isKind:
+          of: Pod
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: transmission-wireguard-test
+      - contains:
+          path: spec.containers[0].env
+          content: { name: SELECTOR, value: "app.kubernetes.io/name=transmission-wireguard,app.kubernetes.io/instance=RELEASE-NAME" }
+
+  - it: pins the test image by digest
+    documentIndex: 3
+    asserts:
+      - matchRegex:
+          path: spec.containers[0].image
+          pattern: ^docker\.io/alpine/kubectl:[0-9.]+@sha256:[a-f0-9]{64}$
+
+  - it: checks the configured nameservers and echo service
+    documentIndex: 3
+    set:
+      tests.enabled: true
+      tests.ipEchoUrl: http://203.0.113.80/ip
+      wireguard.dns.nameservers: [10.64.0.1]
+    asserts:
+      - contains:
+          path: spec.containers[0].env
+          content: { name: NAMESERVERS, value: "10.64.0.1" }
+      - contains:
+          path: spec.containers[0].env
+          content: { name: IP_ECHO_URL, value: "http://203.0.113.80/ip" }
+
+  - it: contacts nothing outside the cluster by default
+    documentIndex: 3
+    asserts:
+      - contains:
+          path: spec.containers[0].env
+          content: { name: IP_ECHO_URL, value: "" }
+
+  - it: tests every running pod that is not shutting down
+    documentIndex: 3
+    asserts:
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: "deletionTimestamp.*awk 'NF == 1'"
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: 'for pod in \$pods; do'
+
+  - it: is off by default
+    set:
+      tests.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: sets resources and follows the chart's scheduling
+    documentIndex: 3
+    set:
+      nodeSelector: { kubernetes.io/arch: arm64 }
+      tolerations: [{ key: dedicated, operator: Exists, effect: NoSchedule }]
+    asserts:
+      - equal:
+          path: spec.containers[0].resources.requests
+          value: { cpu: 10m, memory: 32Mi }
+      - equal:
+          path: spec.nodeSelector
+          value: { kubernetes.io/arch: arm64 }
+      - equal:
+          path: spec.tolerations
+          value: [{ key: dedicated, operator: Exists, effect: NoSchedule }]
+
+  - it: prefers the release pod's node and checks it
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: spec.affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.topologyKey
+          value: kubernetes.io/hostname
+      - equal:
+          path: spec.affinity.podAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.labelSelector.matchLabels
+          value: { app.kubernetes.io/name: transmission-wireguard, app.kubernetes.io/instance: RELEASE-NAME }
+      - contains:
+          path: spec.containers[0].env
+          content: { name: MY_NODE, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+
+  - it: compares the egress address with the pod's and node's own and the expected VPN exits
+    documentIndex: 3
+    set:
+      tests.enabled: true
+      tests.vpnEgressIPs: [198.51.100.20]
+    asserts:
+      - contains:
+          path: spec.containers[0].env
+          content: { name: VPN_EGRESS_IPS, value: "198.51.100.20" }
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: "status.podIPs"
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: "is_vpn6"
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: 'interface "if!eth0"'
+
+  - it: checks the Transmission container's capabilities at runtime
+    documentIndex: 3
+    asserts:
+      - matchRegex:
+          path: spec.containers[0].command[2]
+          pattern: 'CapBnd'

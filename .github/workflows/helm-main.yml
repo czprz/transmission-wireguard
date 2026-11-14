@@ -9,150 +9,59 @@ permissions:
   contents: write
 
 jobs:
+  # The full PR pipeline, leak tests included: nothing is released unless
+  # they pass on this commit.
+  # Not for the release commit itself (pushed with GH_PAT, so the actor is
+  # a person): it only bumps the version of a commit that already passed.
   verify:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
-        with:
-          fetch-depth: 0
-
-      - name: Set up chart-testing
-        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f  # v2.8.0
-
-      - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5
-        with:
-          version: v3.14.4
-
-      - name: Lint chart
-        run: helm lint . --strict
-
-      - name: Chart-testing lint
-        run: ct lint --all --chart-dirs .
-
-      - name: Render chart
-        run: helm template transmission-wireguard . > /tmp/manifest.yaml
-
-      - name: Kubeconform
-        run: |
-          KUBECONFORM_VERSION=0.6.7
-          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
-            | tar -xz
-          sudo mv kubeconform /usr/local/bin/kubeconform
-          kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.29.0 /tmp/manifest.yaml
-
-      - name: Helm unittest
-        run: |
-          docker run --rm \
-            -u "$(id -u):$(id -g)" \
-            -v "${GITHUB_WORKSPACE}:/apps" \
-            helmunittest/helm-unittest:3.11.1-0.3.0 .
-
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    uses: ./.github/workflows/helm-chart.yaml
+    permissions:
+      contents: read
 
   release:
     runs-on: ubuntu-latest
     needs: verify
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' && !startsWith(github.event.head_commit.message, 'chore(release):') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
         with:
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 20
+          # The changelog tools need Node 22 or newer.
+          node-version: 24
 
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2  # v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5
         with:
           version: v3.14.4
 
-      - name: Install yq
-        run: |
-          YQ_VERSION=4.45.1
-          sudo curl -sSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
-            -o /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
-
-      - name: Read current chart version
-        id: chart
-        run: echo "result=$(yq -r '.version' Chart.yaml)" >> "$GITHUB_OUTPUT"
-
-      - name: Determine recommended bump
-        id: bump
-        run: |
-          BUMP=$(npx -y -p conventional-recommended-bump -p conventional-changelog-angular \
-            conventional-recommended-bump -p angular || true)
-          if [ -z "${BUMP}" ]; then
-            echo "bump=none" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute next version
+      # ci/release.sh pins its tools; helm-chart.yaml dry-runs it on every
+      # pull request, so a broken tool fails there, not here.
+      - name: Next version
         id: next
-        if: steps.bump.outputs.bump != 'none'
         run: |
-          CURRENT="${{ steps.chart.outputs.result }}"
-          BUMP="${{ steps.bump.outputs.bump }}"
-          if ! echo "${CURRENT}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "Chart.yaml version must be x.y.z"
-            exit 1
-          fi
-          IFS='.' read -r major minor patch <<<"${CURRENT}"
-          case "${BUMP}" in
-            major)
-              major=$((major + 1))
-              minor=0
-              patch=0
-              ;;
-            minor)
-              minor=$((minor + 1))
-              patch=0
-              ;;
-            patch)
-              patch=$((patch + 1))
-              ;;
-            *)
-              echo "Unsupported bump: ${BUMP}"
-              exit 1
-              ;;
-          esac
-          NEW_VERSION="${major}.${minor}.${patch}"
-          echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-        env:
-          CURRENT: ${{ steps.chart.outputs.result }}
-          BUMP: ${{ steps.bump.outputs.bump }}
+          # Assigned first, so a failing tool fails the step.
+          version=$(ci/release.sh next)
+          echo "new_version=${version}" >> "$GITHUB_OUTPUT"
 
-      - name: Update Chart.yaml version
-        if: steps.bump.outputs.bump != 'none'
-        run: yq -i '.version = strenv(NEW_VERSION)' Chart.yaml
+      - name: Update Chart.yaml version and CHANGELOG
+        if: steps.next.outputs.new_version != ''
+        run: |
+          sed -i "s/^version: .*/version: ${NEW_VERSION}/" Chart.yaml
+          [ "$(helm show chart . | sed -n 's/^version: //p')" = "${NEW_VERSION}" ]
+          ci/release.sh notes "${NEW_VERSION}" > RELEASE_BODY.md
+          ci/release.sh changelog "${NEW_VERSION}"
         env:
           NEW_VERSION: ${{ steps.next.outputs.new_version }}
 
-      - name: Update CHANGELOG
-        if: steps.bump.outputs.bump != 'none'
-        run: |
-          touch CHANGELOG.md
-          npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
-            conventional-changelog -p angular -i CHANGELOG.md -s -r 0
-
-      - name: Build release notes
-        if: steps.bump.outputs.bump != 'none'
-        run: |
-          npx -y -p conventional-changelog-cli -p conventional-changelog-angular \
-            conventional-changelog -p angular -r 1 > RELEASE_BODY.md
-
       - name: Commit and tag
-        if: steps.bump.outputs.bump != 'none'
+        if: steps.next.outputs.new_version != ''
         run: |
-          if [ -z "${{ steps.next.outputs.new_version }}" ]; then
-            echo "No new version computed."
-            exit 0
-          fi
           git remote set-url origin "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -167,14 +76,14 @@ jobs:
           git push --tags
 
       - name: Trigger Helm Release workflow
-        if: steps.bump.outputs.bump != 'none'
+        if: steps.next.outputs.new_version != ''
         run: |
           gh workflow run helm-release.yml --ref "v${{ steps.next.outputs.new_version }}"
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Create GitHub release
-        if: steps.bump.outputs.bump != 'none'
+        if: steps.next.outputs.new_version != ''
         run: |
           gh release create "v${{ steps.next.outputs.new_version }}" \
             --title "v${{ steps.next.outputs.new_version }}" \

@@ -1,5 +1,5 @@
-# Running more than 1 replica is not recommended unless each replica has
-# its own unique storage and WireGuard config.
+# Must stay 1: every replica would use the same WireGuard key. Run another
+# release for a second instance.
 replicaCount: 1
 
 images:
@@ -7,18 +7,22 @@ images:
     # Override defaults from the chart if needed.
     repository: ""
     tag: ""
+    # Pin by digest (sha256:...). The chart pins its default tags by digest;
+    # set this when overriding repository or tag to keep pulls immutable.
+    digest: ""
     pullPolicy: IfNotPresent
   transmission:
     # Override defaults from the chart if needed.
     repository: ""
     tag: ""
+    digest: ""
     pullPolicy: IfNotPresent
 
 service:
   type: ClusterIP
+  # Must match transmission.settings.rpc-port. Peers reach Transmission only
+  # through the VPN, so the Service carries no peer ports.
   webPort: 9091
-  peerPortTcp: 51413
-  peerPortUdp: 51413
   annotations: {}
 
 ingress:
@@ -45,6 +49,10 @@ persistence:
   accessModes:
     - ReadWriteOnce
   size: 10Gi   # Required when using PVC; ignored for hostPath.
+  # Keep the chart's PVC (and the downloads on it) on `helm uninstall`;
+  # delete it yourself afterwards. A later install under the same release
+  # name and namespace picks it up again.
+  keepOnUninstall: true
   # storageClassName: ""
   # existingClaim: ""
   # hostPath:
@@ -55,11 +63,46 @@ persistence:
   #   data:
   #     mountPath: /data
 
+  # A PVC of its own for /data (the downloads), so filling it cannot stop
+  # Transmission from saving its config and resume files on the main volume.
+  # Recommended for new installs. Off by default: on an existing install,
+  # turning it on hides the downloads already on the main volume. Kept on
+  # uninstall like the main PVC (keepOnUninstall).
+  downloads:
+    enabled: false
+    size: 100Gi
+    accessModes:
+      - ReadWriteOnce
+    # storageClassName: ""
+    # existingClaim: ""
+  # For downloads on an NFS or SMB share, see extraVolumes and
+  # transmission.extraVolumeMounts.
+
 transmission:
   env:
     TZ: "UTC"
     PUID: "1000"
     PGID: "1000"
+
+  # Transmission's peer sockets are bound to the tunnel address read from
+  # wg0.conf (Address = ...), or to loopback for a family the tunnel lacks, so
+  # they cannot use another interface or learn the pod's own address. Must
+  # stay true; bind-address-ipv4/6 in settings are refused.
+  bindToTunnel: true
+
+  # RPC (web UI) credentials. Required unless allowAnonymous is true: without
+  # them any pod that reaches the UI can add torrents and run scripts.
+  rpcAuth:
+    # Secret with the username/password keys below (recommended).
+    existingSecret: ""
+    usernameKey: username
+    passwordKey: password
+    # Or let the chart create the Secret (keeps credentials out of the
+    # ConfigMap). Its checksum is a pod annotation, so use a strong password.
+    username: ""
+    password: ""
+    allowAnonymous: false
+
   # Transmission settings are rendered into settings.json on startup.
   # Tip: you can generate a baseline by running Transmission once and exporting its settings.json.
   # Official docs:
@@ -72,7 +115,9 @@ transmission:
     watch-dir: /data/watch
     watch-dir-enabled: true
     rpc-enabled: true
-    rpc-bind-address: 0.0.0.0
+    # :: listens on IPv4 and IPv6 (IPv6-only and dual-stack clusters);
+    # pods without IPv6 fall back to 0.0.0.0.
+    rpc-bind-address: "::"
     rpc-port: 9091
     rpc-url: /transmission/
     rpc-authentication-required: false
@@ -80,14 +125,23 @@ transmission:
     rpc-password: ""
     rpc-whitelist: 127.0.0.1
     rpc-whitelist-enabled: false
+    # DNS-rebinding protection (applies when RPC auth is off). The Service
+    # name and ingress hosts are added automatically.
     rpc-host-whitelist: localhost
-    rpc-host-whitelist-enabled: false
+    rpc-host-whitelist-enabled: true
+    # The kill switch only accepts inbound peers on this port, via the tunnel.
+    peer-port: 51413
+    peer-port-random-on-start: false
+    # UPnP/NAT-PMP and Local Peer Discovery talk to the local network, not the VPN.
     port-forwarding-enabled: false
+    lpd-enabled: false
   securityContext:
     allowPrivilegeEscalation: false
     capabilities:
       drop: ["ALL"]
       add: ["SETUID", "SETGID", "CHOWN"]
+    seccompProfile:
+      type: RuntimeDefault
 
   resources:
     requests:
@@ -96,8 +150,29 @@ transmission:
     limits:
       memory: 512Mi
 
+  # The init container that writes settings.json (namespaces with a
+  # ResourceQuota reject containers without resources).
+  initResources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi
+
+  # Extra mounts for the Transmission container only, e.g. a media share
+  # from extraVolumes:
+  #   - name: media
+  #     mountPath: /data/complete
+  extraVolumeMounts: []
+
 wireguard:
-  # Provide a FULL WireGuard CLIENT config here (wg0.conf), with an IPv4 Endpoint.
+  # Provide a FULL WireGuard CLIENT config here (wg0.conf):
+  # - Endpoint must be an IP address (DNS is blocked until the tunnel is up)
+  # - AllowedIPs must include 0.0.0.0/0 (and ::/0 for IPv6)
+  # - No PreUp/PostUp/PreDown/PostDown hooks: the chart owns the kill switch
+  # - PersistentKeepalive = 25 is recommended (the handshake check needs it)
+  # - MTU = 1420 is needed where the pod's network has jumbo frames (AWS VPC
+  #   CNI); without an MTU line the sidecar refuses MTUs above 1500
   # For public charts, prefer wireguard.existingSecret and leave wg0Conf empty.
   wg0Conf: ""
 
@@ -105,26 +180,68 @@ wireguard:
   # If set, this chart will NOT create its own secret.
   existingSecret: ""
 
+  # VPN server endpoints, used for the egress NetworkPolicy. Parsed
+  # automatically from wg0Conf; list them here when using existingSecret.
+  endpoints: []
+  #  - ip: 203.0.113.10
+  #    port: 51820
+
+  # VPN port forwarding over NAT-PMP (Proton VPN, among others): the gateway
+  # inside the tunnel, e.g. 10.2.0.1 for Proton. Empty: off. The sidecar's
+  # liveness probe renews the mapping every 30 s, opens that one port on wg0
+  # and sets it as Transmission's peer port (so announces carry it). Needs
+  # the chart's sidecar image (images.wireguard: ghcr.io/czprz/twg-wireguard),
+  # which has natpmpc, and a VPN server that allows port forwarding.
+  portForwarding:
+    natpmpGateway: ""
+
+  # Restart the WireGuard sidecar when the newest handshake is older than this
+  # many seconds (0 disables, else at least 180: WireGuard re-handshakes only
+  # every 2 minutes). A restart re-reads the Endpoint, so a tunnel whose
+  # server answered from another address (blocked by the kill switch) heals.
+  # Only checked when wg0.conf has PersistentKeepalive: without it an idle
+  # tunnel stops handshaking. Restarts are safe: the kill switch stays up.
+  handshakeMaxAgeSeconds: 300
+
+  # Other servers of the same VPN account, for when the one in wg0.conf stops
+  # answering: once its last handshake is afterSeconds old, the sidecar's
+  # liveness probe replaces the peer with the next one in the list (and
+  # after the last, wg0.conf's again). They share wg0.conf's [Interface]
+  # (key and Address) and AllowedIPs; only PublicKey and Endpoint differ.
+  # The kill switch and the NetworkPolicy let WireGuard reach all of them.
+  # Needs PersistentKeepalive and a single [Peer] without PresharedKey.
+  # A restart of the sidecar starts again with wg0.conf's peer.
+  failover:
+    # At least 180: a working tunnel re-handshakes only every 2 minutes.
+    afterSeconds: 180
+    peers: []
+    #  - publicKey: "base64 public key of the server"
+    #    ip: 198.51.100.20
+    #    port: 51820
+
   env:
     TZ: "UTC"
     PUID: "1000"
     PGID: "1000"
 
-  # If your cluster forbids sysctls, this chart does NOT use them.
-  # For kernel WireGuard, the container needs these mounts/capabilities.
+  # Host mounts for WireGuard. Kernel WireGuard is built into Linux 5.6+, so
+  # none are needed there. enabled only gates the two mounts below.
   kernelMode:
     enabled: true
-    # Mount host kernel modules so wg kernel module works (common requirement).
-    mountLibModules: true
-    # Mount /dev/net/tun
-    mountTun: true
+    # Only for hosts older than 5.6 that must load the module from the host.
+    mountLibModules: false
+    # /dev/net/tun, only for userspace WireGuard (wireguard-go/boringtun).
+    # Needs enabled: true as well.
+    mountTun: false
 
-  # Pod DNS override: only needed if the DNS in wg0.conf doesn't apply at the pod level.
-  # If your wg0.conf already has a DNS = line, leave this disabled.
-  # If you change these nameservers, also update your wg0.conf `DNS = ...` line to match.
-  # Keeping them in sync avoids leaks or failed lookups when the killswitch is active.
+  # Pod DNS. The kill switch blocks cluster DNS (it would leak lookups via
+  # CoreDNS's upstream), so the pod resolves through these nameservers, which
+  # are reached through the tunnel. The defaults are Cloudflare: lookups are
+  # hidden from your network but visible to Cloudflare. Set your VPN
+  # provider's resolver (usually the DNS = line of its config) instead.
+  # override must stay true; false (cluster DNS) is refused.
   dns:
-    override: false
+    override: true
     nameservers:
       - 1.1.1.1
       - 1.0.0.1
@@ -135,8 +252,116 @@ wireguard:
       memory: 64Mi
     limits:
       memory: 128Mi
+  # wg-quick writes net.ipv4.conf.all.src_valid_mark, which needs privileged
+  # (or the sysctl allowed on the kubelet and set in podSecurityContext.sysctls,
+  # then capabilities NET_ADMIN + NET_RAW with privileged: false; see the
+  # README). Either way the namespace needs the privileged Pod Security level.
   securityContext:
-    privileged: true   # simplest/most compatible; you can tighten later if your cluster supports it
+    privileged: true
+
+# Kill switch, installed in the pod network namespace before the tunnel starts.
+# It cannot be disabled: traffic leaves the pod only through WireGuard.
+firewall:
+  # Sources allowed to reach the web UI port outside the tunnel (kubelet
+  # probes, ingress controller, other pods). Replies go back out eth0; nothing
+  # else does. Narrow these to your node/pod CIDRs if you can. Add your
+  # clients' ranges for a LoadBalancer/NodePort with externalTrafficPolicy:
+  # Local (it keeps public client IPs), and global IPv6 pod CIDRs.
+  webAllowedCIDRs:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - fc00::/7
+  # Firewall mark wg-quick puts on WireGuard's own UDP packets (its default),
+  # also its routing table number. Another value needs the same FwMark line
+  # in wg0.conf, and 253-255 and 1000 are taken.
+  wgFwmark: 51820
+  # Set true to run wg0.conf PreUp/PostUp/PreDown/PostDown hooks. Refused by
+  # default: they run as root with NET_ADMIN and, directly or through a
+  # script, can open the kill switch.
+  allowConfHooks: false
+
+# Second layer, enforced by the CNI outside the pod: egress only to the VPN
+# endpoints. Needs a CNI that implements NetworkPolicy (Calico, Cilium, ...).
+networkPolicy:
+  enabled: true
+  # Peers allowed to reach the web UI (NetworkPolicyPeer list). Empty = any source.
+  ingressFrom: []
+  # Extra egress rules (NetworkPolicyEgressRule list).
+  extraEgress: []
+
+# `helm test <release> --logs` checks the running pod for leaks: the kill
+# switch is intact, the tunnel is up, eth0 is blocked and DNS uses only the
+# configured nameservers. It contacts nothing outside the cluster.
+# While it runs, a Role lets the test pod exec into any pod in the namespace.
+# Off by default: tools that deploy with `helm template` (kustomize
+# helmCharts, some GitOps setups) would create that Role permanently.
+tests:
+  enabled: false
+  # Optional: a plain-text "what is my IP" endpoint you control. The test
+  # fetches it through the VPN and from an ordinary pod and requires the
+  # addresses to differ. Whoever runs it sees your VPN address and your
+  # real address together, so never point this at a public service.
+  ipEchoUrl: ""
+  # Optional: your VPN's exit addresses. With ipEchoUrl set, the pod's egress
+  # address must then be one of them.
+  vpnEgressIPs: []
+  image:
+    repository: ""
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# Alerts for the Prometheus Operator, from kube-state-metrics and the
+# kubelet's volume stats (both must be scraped). Nothing in the pod serves
+# metrics: the sidecar's probes already say whether the tunnel works.
+monitoring:
+  prometheusRule:
+    enabled: false
+    # Labels your Prometheus selects rules by (e.g. release: kube-prometheus-stack).
+    labels: {}
+    severity: warning
+    tunnelDownFor: 5m
+    unavailableFor: 10m
+    restartsPer30m: 2
+    # Alert when a PVC has less than this fraction free.
+    volumeFreeRatio: 0.1
+    # More rules for the same group (PrometheusRule rule list).
+    extraRules: []
+
+podSecurityContext: {}
+#  sysctls:
+#    - name: net.ipv4.conf.all.src_valid_mark
+#      value: "1"
+
+# Added to the pod. The chart opts the pod out of Istio and Linkerd
+# injection (a mesh proxy cannot reach its control plane through the kill
+# switch); set a key here to override that.
+podAnnotations: {}
+podLabels: {}
+
+imagePullSecrets: []
+#  - name: registry-credentials
+
+priorityClassName: ""
+
+# Time for Transmission to stop (it saves resume data and sends its
+# "stopped" announces through the still-running tunnel).
+terminationGracePeriodSeconds: 60
+
+# Extra pod volumes, mounted with transmission.extraVolumeMounts.
+extraVolumes: []
+#  - name: media
+#    nfs:
+#      server: nas.example.internal
+#      path: /media
 
 probes:
   initialDelaySeconds: 10
