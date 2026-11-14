@@ -235,7 +235,8 @@ jobs:
       - name: Check out the last release
         if: matrix.upgrade
         run: |
-          tag=$(git tag --list 'v*' --sort=-v:refname --merged HEAD | head -n1)
+          # Before HEAD: on a release tag's own run, that tag is HEAD.
+          tag=$(git tag --list 'v*' --sort=-v:refname --merged HEAD --no-contains HEAD | head -n1)
           echo "Upgrading from $tag"
           mkdir -p "$RUNNER_TEMP/previous"
           git archive "$tag" | tar -x -C "$RUNNER_TEMP/previous"

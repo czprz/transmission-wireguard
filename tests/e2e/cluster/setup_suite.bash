@@ -104,9 +104,13 @@ EOF
   else
     UPGRADED_FROM=$(helm show chart "$UPGRADE_FROM" | sed -n 's/^version: //p')
     info "upgrade from $UPGRADED_FROM"
-    # The earlier release as its users run it: its defaults, its PVC. Its pod
+    # The earlier release as its users run it: its defaults, its PVC, and
+    # what 1.0 refuses to install without (RPC auth; the NetworkPolicy's
+    # endpoints, here with the NetworkPolicy off as for the upgrade). Its pod
     # need not become ready here; the upgrade is what is tested.
-    helm install $RELEASE "$UPGRADE_FROM" -n "$NS" --set wireguard.existingSecret=wg-client >/dev/null
+    helm install $RELEASE "$UPGRADE_FROM" -n "$NS" --set wireguard.existingSecret=wg-client \
+      --set networkPolicy.enabled=false --set transmission.rpcAuth.username=admin \
+      --set transmission.rpcAuth.password=kind-test-password >/dev/null
     kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'=Bound "pvc/$RELEASE-transmission-wireguard" --timeout 3m >/dev/null 2>&1 ||
       kubectl -n "$NS" get pvc "$RELEASE-transmission-wireguard" >/dev/null
     OLD_PVC_UID=$(kubectl -n "$NS" get pvc "$RELEASE-transmission-wireguard" -o jsonpath='{.metadata.uid}')
