@@ -408,6 +408,12 @@ See `values.yaml` for the full list of configuration options.
   - Without a handshake, check that `wireguard.endpoints` matches the `Endpoint` line (the NetworkPolicy only allows that address).
   - `FATAL: the route to the endpoint ... has MTU 9001`: add `MTU = 1420` to `[Interface]`.
   - `FATAL: Address in ... changed since the pod started`: restart the pod (`kubectl rollout restart`).
+- **Sidecar restarting with `no handshake within 300s`?**
+  - The liveness probe says why where kubectl shows it: `kubectl describe pod <pod>` (the `wireguard` container's Last State message) and `kubectl logs <pod> -c wireguard --previous`. Every 5 minutes it also logs the peers' state, so the log shows when handshakes stopped.
+  - Each peer line has the last handshake and wg's byte counters:
+    - `no handshake yet, received 0 bytes, sent N bytes`: the server never answered. This is the provider side, not your network: a key the provider rotated or revoked, an expired account, or the server's WireGuard down (it can still answer ping). Check the key in your provider's account first, then that UDP to the endpoint isn't blocked on the way.
+    - `sent 0 bytes`: nothing left the pod. Check the `Endpoint` and that `wireguard.endpoints` matches it.
+    - A handshake that is old, with bytes received: the server answered and then stopped. The server is down, the key was revoked since, or UDP to it is blocked now. `wireguard.failover` switches to another server in that case.
 - **Pod never created?**
   - `kubectl describe rs` shows `violates PodSecurity`: the namespace needs the `privileged` Pod Security level (see Requirements).
   - `exceeded quota` or `must specify limits`: set the `resources` (and `transmission.initResources`) your ResourceQuota requires.

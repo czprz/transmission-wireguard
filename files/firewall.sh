@@ -12,7 +12,9 @@
 #        firewall.sh live    tunnel + latest handshake is recent (if configured);
 #                            with failover peers, switches to the next one
 #                            when the current one stopped answering
-#                            with a NAT-PMP gateway, renews the forwarded port
+#                            with a NAT-PMP gateway, renews the forwarded port;
+#                            logs the peers' state every 5 minutes, and why
+#                            when it fails
 set -euo pipefail
 
 WG_IFACE="${TWG_WG_IFACE:-wg0}"
@@ -44,6 +46,19 @@ FAILOVER_STATE="${TWG_FAILOVER_STATE:-/run/twg-failover}"
 NATPMP_GATEWAY="${TWG_NATPMP_GATEWAY:-}"
 FORWARD_DIR="${TWG_FORWARD_DIR:-/twg/forward}"
 RPC_DIR="${TWG_RPC_DIR:-/twg/rpc}"
+# A probe's output reaches kubectl only as an event, and only when it fails.
+# live also appends to LIVE_LOG, which a tail started by apply copies to the
+# container's log (kubectl logs --previous has it after a restart; writing
+# to PID 1's stdout needs CAP_SYS_PTRACE), and writes the reason it failed
+# to the termination message, which kubectl describe pod shows under Last
+# State.
+MODE="${1:-}"
+LIVE_LOG_FILE="${TWG_LIVE_LOG:-/run/twg-live.log}"
+TERMINATION_LOG="${TWG_TERMINATION_LOG:-/dev/termination-log}"
+# When live last logged the peers' state, and how often it does.
+STATUS_STATE="${TWG_STATUS_STATE:-/run/twg-status}"
+STATUS_EVERY="${TWG_STATUS_EVERY:-300}"
+LIVE_LOG=()
 
 IN=TWG-INPUT
 OUT=TWG-OUTPUT
@@ -52,7 +67,13 @@ MOUT=TWG-MANGLE-OUTPUT
 POST=TWG-POSTROUTING
 FWD=TWG-FORWARDED
 
-log() { echo "[twg-firewall] $*" >&2; }
+log() {
+  echo "[twg-firewall] $*" >&2
+  if [[ $MODE == live ]]; then
+    LIVE_LOG+=("[twg-firewall] $*")
+    echo "[twg-firewall] $*" 2>/dev/null >>"$LIVE_LOG_FILE" || true
+  fi
+}
 die() { log "FATAL: $*"; exit 1; }
 
 # Settings the rules cannot be built safely from. apply first closes every
@@ -551,7 +572,7 @@ fail_over() {
   now=$(date +%s)
   cur=$(wg show "$WG_IFACE" peers | head -n1)
   [[ -n $cur ]] || return 0
-  read -r key since _ <"$FAILOVER_STATE" 2>/dev/null || true
+  read -r key since _ 2>/dev/null <"$FAILOVER_STATE" || true
   # A peer this container has not seen yet (wg-quick just came up): from now.
   if [[ ${key:-} != "$cur" ]]; then
     echo "$cur $now 0" >"$FAILOVER_STATE"
@@ -629,20 +650,74 @@ EOF
   fi
 }
 
+# One line per peer from wg's counters, and with "why" what they point to.
+# The dump's first line, the interface with its private key, is skipped.
+peer_report() {
+  local now pub ep hs rx tx
+  now=$(date +%s)
+  while IFS=$'\t' read -r pub _ ep _ hs rx tx _; do
+    if ((hs == 0)); then
+      log "peer ${pub} at ${ep}: no handshake yet, received ${rx} bytes, sent ${tx} bytes"
+    else
+      log "peer ${pub} at ${ep}: last handshake $((now - hs))s ago, received ${rx} bytes, sent ${tx} bytes"
+    fi
+    [[ ${1:-} == why ]] || continue
+    if ((hs == 0 && tx == 0)); then
+      log "  nothing was sent to ${ep}: the endpoint is not reachable from the pod (address, port, or the kill switch's endpoint list)"
+    elif ((hs == 0)); then
+      log "  ${ep} never answered: the server ignores this key's handshakes. Check the provider still has wg0.conf's key (rotated or revoked keys look like this), that the account is active, and that UDP to ${ep} is not blocked on the way"
+    else
+      log "  ${ep} answered before and stopped: the server is down, the key was revoked since, or UDP to it is blocked now"
+    fi
+  done < <(wg show "$WG_IFACE" dump 2>/dev/null | tail -n +2)
+}
+
+# Every STATUS_EVERY seconds, the peers' state in the container's log: a
+# history to compare with when the probe fails.
+status_note() {
+  local now last=0
+  now=$(date +%s)
+  read -r last 2>/dev/null <"$STATUS_STATE" || true
+  ((now - ${last:-0} >= STATUS_EVERY)) || return 0
+  echo "$now" >"$STATUS_STATE" 2>/dev/null || true
+  peer_report
+}
+
+# The termination message (up to 4 KiB): this probe's lines if it failed, so
+# a restart says why; cleared once a probe passes, so an unrelated exit
+# does not show an old reason.
+live_exit() {
+  # Kept small: tail -F follows the new file once this one is moved away.
+  if (($(wc -c 2>/dev/null <"$LIVE_LOG_FILE" || echo 0) > 262144)); then
+    mv -f "$LIVE_LOG_FILE" "$LIVE_LOG_FILE.1" 2>/dev/null || true
+  fi
+  [[ -f $TERMINATION_LOG ]] || return 0
+  if (($1)); then
+    printf '%s\n' "${LIVE_LOG[@]}" | tail -c 4000 >"$TERMINATION_LOG" 2>/dev/null || true
+  elif [[ -s $TERMINATION_LOG ]]; then
+    : >"$TERMINATION_LOG" 2>/dev/null || true
+  fi
+}
+
 live() {
   local now hs newest=0 key since switched
   tunnel
   fail_over
   port_forward
+  status_note
   ((HANDSHAKE_MAX_AGE > 0)) && keepalive_on || return 0
   now=$(date +%s)
   while read -r _ hs; do ((hs > newest)) && newest=$hs; done < <(wg show "$WG_IFACE" latest-handshakes)
   # A peer fail_over set gets the whole window to answer.
-  if [[ -n $FAILOVER_PEERS ]] && read -r key since switched <"$FAILOVER_STATE" 2>/dev/null &&
+  if [[ -n $FAILOVER_PEERS ]] && read -r key since switched 2>/dev/null <"$FAILOVER_STATE" &&
     [[ $switched == 1 && $key == $(wg show "$WG_IFACE" peers | head -n1) ]]; then
     ((since > newest)) && newest=$since
   fi
-  ((newest > 0 && now - newest < HANDSHAKE_MAX_AGE)) || { log "no handshake within ${HANDSHAKE_MAX_AGE}s"; return 1; }
+  if ! ((newest > 0 && now - newest < HANDSHAKE_MAX_AGE)); then
+    log "no handshake within ${HANDSHAKE_MAX_AGE}s"
+    peer_report why
+    return 1
+  fi
 }
 
 detect_families "${1:-}"
@@ -651,10 +726,18 @@ case "${1:-}" in
     for fam in "${FAMILIES[@]}"; do apply_family "$fam"; done
     reset_netns
     log "kill switch installed (web ${WEB_PORT}/tcp from: ${WEB_CIDRS:-none}; peers ${PEER_PORT} via ${WG_IFACE})"
+    # As the container's command (before exec /init), not from an exec:
+    # the tail outlives this script, with the container's stdout.
+    if [[ $PPID == 1 ]] && : 2>/dev/null >>"$LIVE_LOG_FILE"; then
+      tail -n 0 -F "$LIVE_LOG_FILE" 2>/dev/null &
+    fi
     preflight
     ;;
   check) check ;;
   tunnel) tunnel ;;
-  live) live ;;
+  live)
+    trap 'live_exit $?' EXIT
+    live
+    ;;
   *) die "usage: $0 apply|check|tunnel|live" ;;
 esac
