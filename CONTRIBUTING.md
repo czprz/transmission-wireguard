@@ -10,6 +10,7 @@ Thank you for considering contributing! Here are some guidelines to help you get
 - Open a pull request and describe your changes.
 
 ## Development
+- A dev container (`.devcontainer/`) ships Helm, ct, kubeconform, yq, helm-unittest and Docker at the versions CI uses, plus the Claude Code, Codex and GitHub Copilot CLIs (logins persist across rebuilds). Open the repo in VS Code and choose "Reopen in Container", or use GitHub Codespaces.
 - Lint the chart: `helm lint . --strict -f ci/default-values.yaml` (the chart needs a WireGuard config to render)
 - Run tests: `docker run --rm -v "${PWD}:/apps" helmunittest/helm-unittest:3.11.1-0.3.0@sha256:97f1d07dad520c9af52e090198469515b7b194622b5085302e40b11a8a930613 .` `tests/schema-test.sh`, `tests/metadata-test.sh` (`appVersion` must be the default Transmission version) and `tests/package-test.sh`
 - Package: `tests/package-test.sh` checks the package against an allowlist and against git; a new top-level file must be listed in `.helmignore` or in that allowlist
