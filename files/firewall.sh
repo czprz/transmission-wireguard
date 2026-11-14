@@ -47,11 +47,13 @@ NATPMP_GATEWAY="${TWG_NATPMP_GATEWAY:-}"
 FORWARD_DIR="${TWG_FORWARD_DIR:-/twg/forward}"
 RPC_DIR="${TWG_RPC_DIR:-/twg/rpc}"
 # A probe's output reaches kubectl only as an event, and only when it fails.
-# live also writes to the container's log (PID 1's stdout), so kubectl logs
-# --previous has it after a restart, and the reason it failed to the
-# termination message, which kubectl describe pod shows under Last State.
+# live also appends to LIVE_LOG, which a tail started by apply copies to the
+# container's log (kubectl logs --previous has it after a restart; writing
+# to PID 1's stdout needs CAP_SYS_PTRACE), and writes the reason it failed
+# to the termination message, which kubectl describe pod shows under Last
+# State.
 MODE="${1:-}"
-CONTAINER_LOG="${TWG_CONTAINER_LOG:-/proc/1/fd/1}"
+LIVE_LOG_FILE="${TWG_LIVE_LOG:-/run/twg-live.log}"
 TERMINATION_LOG="${TWG_TERMINATION_LOG:-/dev/termination-log}"
 # When live last logged the peers' state, and how often it does.
 STATUS_STATE="${TWG_STATUS_STATE:-/run/twg-status}"
@@ -69,7 +71,7 @@ log() {
   echo "[twg-firewall] $*" >&2
   if [[ $MODE == live ]]; then
     LIVE_LOG+=("[twg-firewall] $*")
-    echo "[twg-firewall] $*" >>"$CONTAINER_LOG" 2>/dev/null || true
+    echo "[twg-firewall] $*" 2>/dev/null >>"$LIVE_LOG_FILE" || true
   fi
 }
 die() { log "FATAL: $*"; exit 1; }
@@ -685,6 +687,10 @@ status_note() {
 # a restart says why; cleared once a probe passes, so an unrelated exit
 # does not show an old reason.
 live_exit() {
+  # Kept small: tail -F follows the new file once this one is moved away.
+  if (($(wc -c 2>/dev/null <"$LIVE_LOG_FILE" || echo 0) > 262144)); then
+    mv -f "$LIVE_LOG_FILE" "$LIVE_LOG_FILE.1" 2>/dev/null || true
+  fi
   [[ -f $TERMINATION_LOG ]] || return 0
   if (($1)); then
     printf '%s\n' "${LIVE_LOG[@]}" | tail -c 4000 >"$TERMINATION_LOG" 2>/dev/null || true
@@ -720,6 +726,11 @@ case "${1:-}" in
     for fam in "${FAMILIES[@]}"; do apply_family "$fam"; done
     reset_netns
     log "kill switch installed (web ${WEB_PORT}/tcp from: ${WEB_CIDRS:-none}; peers ${PEER_PORT} via ${WG_IFACE})"
+    # As the container's command (before exec /init), not from an exec:
+    # the tail outlives this script, with the container's stdout.
+    if [[ $PPID == 1 ]] && : 2>/dev/null >>"$LIVE_LOG_FILE"; then
+      tail -n 0 -F "$LIVE_LOG_FILE" 2>/dev/null &
+    fi
     preflight
     ;;
   check) check ;;

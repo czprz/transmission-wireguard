@@ -72,7 +72,7 @@ unanswered() {
   since=$(log_lines)
   docker exec -e TWG_STATUS_STATE=/tmp/status-never "$P-wg" /twg/scripts/firewall.sh live
   # A line after it: once that is in docker logs, so is anything before.
-  docker exec "$P-wg" sh -c 'echo twg-test-marker >/proc/1/fd/1'
+  docker exec "$P-wg" sh -c 'echo twg-test-marker >>/run/twg-live.log'
   wait_until 10 logged_since "$since" twg-test-marker || fail "the container's log is not readable"
   ! logged_since "$since" 'peer .* last handshake' || fail "the state is logged on every probe"
 }
