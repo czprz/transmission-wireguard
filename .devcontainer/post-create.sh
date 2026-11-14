@@ -38,9 +38,22 @@ sudo chmod +x /usr/local/bin/yq
 # helm-unittest plugin, so `helm unittest .` works without Docker
 helm plugin install https://github.com/helm-unittest/helm-unittest --version "v${HELM_UNITTEST_VERSION}" >/dev/null || true
 
+# Credential dirs are shared named volumes (see devcontainer.json). A fresh
+# volume is root-owned, so hand it to the container user.
+for dir in ~/.config/gh ~/.copilot ~/.claude ~/.codex; do
+  sudo mkdir -p "${dir}"
+  sudo chown -R "$(id -u):$(id -g)" "${dir}"
+done
+
+# Claude Code and Copilot CLI come with the base image; add Codex.
+sudo npm install -g --no-fund --no-audit @openai/codex
+
 echo
 echo "Tooling installed:"
 helm version --short
 ct version | head -n 1
 kubeconform -v
 yq --version
+echo "claude $(claude --version)"
+codex --version
+echo "copilot $(copilot --version | head -n 1)"

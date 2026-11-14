@@ -10,7 +10,7 @@ Thank you for considering contributing! Here are some guidelines to help you get
 - Open a pull request and describe your changes.
 
 ## Development
-- A dev container (`.devcontainer/`) ships Helm, ct, kubeconform, yq, helm-unittest and Docker at the versions CI uses. Open the repo in VS Code and choose "Reopen in Container", or use GitHub Codespaces.
+- A dev container (`.devcontainer/`) ships Helm, ct, kubeconform, yq, helm-unittest and Docker at the versions CI uses, plus the Claude Code, Codex and GitHub Copilot CLIs (logins persist across rebuilds). Open the repo in VS Code and choose "Reopen in Container", or use GitHub Codespaces.
 - Lint the chart: `helm lint . --strict`
 - Run tests: `docker run --rm -v "${PWD}:/apps" helmunittest/helm-unittest:3.11.1-0.3.0 .`
 - Validate manifests: `ct lint --all --chart-dirs .`

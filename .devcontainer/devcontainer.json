@@ -1,21 +1,49 @@
 {
   "name": "transmission-wireguard",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  // Shared dever-labs base: Node, Claude Code, Copilot CLI, gh, kubectl, Helm,
+  // k3d and Docker-outside-of-Docker. https://github.com/dever-labs/devcontainers
+  "image": "ghcr.io/dever-labs/devcontainers/node-dev:latest",
+
   "features": {
+    // The image ships Helm 4; pin Helm to the version CI uses (.github/workflows).
     "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
       "version": "latest",
       "helm": "3.14.4",
       "minikube": "none"
     },
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // Python for chart-testing's yamllint / yamale.
     "ghcr.io/devcontainers/features/python:1": {
       "version": "3.12"
     }
   },
+
+  // The devcontainer spec has no inheritance, so the image's credential volumes
+  // are repeated here. Shared with every dever-labs devcontainer.
+  "mounts": [
+    "source=dever-labs-gh-config,target=/home/vscode/.config/gh,type=volume",
+    "source=dever-labs-copilot,target=/home/vscode/.copilot,type=volume",
+    "source=dever-labs-claude,target=/home/vscode/.claude,type=volume",
+    "source=dever-labs-codex,target=/home/vscode/.codex,type=volume"
+  ],
+
+  "containerEnv": {
+    // Keep all Claude Code state (including ~/.claude.json) in the persisted volume.
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude"
+  },
+
+  "remoteEnv": {
+    "PATH": "/usr/local/bin:${containerEnv:PATH}"
+  },
+
   "postCreateCommand": "bash .devcontainer/post-create.sh",
+
   "customizations": {
     "vscode": {
       "extensions": [
+        "github.copilot",
+        "github.copilot-chat",
+        "anthropics.claude-code",
+        "openai.chatgpt",
         "ms-kubernetes-tools.vscode-kubernetes-tools",
         "redhat.vscode-yaml"
       ],
