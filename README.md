@@ -270,7 +270,7 @@ transmission:
 
 ## Ingress and cert-manager issuer
 
-Use ingress only if you plan to expose the Transmission web UI outside the cluster.
+Use ingress (or [Gateway API](#gateway-api)) only if you plan to expose the Transmission web UI outside the cluster.
 If ingress is disabled, there is no need for cert-manager or an issuer.
 
 cert-manager setup guide: https://cert-manager.io/docs/installation/
@@ -289,6 +289,25 @@ issuer:
 ```
 
 If you already have an issuer, leave `issuer.enabled` false and reference your issuer in `ingress.annotations`.
+
+### Gateway API
+
+With a Gateway API implementation (Envoy Gateway, Cilium, Istio, NGINX Gateway Fabric, ...) attach an `HTTPRoute` to your Gateway instead of, or next to, the Ingress:
+
+```yaml
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - transmission.example.com
+```
+
+TLS is configured on the Gateway's listener. The hostnames are added to `rpc-host-whitelist` like ingress hosts. `httpRoute.matches` (default: every path) and `httpRoute.filters` shape the route's one rule. The Gateway's pods reach the web UI from inside the cluster, so the default `firewall.webAllowedCIDRs` cover them; with `networkPolicy.ingressFrom` set, allow their namespace there too.
+
+With `issuer.enabled` and no Ingress, the issuer solves HTTP-01 challenges with a route on the same Gateways (without `sectionName` and `port`, since challenges arrive on port 80). That needs cert-manager's Gateway API support turned on, and the `cert-manager.io/issuer` (or `cluster-issuer`) annotation on the Gateway for the certificate itself.
 
 ## Sidecar image
 

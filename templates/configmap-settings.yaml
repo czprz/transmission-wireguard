@@ -8,6 +8,9 @@
 {{- $hosts = append $hosts .host -}}
 {{- end -}}
 {{- end -}}
+{{- if .Values.httpRoute.enabled -}}
+{{- $hosts = concat $hosts .Values.httpRoute.hostnames -}}
+{{- end -}}
 {{- $_ := set $settings "rpc-host-whitelist" (without ($hosts | uniq) "" | join ",") -}}
 {{- end -}}
 apiVersion: v1

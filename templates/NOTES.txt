@@ -14,8 +14,8 @@ Transmission is running behind a WireGuard sidecar with a chart-managed kill swi
 - DNS: {{ join ", " .Values.wireguard.dns.nameservers }} through the tunnel
 {{- $s := .Values.transmission.settings }}
 {{- if index $s "rpc-host-whitelist-enabled" }}
-- Web UI hostnames allowed without RPC auth: the Service name{{ if .Values.ingress.enabled }}, the ingress hosts{{ end }} and {{ index $s "rpc-host-whitelist" | default "nothing else" }}.
-  Reaching it under another name (Gateway API, external proxy) gives HTTP 421; add the name to transmission.settings.rpc-host-whitelist.
+- Web UI hostnames allowed without RPC auth: the Service name{{ if .Values.ingress.enabled }}, the ingress hosts{{ end }}{{ if .Values.httpRoute.enabled }}, the HTTPRoute hostnames{{ end }} and {{ index $s "rpc-host-whitelist" | default "nothing else" }}.
+  Reaching it under another name (an external proxy, a Tailscale name) gives HTTP 421; add the name to transmission.settings.rpc-host-whitelist.
 {{- end }}
 {{- if .Values.wireguard.existingSecret }}
 - wg0.conf comes from Secret {{ .Values.wireguard.existingSecret }}: restart the pod after changing it

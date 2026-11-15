@@ -11,7 +11,14 @@ spec:
       name: {{ default (printf "%s-issuer" (include "twg.fullname" .)) .Values.issuer.privateKeySecretName }}
     solvers:
       - http01:
-          {{- if .Values.ingress.className }}
+          {{- if and .Values.httpRoute.enabled (not .Values.ingress.enabled) }}
+          gatewayHTTPRoute:
+            parentRefs:
+              {{- /* The challenge arrives on port 80, whichever listener the web UI uses. */}}
+              {{- range .Values.httpRoute.parentRefs }}
+              - {{ toYaml (omit . "sectionName" "port") | indent 16 | trim }}
+              {{- end }}
+          {{- else if .Values.ingress.className }}
           ingress:
             class: {{ .Values.ingress.className | quote }}
           {{- else }}

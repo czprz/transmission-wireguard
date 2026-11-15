@@ -35,9 +35,35 @@ ingress:
   hosts: []
   tls: []
 
+# Gateway API HTTPRoute for the web UI, instead of or next to the Ingress.
+# Needs the Gateway API CRDs (v1) and a Gateway to attach to; TLS is set on
+# the Gateway's listener, not here. The hostnames are added to
+# rpc-host-whitelist like the ingress hosts.
+httpRoute:
+  enabled: false
+  annotations: {}
+  labels: {}
+  # Gateways (or listeners, with sectionName) to attach to. Required.
+  parentRefs: []
+  #  - name: public
+  #    namespace: gateway-system
+  #    sectionName: https
+  hostnames: []
+  #  - transmission.example.com
+  # The route's one rule; the default sends every path to the web UI.
+  matches:
+    - path:
+        type: PathPrefix
+        value: /
+  # HTTPRouteFilter list for that rule (headers, redirects, ...).
+  filters: []
+
 issuer:
   # Enable to create a cert-manager Issuer/ClusterIssuer for this release.
   # If you already have one, keep this disabled and reference it in ingress.annotations.
+  # Its HTTP-01 solver uses the Ingress, or with only httpRoute enabled, a
+  # route on httpRoute.parentRefs' Gateways (cert-manager needs Gateway API
+  # support turned on, and the Gateway the cert-manager.io/issuer annotation).
   enabled: false
   kind: Issuer
   name: ""
