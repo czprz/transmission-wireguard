@@ -1,0 +1,111 @@
+suite: httproute
+
+templates:
+  - templates/httproute.yaml
+  - templates/configmap-settings.yaml
+  - templates/issuer.yaml
+
+values:
+  - values/base.yaml
+
+tests:
+  - it: renders no HTTPRoute by default
+    template: templates/httproute.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: needs a Gateway to attach to
+    template: templates/httproute.yaml
+    set:
+      httpRoute.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: httpRoute.parentRefs must name at least one Gateway when httpRoute.enabled=true
+
+  - it: sends the hostnames to the web UI port of the Service
+    template: templates/httproute.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs: [{ name: public, namespace: gateway-system, sectionName: https }]
+      httpRoute.hostnames: [tx.example.com]
+    asserts:
+      - isKind:
+          of: HTTPRoute
+      - isAPIVersion:
+          of: gateway.networking.k8s.io/v1
+      - equal:
+          path: spec.parentRefs
+          value: [{ name: public, namespace: gateway-system, sectionName: https }]
+      - equal:
+          path: spec.hostnames
+          value: [tx.example.com]
+      - equal:
+          path: spec.rules[0].backendRefs
+          value: [{ name: RELEASE-NAME-transmission-wireguard, port: 9091 }]
+      - equal:
+          path: spec.rules[0].matches
+          value: [{ path: { type: PathPrefix, value: / } }]
+      - isNull:
+          path: spec.rules[0].filters
+
+  - it: passes filters through
+    template: templates/httproute.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs: [{ name: public }]
+      httpRoute.filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier: { remove: [X-Forwarded-For] }
+    asserts:
+      - equal:
+          path: spec.rules[0].filters[0].type
+          value: RequestHeaderModifier
+
+  - it: allows the hostnames in rpc-host-whitelist
+    template: templates/configmap-settings.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs: [{ name: public }]
+      httpRoute.hostnames: [tx.example.com, "*.tx.example.org"]
+    asserts:
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"rpc-host-whitelist":"[^"]*,tx\.example\.com,\*\.tx\.example\.org"'
+
+  - it: leaves rpc-host-whitelist alone while the route is off
+    template: templates/configmap-settings.yaml
+    set:
+      httpRoute.hostnames: [tx.example.com]
+    asserts:
+      - notMatchRegex:
+          path: data["settings.json"]
+          pattern: tx\.example\.com
+
+  - it: solves HTTP-01 through the Gateway when there is no Ingress
+    template: templates/issuer.yaml
+    set:
+      issuer.enabled: true
+      issuer.email: you@example.com
+      httpRoute.enabled: true
+      httpRoute.parentRefs: [{ name: public, namespace: gateway-system, sectionName: https, port: 443 }]
+    asserts:
+      - equal:
+          path: spec.acme.solvers[0].http01
+          value:
+            gatewayHTTPRoute:
+              parentRefs: [{ name: public, namespace: gateway-system }]
+
+  - it: keeps solving HTTP-01 through the Ingress when both are on
+    template: templates/issuer.yaml
+    set:
+      issuer.enabled: true
+      issuer.email: you@example.com
+      ingress.enabled: true
+      ingress.className: nginx
+      httpRoute.enabled: true
+      httpRoute.parentRefs: [{ name: public }]
+    asserts:
+      - equal:
+          path: spec.acme.solvers[0].http01
+          value: { ingress: { class: nginx } }

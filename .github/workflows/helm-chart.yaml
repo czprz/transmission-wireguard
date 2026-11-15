@@ -227,9 +227,20 @@ jobs:
       # The API server validates the manifests, unknown fields included.
       # (The helm test pod needs its ServiceAccount to exist; the cluster
       # suite runs it for real.)
+      # The Gateway API CRDs, so the HTTPRoute is validated as well.
+      - name: Install Gateway API CRDs
+        run: |
+          curl -sSLo gateway-api.yaml https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/standard-install.yaml
+          echo "6a4029e661446d64add866a00ecdc40c14219b68777ab614c5cdaac0adb481f1  gateway-api.yaml" | sha256sum -c -
+          kubectl apply --server-side -f gateway-api.yaml
+          kubectl wait --for condition=Established --timeout=60s crd/httproutes.gateway.networking.k8s.io
+          rm gateway-api.yaml
+
       - name: Server-side validation
         run: |
-          helm template transmission-wireguard . -f ci/default-values.yaml --set persistence.downloads.enabled=true |
+          helm template transmission-wireguard . -f ci/default-values.yaml --set persistence.downloads.enabled=true \
+            --set httpRoute.enabled=true --set 'httpRoute.parentRefs[0].name=public' \
+            --set 'httpRoute.hostnames[0]=transmission.example.com' |
             kubectl apply --dry-run=server --validate=strict -f -
 
       - name: Check out the last release
