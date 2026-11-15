@@ -6,15 +6,6 @@
 # what the tests need (the addresses, the keys, the pod).
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-# The chart's default image for $1, so the test follows Renovate's bumps.
-chart_image() {
-  local tpl=$ROOT/templates/_helpers.tpl repo tag digest
-  repo=$(sed -n "s/.*\.Values\.images\.$1 \"repo\" \"\([^\"]*\)\".*/\1/p" "$tpl")
-  tag=$(sed -n "s/.*default \"\([^\"]*\)\" \.Values\.images\.$1\.tag.*/\1/p" "$tpl")
-  digest=$(sed -n "s/.*default \"\([^\"]*\)\" \.Values\.images\.$1\.digest.*/\1/p" "$tpl")
-  [[ -n $repo && -n $tag && -n $digest ]] || { echo "cannot read the $1 image from $tpl" >&2; return 1; }
-  echo "$repo:$tag@$digest"
-}
 # The tools image for the WireGuard server, the canaries and the probes,
 # which need wg, iptables and nc: the full linuxserver image, not the
 # chart's minimal sidecar (the chart installs that one itself).

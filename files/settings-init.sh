@@ -69,13 +69,18 @@ umask 022
 # those directories, never recursively, so existing files keep their owner.
 # Directories Transmission's user already owns can't be written as root
 # without CAP_DAC_OVERRIDE; Transmission creates what is missing there.
+# A volume that refuses chown (NFS with root_squash) may still be writable
+# for Transmission's user: warn, and let Transmission try.
 own() {
-  [ "$(stat -c %u:%g "$1")" = "${PUID:-1000}:${PGID:-1000}" ] || chown "${PUID:-1000}:${PGID:-1000}" "$1"
+  [ "$(stat -c %u:%g "$1")" = "${PUID:-1000}:${PGID:-1000}" ] || chown "${PUID:-1000}:${PGID:-1000}" "$1" ||
+    echo "[twg-settings] WARNING: could not give $1 to ${PUID:-1000}:${PGID:-1000}; Transmission may not be able to write there" >&2
 }
 if [ -n "${TWG_OWN_DIRS:-}" ]; then
   for key in download-dir incomplete-dir watch-dir; do
     # Without trailing slashes, so the walk up below ends at the root.
     d=$(jq -r --arg k "$key" '.[$k] // empty' "$DST" | sed -E 's#/+$##; s#//+#/#g')
+    # A path through .. could lead out of the volumes.
+    case /$d/ in */../*) continue ;; esac
     for root in $TWG_OWN_DIRS; do
       case $d in
         "$root"/*)

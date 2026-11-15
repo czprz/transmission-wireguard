@@ -85,7 +85,7 @@ ingress:
 4) Install a released version (see [Releases](https://github.com/czprz/transmission-wireguard/releases)):
 
 ```bash
-VERSION=1.0.0
+VERSION=1.1.0
 helm install transmission oci://ghcr.io/czprz/transmission-wireguard --version "$VERSION" -f values.yaml
 ```
 
@@ -183,7 +183,7 @@ A gateway that doesn't answer is logged and retried; downloads still work withou
 
 ## Upgrading from 1.0
 
-- **The sidecar image is now the chart's own `ghcr.io/czprz/twg-wireguard`** (see [Sidecar image](#sidecar-image)) instead of `linuxserver/wireguard`. Nothing to do unless you set `images.wireguard.tag` alone: a linuxserver tag without `images.wireguard.repository` is refused, since it doesn't exist for the new image. Remove the tag, or set the repository to keep the linuxserver image. `wireguard.env` (`TZ`, `PUID`, `PGID`) is only read by the linuxserver image.
+- **The sidecar image is now the chart's own `ghcr.io/czprz/twg-wireguard`** (see [Sidecar image](#sidecar-image)) instead of `linuxserver/wireguard`. Nothing to do unless you override `images.wireguard`. To keep the linuxserver image (or a mirror of it), set `repository`, `tag` and `digest` together, as [Sidecar image](#sidecar-image) shows. A `repository` without a `tag`, or a linuxserver `tag` without a `repository`, is refused, since the chart's default tag only exists for its own image. A `digest` alone (say the linuxserver one) is looked up in `ghcr.io/czprz/twg-wireguard` and won't be found: remove it, or set the repository and tag with it. `wireguard.env` (`TZ`, `PUID`, `PGID`) is only read by the linuxserver image.
 
 ## Upgrading to 1.0
 

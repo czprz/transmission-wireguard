@@ -11,8 +11,11 @@ on:
       - image/transmission/**
       - files/**
       - templates/**
+      - values.yaml
+      - values.schema.json
       - tests/e2e/cluster/**
       - tests/e2e/cluster-test.sh
+      - tests/e2e/kind-cluster.sh
       - .github/workflows/transmission-image.yml
   push:
     branches:

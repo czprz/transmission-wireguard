@@ -133,3 +133,29 @@ tests:
       - contains:
           path: spec.template.spec.volumes
           content: { name: transmission-data, emptyDir: {} }
+
+  - it: leaves /data to an extraVolumeMount there instead of adding an emptyDir
+    template: templates/deployment.yaml
+    set:
+      images.transmission.flavor: minimal
+      images.transmission.tag: dev
+      persistence.enabled: false
+      extraVolumes: [{ name: media, emptyDir: {} }]
+      transmission.extraVolumeMounts: [{ name: media, mountPath: /data }]
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - notContains:
+          path: spec.template.spec.volumes
+          content: { name: transmission-data, emptyDir: {} }
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: media, mountPath: /data }
+
+  - it: mounts the data volume at /data when mounts.data.mountPath is empty
+    template: templates/deployment.yaml
+    set:
+      persistence.mounts.data: { mountPath: "", subPath: dl }
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: transmission-storage, mountPath: /data, subPath: dl }
