@@ -433,6 +433,18 @@
         "securityContext": {
           "type": "object"
         },
+        "unprivileged": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "blockRouterAdvertisements": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
         "endpoints": {
           "type": "array",
           "items": {

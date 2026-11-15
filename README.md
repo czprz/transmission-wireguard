@@ -336,7 +336,16 @@ images:
 - `replicaCount` must be 1: replicas would share one WireGuard key.
 - Keep `wg0.conf` in a Secret, not in Git.
 - The web UI requires RPC credentials (`transmission.rpcAuth`) unless `allowAnonymous` is set. They are read from a Secret into a read-only `settings.json`, never stored in the ConfigMap.
-- The WireGuard sidecar is privileged by default because `wg-quick` sets `net.ipv4.conf.all.src_valid_mark`. If your kubelet allows that sysctl (`--allowed-unsafe-sysctls`), set it in `podSecurityContext.sysctls` and use `wireguard.securityContext: {privileged: false, capabilities: {add: [NET_ADMIN, NET_RAW]}}` (CI runs the Docker leak test this way too). An unprivileged sidecar can't write `/proc/sys`, so it can't stop IPv6 router advertisements from adding routes past the tunnel. Nothing leaks then, but IPv6 can stop working; the sidecar logs a warning. Allow and set `net.ipv6.conf.eth0.accept_ra_pinfo` and `net.ipv6.conf.eth0.accept_ra_rt_info_max_plen` to `0` as well to close that.
+- The WireGuard sidecar is privileged by default because `wg-quick` sets `net.ipv4.conf.all.src_valid_mark`. If you can allow that sysctl on the kubelet (`--allowed-unsafe-sysctls`, or `allowedUnsafeSysctls` in its config file), run it with only `NET_ADMIN` and `NET_RAW` instead (CI runs the Docker leak test this way too):
+
+  ```yaml
+  wireguard:
+    unprivileged:
+      enabled: true                      # privileged: false, NET_ADMIN + NET_RAW, src_valid_mark=1
+      blockRouterAdvertisements: true    # IPv6 pod networks only; allow these two sysctls as well
+  ```
+
+  The chart then sets the sysctl in the pod's `securityContext` (next to any in `podSecurityContext`). Without it allowed, the pod fails with `SysctlForbidden`. An unprivileged sidecar can't write `/proc/sys`, so it can't stop IPv6 router advertisements from adding routes past the tunnel. Nothing leaks then, but IPv6 can stop working; the sidecar logs a warning. `blockRouterAdvertisements` sets `net.ipv6.conf.eth0.accept_ra_pinfo` and `accept_ra_rt_info_max_plen` to `0` to close that. Leave it off where pods have no IPv6, since the pod won't start without those sysctls.
 - Transmission runs without network capabilities. The chart refuses a `transmission.securityContext` that is missing, privileged, doesn't drop `ALL`, or adds anything beyond file and user capabilities (`CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`, ...). Root in that container (the image's init, `kubectl exec`) could otherwise bypass the kill switch: `NET_RAW` alone allows `SO_MARK` and raw sockets on `eth0`.
 - Anyone who can `kubectl exec` into the WireGuard sidecar is root with `NET_ADMIN` there and can open the kill switch. So can anyone who can add an ephemeral container (`kubectl debug --profile=netadmin` or `sysadmin`), which shares the pod's network namespace. Limit `pods/exec` and `pods/ephemeralcontainers` in the namespace.
 - Default images are pinned by digest. Overriding `images.*.repository` or `tag` drops the default digest; set `images.*.digest` to keep pulls immutable.

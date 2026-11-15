@@ -446,3 +446,80 @@ tests:
             name: transmission-downloads
             persistentVolumeClaim:
               claimName: media
+
+  - it: runs the sidecar privileged by default, without pod sysctls
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value: { privileged: true }
+      - isNull:
+          path: spec.template.spec.securityContext
+
+  - it: runs the sidecar unprivileged with the sysctl wg-quick needs
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: &unprivconf |
+        [Interface]
+        Address = 10.64.0.2/32
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = 203.0.113.10:51820
+      wireguard.unprivileged.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value: { privileged: false, capabilities: { add: [NET_ADMIN, NET_RAW] } }
+      - equal:
+          path: spec.template.spec.securityContext.sysctls
+          value: [{ name: net.ipv4.conf.all.src_valid_mark, value: "1" }]
+
+  - it: blocks router advertisements for an unprivileged sidecar when asked
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: *unprivconf
+      wireguard.unprivileged.enabled: true
+      wireguard.unprivileged.blockRouterAdvertisements: true
+    asserts:
+      - contains:
+          path: spec.template.spec.securityContext.sysctls
+          content: { name: net.ipv6.conf.eth0.accept_ra_pinfo, value: "0" }
+      - contains:
+          path: spec.template.spec.securityContext.sysctls
+          content: { name: net.ipv6.conf.eth0.accept_ra_rt_info_max_plen, value: "0" }
+
+  - it: keeps podSecurityContext and its sysctls next to the unprivileged ones
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: *unprivconf
+      wireguard.unprivileged.enabled: true
+      podSecurityContext:
+        fsGroup: 1000
+        sysctls:
+          - { name: net.ipv4.conf.all.src_valid_mark, value: "1" }
+          - { name: net.ipv4.ip_unprivileged_port_start, value: "0" }
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            fsGroup: 1000
+            sysctls:
+              - { name: net.ipv4.conf.all.src_valid_mark, value: "1" }
+              - { name: net.ipv4.ip_unprivileged_port_start, value: "0" }
+
+  - it: keeps the sidecar's other securityContext fields when unprivileged
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: *unprivconf
+      wireguard.unprivileged.enabled: true
+      wireguard.securityContext:
+        privileged: true
+        seccompProfile: { type: RuntimeDefault }
+        capabilities: { add: [NET_ADMIN] }
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[1].securityContext
+          value:
+            privileged: false
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { add: [NET_ADMIN, NET_RAW] }
