@@ -319,7 +319,7 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
-        {{- if not (or .Values.persistence.enabled .Values.persistence.downloads.enabled) }}
+        {{- if include "twg.dataEmptyDir" . }}
         - name: transmission-data
           emptyDir: {}
         {{- end }}

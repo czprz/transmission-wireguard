@@ -34,6 +34,14 @@ tests:
           errorMessage: "images.wireguard.tag 1.0.20260223-r0-ls126 is a linuxserver tag, but the default sidecar image is now ghcr.io/czprz/twg-wireguard. Remove the tag, or set images.wireguard.repository to ghcr.io/linuxserver/wireguard to keep that image"
 
   - template: templates/deployment.yaml
+    it: refuses a sidecar repository without a tag
+    set:
+      images.wireguard.repository: registry.example.com/mirror/wireguard
+    asserts:
+      - failedTemplate:
+          errorMessage: "images.wireguard.repository registry.example.com/mirror/wireguard needs images.wireguard.tag as well. The chart's default tag is for its own image (ghcr.io/czprz/twg-wireguard) and doesn't exist in another repository"
+
+  - template: templates/deployment.yaml
     it: keeps the linuxserver sidecar when its repository is set
     set:
       images.wireguard.repository: ghcr.io/linuxserver/wireguard

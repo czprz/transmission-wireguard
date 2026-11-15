@@ -195,6 +195,9 @@ true
 {{- end -}}
 {{- end -}}
 {{- with .Values.images.wireguard -}}
+{{- if and .repository (not .tag) -}}
+{{- fail (printf "images.wireguard.repository %s needs images.wireguard.tag as well. The chart's default tag is for its own image (ghcr.io/czprz/twg-wireguard) and doesn't exist in another repository" .repository) -}}
+{{- end -}}
 {{- if and .tag (not .repository) (regexMatch "-ls[0-9]+$" (toString .tag)) -}}
 {{- fail (printf "images.wireguard.tag %s is a linuxserver tag, but the default sidecar image is now ghcr.io/czprz/twg-wireguard. Remove the tag, or set images.wireguard.repository to ghcr.io/linuxserver/wireguard to keep that image" (toString .tag)) -}}
 {{- end -}}
@@ -423,7 +426,7 @@ already in podSecurityContext win.
 {{- end -}}
 
 {{- define "twg.dataPath" -}}
-{{- (.Values.persistence.mounts | default dict).data | default dict | dig "mountPath" "/data" -}}
+{{- (.Values.persistence.mounts | default dict).data | default dict | dig "mountPath" "" | default "/data" -}}
 {{- end -}}
 
 {{/* Transmission's downloads mount, if any. */}}
@@ -437,9 +440,22 @@ already in podSecurityContext win.
   {{- with (.Values.persistence.mounts | default dict).data | default dict | dig "subPath" "" }}
   subPath: {{ . }}
   {{- end }}
-{{- else if eq (include "twg.transmissionFlavor" .) "minimal" -}}
-{{- /* Without persistence, the minimal image's read-only root has no /data. */}}
+{{- else if include "twg.dataEmptyDir" . -}}
 - name: transmission-data
   mountPath: {{ include "twg.dataPath" . }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+"true" when the minimal image needs an emptyDir at the data path: its root
+is read-only, so without persistence it has no /data, unless
+transmission.extraVolumeMounts mounts something there.
+*/}}
+{{- define "twg.dataEmptyDir" -}}
+{{- if and (eq (include "twg.transmissionFlavor" .) "minimal") (not .Values.persistence.enabled) (not .Values.persistence.downloads.enabled) -}}
+{{- $path := include "twg.dataPath" . -}}
+{{- $taken := false -}}
+{{- range .Values.transmission.extraVolumeMounts }}{{ if eq (trimSuffix "/" .mountPath) $path }}{{ $taken = true }}{{ end }}{{ end -}}
+{{- if not $taken }}true{{ end -}}
 {{- end -}}
 {{- end -}}
