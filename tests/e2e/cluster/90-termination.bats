@@ -17,9 +17,11 @@ setup_file() {
   restore_release
   local term_probe c grace deleted took tx_exit line
   local -A term_log term_pid started
-  term_probe="while :; do curl -sS -m 2 http://$CANARY_IP/cgi-bin/ip 2>/dev/null || echo blocked;"
-  if ((IPV6)); then term_probe+=" curl -6 -sS -m 2 http://[$CANARY_IP6]/cgi-bin/ip 2>/dev/null || echo blocked;"; fi
-  term_probe+=" sleep 0.5; done"
+  # Densely: the minimal Transmission image stops on SIGTERM in about a
+  # second, and the verdict needs at least two probes from the shutdown.
+  term_probe="while :; do curl -sS -m 1 http://$CANARY_IP/cgi-bin/ip 2>/dev/null || echo blocked;"
+  if ((IPV6)); then term_probe+=" curl -6 -sS -m 1 http://[$CANARY_IP6]/cgi-bin/ip 2>/dev/null || echo blocked;"; fi
+  term_probe+=" sleep 0.1; done"
   for c in transmission wireguard; do
     term_log[$c]=$BATS_FILE_TMPDIR/probe-$c.log
     # Only stdout: kubectl reports the container's end on stderr. Not on
