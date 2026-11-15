@@ -283,12 +283,26 @@ wireguard:
       memory: 64Mi
     limits:
       memory: 128Mi
-  # wg-quick writes net.ipv4.conf.all.src_valid_mark, which needs privileged
-  # (or the sysctl allowed on the kubelet and set in podSecurityContext.sysctls,
-  # then capabilities NET_ADMIN + NET_RAW with privileged: false; see the
-  # README). Either way the namespace needs the privileged Pod Security level.
+  # wg-quick writes net.ipv4.conf.all.src_valid_mark, which needs privileged,
+  # or the sysctl set for the pod: see unprivileged below. Either way the
+  # namespace needs the privileged Pod Security level (NET_ADMIN is outside
+  # baseline).
   securityContext:
     privileged: true
+
+  # Run the sidecar with only NET_ADMIN and NET_RAW instead of privileged:
+  # the chart sets privileged: false, adds those capabilities and sets
+  # net.ipv4.conf.all.src_valid_mark=1 in the pod's sysctls. The kubelet
+  # must allow that sysctl (--allowed-unsafe-sysctls, or allowedUnsafeSysctls
+  # in its config); otherwise the pod fails with SysctlForbidden.
+  unprivileged:
+    enabled: false
+    # Also set net.ipv6.conf.eth0.accept_ra_pinfo and
+    # accept_ra_rt_info_max_plen to 0 (allow them on the kubelet too), which
+    # the kill switch can't do without privileged: router advertisements then
+    # can't add IPv6 routes past the tunnel. Only on IPv6 pod networks: the
+    # pod won't start where eth0 has no IPv6.
+    blockRouterAdvertisements: false
 
 # Kill switch, installed in the pod network namespace before the tunnel starts.
 # It cannot be disabled: traffic leaves the pod only through WireGuard.

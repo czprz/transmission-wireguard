@@ -325,3 +325,43 @@ NET_RAW, would apply.
 {{- fail "The web UI needs RPC auth. Without it any pod that can reach it can add torrents (linking trackers it controls to your VPN address) and run scripts. Set transmission.rpcAuth.existingSecret (or username/password), or rpcAuth.allowAnonymous=true. Credentials in transmission.settings also work but belong in rpcAuth" -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The sidecar's securityContext: wireguard.securityContext, or with
+wireguard.unprivileged.enabled, the same without privileged and with
+NET_ADMIN + NET_RAW (what the README documents and the Docker suite runs).
+*/}}
+{{- define "twg.wireguardSecurityContext" -}}
+{{- $sc := deepCopy (.Values.wireguard.securityContext | default dict) -}}
+{{- if .Values.wireguard.unprivileged.enabled -}}
+{{- $_ := set $sc "privileged" false -}}
+{{- $caps := deepCopy ($sc.capabilities | default dict) -}}
+{{- $_ := set $caps "add" (concat ($caps.add | default list) (list "NET_ADMIN" "NET_RAW") | uniq) -}}
+{{- $_ := set $sc "capabilities" $caps -}}
+{{- end -}}
+{{- toYaml $sc -}}
+{{- end -}}
+
+{{/*
+The pod's securityContext: podSecurityContext, plus with
+wireguard.unprivileged.enabled the sysctls wg-quick (src_valid_mark) and
+the kill switch (accept_ra_*) would otherwise write themselves. Sysctls
+already in podSecurityContext win.
+*/}}
+{{- define "twg.podSecurityContext" -}}
+{{- $psc := deepCopy (.Values.podSecurityContext | default dict) -}}
+{{- if .Values.wireguard.unprivileged.enabled -}}
+{{- $want := list (dict "name" "net.ipv4.conf.all.src_valid_mark" "value" "1") -}}
+{{- if .Values.wireguard.unprivileged.blockRouterAdvertisements -}}
+{{- $want = concat $want (list (dict "name" "net.ipv6.conf.eth0.accept_ra_pinfo" "value" "0") (dict "name" "net.ipv6.conf.eth0.accept_ra_rt_info_max_plen" "value" "0")) -}}
+{{- end -}}
+{{- $sysctls := $psc.sysctls | default list -}}
+{{- $have := list -}}
+{{- range $sysctls }}{{ $have = append $have .name }}{{ end -}}
+{{- range $want -}}
+{{- if not (has .name $have) }}{{ $sysctls = append $sysctls . }}{{ end -}}
+{{- end -}}
+{{- $_ := set $psc "sysctls" $sysctls -}}
+{{- end -}}
+{{- with $psc }}{{ toYaml . }}{{ end -}}
+{{- end -}}

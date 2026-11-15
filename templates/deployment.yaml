@@ -40,9 +40,9 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.podSecurityContext }}
+      {{- with include "twg.podSecurityContext" . }}
       securityContext:
-        {{- toYaml . | nindent 8 }}
+        {{- . | nindent 8 }}
       {{- end }}
       dnsPolicy: None
       dnsConfig:
@@ -98,10 +98,10 @@ spec:
           image: "{{ include "twg.wireguardImage" . }}"
           imagePullPolicy: {{ .Values.images.wireguard.pullPolicy }}
           restartPolicy: Always
-          # Install the kill switch before s6 starts wg-quick.
+          # Install the kill switch before the image's /init starts wg-quick.
           command: ["/bin/bash", "-c", "/twg/scripts/firewall.sh apply && exec /init"]
           securityContext:
-            {{- toYaml .Values.wireguard.securityContext | nindent 12 }}
+            {{- include "twg.wireguardSecurityContext" . | nindent 12 }}
           env:
             {{- range $k, $v := .Values.wireguard.env }}
             - name: {{ $k }}
