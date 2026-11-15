@@ -333,7 +333,7 @@ images:
 
 ## Transmission image
 
-The default Transmission image is `lscr.io/linuxserver/transmission`. Its s6 init runs as root and then drops to `PUID`/`PGID`, so the container needs `SETUID`, `SETGID` and `CHOWN`. `image/transmission` builds a minimal alternative: Alpine's `transmission-daemon` (4.1.x) with the web UI, `jq`, and `curl` and busybox's `nc` for the leak tests, but no init system, package manager or other network clients. It runs as `PUID`/`PGID` from the start, with no capabilities, `runAsNonRoot` and a read-only root filesystem (`/tmp` is an `emptyDir`), and stops on `SIGTERM` by itself:
+The default Transmission image is `lscr.io/linuxserver/transmission`. Its s6 init runs as root and then drops to `PUID`/`PGID`, so the container needs `SETUID`, `SETGID` and `CHOWN`. `image/transmission` builds a minimal alternative: Alpine's `transmission-daemon` (4.1.x) with the web UI, `jq`, and `curl` and OpenBSD `nc` for the leak tests, but no init system, package manager or other network clients. It runs as `PUID`/`PGID` from the start, with no capabilities, `runAsNonRoot` and a read-only root filesystem (`/tmp` is an `emptyDir`), and stops on `SIGTERM` by itself:
 
 ```yaml
 images:
