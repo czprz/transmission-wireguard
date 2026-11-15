@@ -255,10 +255,14 @@ apply_family() {
   # Without privileged, /proc/sys is read-only: say so, as nothing else would.
   if [[ $fam == 6 ]]; then
     local ra_failed=0
+    # Only a real interface's own value counts (lo gets no advertisements,
+    # and all/default don't override eth0's), so sysctls the pod already set
+    # to 0 (wireguard.unprivileged.blockRouterAdvertisements) don't warn.
     for f in /proc/sys/net/ipv6/conf/*/accept_ra_pinfo /proc/sys/net/ipv6/conf/*/accept_ra_rt_info_max_plen; do
-      [[ $f == */"$WG_IFACE"/* ]] || echo 0 2>/dev/null >"$f" || ra_failed=1
+      [[ $f == */"$WG_IFACE"/* || $(<"$f") == 0 ]] && continue
+      echo 0 2>/dev/null >"$f" || [[ $f =~ /conf/(lo|all|default)/ ]] || ra_failed=1
     done
-    ((ra_failed == 0)) || log "WARNING: /proc/sys is read-only, so router advertisements can still add IPv6 routes past the tunnel (nothing leaks, but IPv6 stops working). Set net.ipv6.conf.eth0.accept_ra_pinfo=0 and net.ipv6.conf.eth0.accept_ra_rt_info_max_plen=0 in podSecurityContext.sysctls."
+    ((ra_failed == 0)) || log "WARNING: /proc/sys is read-only, so router advertisements can still add IPv6 routes past the tunnel (nothing leaks, but IPv6 stops working). Set wireguard.unprivileged.blockRouterAdvertisements (or net.ipv6.conf.eth0.accept_ra_pinfo=0 and net.ipv6.conf.eth0.accept_ra_rt_info_max_plen=0 in podSecurityContext.sysctls)."
   fi
 }
 
