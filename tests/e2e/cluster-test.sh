@@ -20,6 +20,9 @@
 #   IPV6=1            a dual-stack cluster: adds the IPv6 leak checks
 #   SIDECAR=unprivileged  installs with wireguard.unprivileged (the cluster
 #                     scripts allow its sysctls on the kubelet)
+#   SIDECAR_IMAGE, TRANSMISSION_IMAGE  images built here and loaded into the
+#                     cluster (image/wireguard, image/transmission as the
+#                     minimal flavor)
 #   UPGRADE_FROM=<chart dir>  installs that chart (an earlier release, with
 #                     its defaults and a PVC) and upgrades it to this one, so
 #                     every check runs on an upgraded release; UPGRADE_FLAGS

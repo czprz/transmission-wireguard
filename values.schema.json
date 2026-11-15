@@ -46,6 +46,13 @@
             "digest": {
               "type": "string",
               "pattern": "^(sha256:[a-f0-9]{64})?$"
+            },
+            "flavor": {
+              "enum": [
+                "linuxserver",
+                "minimal"
+              ],
+              "description": "linuxserver/transmission (s6, root init) or the chart's minimal non-root image"
             }
           },
           "additionalProperties": false

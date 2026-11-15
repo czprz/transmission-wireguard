@@ -20,6 +20,13 @@ images:
     tag: ""
     digest: ""
     pullPolicy: IfNotPresent
+    # linuxserver: lscr.io/linuxserver/transmission, whose s6 init runs as
+    # root and drops to PUID/PGID. minimal: the chart's own image
+    # (image/transmission, ghcr.io/czprz/twg-transmission): Transmission runs
+    # as PUID/PGID from the start, with no capabilities and a read-only root
+    # filesystem. Until the chart pins a published minimal image, set its
+    # tag or digest too.
+    flavor: linuxserver
 
 service:
   type: ClusterIP

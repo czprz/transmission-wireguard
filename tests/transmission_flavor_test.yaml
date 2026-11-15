@@ -1,0 +1,135 @@
+suite: transmission image flavor
+
+templates:
+  - templates/deployment.yaml
+  - templates/configmap-scripts.yaml
+  - templates/configmap-settings.yaml
+  - templates/secret-wg.yaml
+  - templates/secret-rpc.yaml
+
+values:
+  - values/base.yaml
+
+tests:
+  - it: uses the linuxserver image by default, with its root init
+    template: templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^lscr\.io/linuxserver/transmission:'
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+          value: [SETUID, SETGID, CHOWN]
+      - isNull:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+
+  - it: needs a tag or digest for the minimal image
+    template: templates/deployment.yaml
+    set:
+      images.transmission.flavor: minimal
+    asserts:
+      - failedTemplate:
+          errorMessage: images.transmission.flavor=minimal needs images.transmission.tag or digest, since the chart doesn't pin a published ghcr.io/czprz/twg-transmission yet
+
+  - it: names the minimal image by digest alone
+    template: templates/deployment.yaml
+    set:
+      images.transmission.flavor: minimal
+      images.transmission.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/czprz/twg-transmission@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      - equal:
+          path: spec.template.spec.initContainers[0].image
+          value: ghcr.io/czprz/twg-transmission@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+  - it: runs the minimal image as PUID/PGID with no capabilities and a read-only root
+    template: templates/deployment.yaml
+    set:
+      images.transmission.flavor: minimal
+      images.transmission.tag: 4.1.2-20261115
+      transmission.env: { PUID: "1001", PGID: "1002", TZ: UTC }
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+            runAsUser: 1001
+            runAsGroup: 1002
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: tmp, mountPath: /tmp }
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+
+  - it: lets the init container hand the volumes to PUID/PGID as root
+    template: templates/deployment.yaml
+    set:
+      images.transmission.flavor: minimal
+      images.transmission.tag: dev
+      persistence.downloads.enabled: true
+      persistence.mounts.data.mountPath: /media
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          value: 0
+      - equal:
+          path: spec.template.spec.initContainers[0].securityContext.capabilities
+          value: { drop: [ALL], add: [CHOWN] }
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content: { name: TWG_OWN_DIRS, value: /config /media }
+      - contains:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          content: { name: transmission-storage, mountPath: /config, subPath: config }
+      - contains:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          content: { name: transmission-downloads, mountPath: /media }
+
+  - it: leaves the stop credentials out for the minimal image (it stops on SIGTERM)
+    template: templates/deployment.yaml
+    set:
+      images.transmission.flavor: minimal
+      images.transmission.tag: dev
+      transmission.rpcAuth: { username: admin, password: secret, allowAnonymous: false }
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: { name: USER, valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: username } } }
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content: { name: RPC_USERNAME, valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: username } } }
+
+  - it: refuses root as the minimal image's user
+    template: templates/deployment.yaml
+    set:
+      images.transmission.flavor: minimal
+      images.transmission.tag: dev
+      transmission.env: { PUID: "0", PGID: "1000" }
+    asserts:
+      - failedTemplate:
+          errorMessage: transmission.env.PUID 0 must be a positive number with images.transmission.flavor=minimal, which runs Transmission as that user (never root)
+
+  - it: gives the minimal image an emptyDir at /data without persistence (its root is read-only)
+    template: templates/deployment.yaml
+    set:
+      images.transmission.flavor: minimal
+      images.transmission.tag: dev
+      persistence.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: transmission-data, mountPath: /data }
+      - contains:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          content: { name: transmission-data, mountPath: /data }
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: transmission-data, emptyDir: {} }
