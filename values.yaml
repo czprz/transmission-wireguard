@@ -4,7 +4,10 @@ replicaCount: 1
 
 images:
   wireguard:
-    # Override defaults from the chart if needed.
+    # Default: the chart's own sidecar image, ghcr.io/czprz/twg-wireguard
+    # (wg-quick, iptables/nftables, natpmpc; no init system or package
+    # manager). ghcr.io/linuxserver/wireguard also works, without port
+    # forwarding; set repository, tag and digest together for it.
     repository: ""
     tag: ""
     # Pin by digest (sha256:...). The chart pins its default tags by digest;
@@ -190,8 +193,8 @@ wireguard:
   # inside the tunnel, e.g. 10.2.0.1 for Proton. Empty: off. The sidecar's
   # liveness probe renews the mapping every 30 s, opens that one port on wg0
   # and sets it as Transmission's peer port (so announces carry it). Needs
-  # the chart's sidecar image (images.wireguard: ghcr.io/czprz/twg-wireguard),
-  # which has natpmpc, and a VPN server that allows port forwarding.
+  # the chart's sidecar image (the default; the linuxserver image lacks
+  # natpmpc) and a VPN server that allows port forwarding.
   portForwarding:
     natpmpGateway: ""
 
@@ -219,6 +222,8 @@ wireguard:
     #    ip: 198.51.100.20
     #    port: 51820
 
+  # Read by the linuxserver image only; the chart's image has no time zone
+  # data and logs in UTC.
   env:
     TZ: "UTC"
     PUID: "1000"

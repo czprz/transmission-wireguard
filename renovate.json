@@ -10,7 +10,7 @@
   "packageRules": [
     {
       "description": "linuxserver tags are <version>-r<build>-ls<revision>; docker versioning would treat a new -rN-lsNNN suffix as incompatible and never offer an update",
-      "matchPackageNames": ["lscr.io/linuxserver/transmission", "ghcr.io/linuxserver/wireguard"],
+      "matchPackageNames": ["lscr.io/linuxserver/transmission"],
       "matchDepTypes": ["image"],
       "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-r(?<build>\\d+)-ls(?<revision>\\d+)$"
     },
@@ -20,8 +20,11 @@
       "groupName": "Transmission"
     },
     {
-      "description": "The WireGuard image is also referenced from Chart.yaml; one PR for both",
-      "matchPackageNames": ["ghcr.io/linuxserver/wireguard"],
+      "description": "The chart's own sidecar image: tags are <wireguard-tools version>-<build date>, and its weekly rebuild (Alpine's fixes) comes from this repository's CI, so it need not wait 14 days. Also referenced from Chart.yaml; one PR for both",
+      "matchPackageNames": ["ghcr.io/czprz/twg-wireguard"],
+      "matchDepTypes": ["image"],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-(?<build>\\d{8})$",
+      "minimumReleaseAge": "0 days",
       "groupName": "WireGuard"
     }
   ],
@@ -43,7 +46,7 @@
       "matchStrings": [
         "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.wireguard\\.tag -}}\\n\\{\\{- \\$digest := default \"(?<currentDigest>sha256:[a-f0-9]+)\" \\.Values\\.images\\.wireguard\\.digest"
       ],
-      "depNameTemplate": "ghcr.io/linuxserver/wireguard",
+      "depNameTemplate": "ghcr.io/czprz/twg-wireguard",
       "datasourceTemplate": "docker",
       "depTypeTemplate": "image"
     },

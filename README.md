@@ -4,7 +4,7 @@ Run Transmission through a WireGuard client sidecar in the same Pod. This chart 
 
 ## What this chart does
 
-- Runs `linuxserver/wireguard` as a native sidecar and `linuxserver/transmission` in one Pod
+- Runs the chart's own minimal WireGuard image ([`ghcr.io/czprz/twg-wireguard`](#sidecar-image)) as a native sidecar and `linuxserver/transmission` in one Pod
 - Installs a kill switch in the Pod's network namespace **before** the tunnel starts: traffic can only leave through WireGuard, and a crashed or restarting tunnel fails closed
 - Starts Transmission only after the kill switch and tunnel are up
 - Adds an egress NetworkPolicy so the CNI only lets the Pod reach the VPN server, even if the in-pod firewall were removed
@@ -157,16 +157,12 @@ It needs `PersistentKeepalive` and a single `[Peer]` without `PresharedKey`. A w
 Without an inbound port, peers can't connect to you, and seeding suffers. VPN providers that forward a port over NAT-PMP (Proton VPN, among others) work with:
 
 ```yaml
-images:
-  wireguard:
-    repository: ghcr.io/czprz/twg-wireguard   # has natpmpc; the linuxserver image does not
-    digest: sha256:<a published digest>
 wireguard:
   portForwarding:
     natpmpGateway: 10.2.0.1   # Proton's gateway inside the tunnel
 ```
 
-Use a server that allows port forwarding (Proton: a P2P server, with NAT-PMP enabled when you create the WireGuard config).
+It needs the chart's sidecar image (the default), which has `natpmpc`; the linuxserver image does not. Use a server that allows port forwarding (Proton: a P2P server, with NAT-PMP enabled when you create the WireGuard config).
 
 - The sidecar's liveness probe renews the mapping every 30 seconds; a mapping lasts 60.
 - It opens just that port, just on `wg0`, in a chain that the kill switch's check lets hold nothing else.
@@ -184,6 +180,10 @@ A gateway that doesn't answer is logged and retried; downloads still work withou
 | NetworkPolicy | Egress only to `wireguard.endpoints` on UDP. Enforced by the CNI outside the pod. |
 | DNS | `dnsPolicy: None` with `wireguard.dns.nameservers`, reached through the tunnel. Cluster DNS would forward your lookups upstream from the node. |
 | Transmission | Peer sockets always bound to the tunnel address (loopback for a family the tunnel lacks), Local Peer Discovery and UPnP/NAT-PMP off, peer ports not on the Service, no network capabilities. |
+
+## Upgrading from 1.0
+
+- **The sidecar image is now the chart's own `ghcr.io/czprz/twg-wireguard`** (see [Sidecar image](#sidecar-image)) instead of `linuxserver/wireguard`. Nothing to do unless you set `images.wireguard.tag` alone: a linuxserver tag without `images.wireguard.repository` is refused, since it doesn't exist for the new image. Remove the tag, or set the repository to keep the linuxserver image. `wireguard.env` (`TZ`, `PUID`, `PGID`) is only read by the linuxserver image.
 
 ## Upgrading to 1.0
 
@@ -302,7 +302,15 @@ cosign verify ghcr.io/czprz/twg-wireguard@sha256:<digest> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-To use it before it becomes the chart's default, set `images.wireguard.repository: ghcr.io/czprz/twg-wireguard` and `images.wireguard.digest` to a published digest.
+It is the chart's default sidecar image, pinned by digest, and Renovate proposes each rebuild. To keep the linuxserver image instead (it works with the kill switch, but has no `natpmpc` and brings s6, a package manager and busybox's network clients into the privileged container):
+
+```yaml
+images:
+  wireguard:
+    repository: ghcr.io/linuxserver/wireguard
+    tag: 1.0.20260223-r0-ls126
+    digest: sha256:6bcf5d2f5a265c7e9835eaadd989938e681aabe8bf8bcd4556b61d463da6555c
+```
 
 ## Security notes
 
