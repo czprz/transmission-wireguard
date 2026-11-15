@@ -16,6 +16,8 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 K3D=${K3D:-k3d}
 K3D_CLUSTER=${K3D_CLUSTER:-twg-k3d}
 K3D_KUBECONFIG=${K3D_KUBECONFIG:-$ROOT/tests/e2e/.k3d/$K3D_CLUSTER.kubeconfig}
+# The sysctls wireguard.unprivileged sets (SIDECAR=unprivileged).
+UNSAFE_SYSCTLS=net.ipv4.conf.all.src_valid_mark,net.ipv6.conf.eth0.accept_ra_pinfo,net.ipv6.conf.eth0.accept_ra_rt_info_max_plen
 # k3d v5.8.3's default k3s, pinned by digest.
 K3S_IMAGE=${K3S_IMAGE:-rancher/k3s:v1.31.5-k3s1@sha256:53cf744fe2fabf140cee240d2db70d13a4f2d98f1a13c98f58f457f423096917}
 
@@ -37,6 +39,7 @@ mkdir -p "$(dirname "$K3D_KUBECONFIG")"
 # cluster only, and neither may answer for the canaries' ports.
 "$K3D" cluster create "$K3D_CLUSTER" --image "$K3S_IMAGE" --servers 1 --agents 0 \
   --k3s-arg '--disable=traefik@server:0' --k3s-arg '--disable=servicelb@server:0' \
+  --k3s-arg "--kubelet-arg=allowed-unsafe-sysctls=$UNSAFE_SYSCTLS@server:0" \
   --kubeconfig-update-default=false --kubeconfig-switch-context=false --wait --timeout 5m
 "$K3D" kubeconfig get "$K3D_CLUSTER" >"$K3D_KUBECONFIG"
 chmod 0600 "$K3D_KUBECONFIG"
