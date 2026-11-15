@@ -6,10 +6,11 @@
 # what the tests need (the addresses, the keys, the pod).
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-# The tools image for the WireGuard server, the canaries and the probes,
-# which need wg, iptables and nc: the full linuxserver image, not the
-# chart's minimal sidecar (the chart installs that one itself).
-WG_IMAGE="${WG_IMAGE:-ghcr.io/linuxserver/wireguard:1.0.20260223-r0-ls126@sha256:6bcf5d2f5a265c7e9835eaadd989938e681aabe8bf8bcd4556b61d463da6555c}"
+# The tools image for the WireGuard server, the canaries and the probes
+# (the chart installs its own sidecar).
+# shellcheck source=tests/e2e/images.bash
+source "$ROOT/tests/e2e/images.bash"
+WG_IMAGE="${WG_IMAGE:-$TOOLS_IMAGE}"
 CANARY_IMAGE="${CANARY_IMAGE:-busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec}"
 CURL_IMAGE=curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
 

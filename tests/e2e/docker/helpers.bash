@@ -24,12 +24,12 @@ chart_image() {
   echo "$repo:$tag@$digest"
 }
 # Resolved once in setup_suite and exported, so every file runs the same.
-# WG_IMAGE is the tools image for the servers and probes: the full
-# linuxserver image, with wg, iptables, bash and busybox's nc, which the
-# chart's minimal sidecar image leaves out. SIDECAR_IMAGE (default: the
-# chart's) is the one the sidecar, and the probes that run in it as the
-# kubelet's do, are tested with.
-WG_IMAGE="${WG_IMAGE:-ghcr.io/linuxserver/wireguard:1.0.20260223-r0-ls126@sha256:6bcf5d2f5a265c7e9835eaadd989938e681aabe8bf8bcd4556b61d463da6555c}"
+# WG_IMAGE is the tools image for the servers and probes (tests/e2e/images.bash);
+# SIDECAR_IMAGE (default: the chart's) is the one the sidecar, and the
+# probes that run in it as the kubelet's do, are tested with.
+# shellcheck source=tests/e2e/images.bash
+source "$ROOT/tests/e2e/images.bash"
+WG_IMAGE="${WG_IMAGE:-$TOOLS_IMAGE}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-$(chart_image wireguard)}"
 TX_IMAGE="${TX_IMAGE:-$(chart_image transmission)}"
 CANARY_IMAGE="${CANARY_IMAGE:-traefik/whoami:v1.10.3@sha256:43a68d10b9dfcfc3ffbfe4dd42100dc9aeaf29b3a5636c856337a5940f1b4f1c}"

@@ -174,13 +174,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tags: the wireguard-tools version and the build date, plus the
-      # commit. The chart pins the digest, never a tag.
-      - name: Tags
-        id: tags
+      # One build, pushed under the commit's tag. The version tag (the
+      # wireguard-tools version and the build date) is then read from that pushed
+      # image and added to the same digest, so it always names what was
+      # built. The chart pins the digest, never a tag.
+      - name: Image name
+        id: ref
         run: |
-          version=$(docker run --rm --entrypoint wg "$(docker build -q image/wireguard)" --version | awk '{ print $2 }')
-          echo "tags=${IMAGE,,}:${version#v}-$(date -u +%Y%m%d),${IMAGE,,}:sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${IMAGE,,}:sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         id: push
@@ -189,8 +191,21 @@ jobs:
           context: image/wireguard
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.tags.outputs.tags }}
+          tags: ${{ steps.ref.outputs.sha_tag }}
           provenance: false
+
+      - name: Version tag
+        id: tags
+        run: |
+          version=$(docker run --rm --entrypoint wg "${REF}@${DIGEST}" --version | awk '{ print $2 }')
+          [ -n "$version" ] || { echo "could not read the version from ${REF}@${DIGEST}" >&2; exit 1; }
+          tag="${REF}:${version#v}-$(date -u +%Y%m%d)"
+          docker buildx imagetools create --tag "$tag" "${REF}@${DIGEST}"
+          echo "tags=${tag},${SHA_TAG}" >> "$GITHUB_OUTPUT"
+        env:
+          REF: ${{ steps.ref.outputs.image }}
+          SHA_TAG: ${{ steps.ref.outputs.sha_tag }}
+          DIGEST: ${{ steps.push.outputs.digest }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
