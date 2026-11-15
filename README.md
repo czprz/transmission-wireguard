@@ -82,11 +82,14 @@ ingress:
       secretName: transmission-ingress-tls
 ```
 
-4) Install
+4) Install a released version (see [Releases](https://github.com/czprz/transmission-wireguard/releases)):
 
 ```bash
-helm install transmission ./transmission-wireguard -f values.yaml
+VERSION=1.0.0
+helm install transmission oci://ghcr.io/czprz/transmission-wireguard --version "$VERSION" -f values.yaml
 ```
+
+From a clone of this repository, install the working tree instead: `helm install transmission . -f values.yaml` (or `make install VALUES=values.yaml`).
 
 ### Verify the chart
 
@@ -225,6 +228,8 @@ Transmission settings are rendered into `settings.json` on startup. A good way t
 1) Run Transmission once.
 2) Export its generated `settings.json`.
 3) Paste the fields you want into `values.yaml` under `transmission.settings`.
+
+`values.yaml` is the only place settings live. Transmission runs with a read-only `settings.json` that the init container writes at every start, so **changes made in the web UI (Edit > Preferences) or with `transmission-remote` apply until the pod restarts and are then lost**. Put them in `transmission.settings` to keep them. (Per-torrent state, such as the torrent list, priorities and progress, is in `/config` on the volume and survives restarts.)
 
 Official docs:
 - https://github.com/transmission/transmission/blob/main/docs/Editing-Configuration-Files.md
@@ -389,7 +394,7 @@ See `values.yaml` for the full list of configuration options.
 > 2. Copy and edit `values.yaml` for your needs.
 > 3. Install:
 >    ```bash
->    helm install transmission ./transmission-wireguard -f values.yaml
+>    helm install transmission oci://ghcr.io/czprz/transmission-wireguard --version <version> -f values.yaml
 >    ```
 > 4. [Verify egress IP](#verify-egress-ip) to confirm VPN routing.
 
@@ -440,4 +445,4 @@ See `values.yaml` for the full list of configuration options.
 - **Resource limits and scheduling:**
   - Set `resources`, `nodeSelector`, `affinity`, and `tolerations` in `values.yaml` for advanced scheduling.
 - **Customizing settings.json:**
-  - See the Transmission docs linked above for all available settings.
+  - See the Transmission docs linked above for all available settings. Set them in `transmission.settings`: changes made in the web UI are lost on restart (see [Transmission settings](#transmission-settings)).

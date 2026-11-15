@@ -15,8 +15,14 @@ validate:
 	  quay.io/helmpack/chart-testing:v3.14.0@sha256:425ff3058dfc192fffb94e471e732b9bc995c375df963eba417ff01aea594e83 \
 	  ct lint --charts . --validate-maintainers=false
 
+# Installs (or upgrades) the working tree. VALUES is your own values file:
+# the chart's values.yaml has no WireGuard config. values.local.yaml is
+# gitignored and never packaged.
+VALUES ?= values.local.yaml
+RELEASE ?= transmission
+
 install:
-	helm install transmission ./transmission-wireguard -f values.yaml
+	helm upgrade --install $(RELEASE) . -f $(VALUES)
 
 test: lint validate
 
@@ -82,7 +88,7 @@ help:
 	@echo "Available targets:"
 	@echo "  lint     - Lint the chart and run unit tests"
 	@echo "  validate - Run chart-testing lint"
-	@echo "  install  - Install the chart with Helm"
+	@echo "  install  - Install or upgrade the working tree (VALUES=values.local.yaml RELEASE=transmission)"
 	@echo "  test     - Run lint and validate"
 	@echo "  e2e      - Run the kill switch leak tests (Docker, then kind; CNI=kindnet|calico|cilium)"
 	@echo "  e2e-k3d  - Run the cluster suite on a throwaway k3d cluster (no kind needed)"
