@@ -47,11 +47,20 @@ case $CNI in
   cilium) networking='  disableDefaultCNI: true' ;;
   *) echo "unknown CNI: $CNI" >&2; exit 1 ;;
 esac
+# The kubelet allows the sysctls wireguard.unprivileged sets
+# (cluster-test.sh with SIDECAR=unprivileged).
 cat >"$TMP/kind.yaml" <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 networking:
 $networking
+kubeadmConfigPatches:
+  - |
+    kind: KubeletConfiguration
+    allowedUnsafeSysctls:
+      - net.ipv4.conf.all.src_valid_mark
+      - net.ipv6.conf.eth0.accept_ra_pinfo
+      - net.ipv6.conf.eth0.accept_ra_rt_info_max_plen
 EOF
 
 "$KIND" create cluster --image "$NODE_IMAGE" --config "$TMP/kind.yaml" --wait 0s

@@ -144,6 +144,12 @@ chart_args() {
     --set tests.enabled=true
     --set "tests.ipEchoUrl=http://$CANARY_IP/cgi-bin/ip"
   )
+  # wireguard.unprivileged: the sidecar with NET_ADMIN + NET_RAW and the
+  # pod's sysctls (the cluster scripts allow them on the kubelet).
+  if [[ ${SIDECAR:-privileged} == unprivileged ]]; then
+    CHART_ARGS+=(--set wireguard.unprivileged.enabled=true)
+    [[ ${IPV6:-0} != 1 ]] || CHART_ARGS+=(--set wireguard.unprivileged.blockRouterAdvertisements=true)
+  fi
   # A sidecar image built here (image/wireguard), loaded into the cluster.
   if [[ -n ${SIDECAR_IMAGE:-} ]]; then
     CHART_ARGS+=(--set "images.wireguard.repository=${SIDECAR_IMAGE%:*}" --set "images.wireguard.tag=${SIDECAR_IMAGE##*:}"
