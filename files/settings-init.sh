@@ -63,6 +63,34 @@ jq \
 chmod 0640 "$DST"
 chown "${PUID:-1000}:0" "$DST"
 umask 022
+
+# The minimal image has no root init to do this: give its user the volumes
+# (TWG_OWN_DIRS) and the directories settings.json names inside them. Only
+# those directories, never recursively, so existing files keep their owner.
+# Directories Transmission's user already owns can't be written as root
+# without CAP_DAC_OVERRIDE; Transmission creates what is missing there.
+own() {
+  [ "$(stat -c %u:%g "$1")" = "${PUID:-1000}:${PGID:-1000}" ] || chown "${PUID:-1000}:${PGID:-1000}" "$1"
+}
+if [ -n "${TWG_OWN_DIRS:-}" ]; then
+  for key in download-dir incomplete-dir watch-dir; do
+    # Without trailing slashes, so the walk up below ends at the root.
+    d=$(jq -r --arg k "$key" '.[$k] // empty' "$DST" | sed -E 's#/+$##; s#//+#/#g')
+    for root in $TWG_OWN_DIRS; do
+      case $d in
+        "$root"/*)
+          mkdir -p "$d" 2>/dev/null || continue
+          while [ "$d" != "$root" ] && [ "$d" != / ]; do
+            own "$d"
+            d=$(dirname "$d")
+          done
+          ;;
+      esac
+    done
+  done
+  for root in $TWG_OWN_DIRS; do own "$root"; done
+fi
+
 printf 'TWG_BIND4=%s\nTWG_BIND6=%s\nTWG_PEER_PORT=%s\n' "$v4" "$v6" "$(jq -r '.["peer-port"] // 51413' "$DST")" >"$TUNNEL_ENV"
 
 echo "[twg-settings] wrote ${DST} (bind-address-ipv4=$(jq -r '.["bind-address-ipv4"] // "unset"' "$DST"), rpc-auth=$(jq -r '.["rpc-authentication-required"] // false' "$DST"))"

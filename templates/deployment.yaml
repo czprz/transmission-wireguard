@@ -1,4 +1,5 @@
 {{- include "twg.validate" . -}}
+{{- $minimal := eq (include "twg.transmissionFlavor" .) "minimal" -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,10 +51,14 @@ spec:
           {{- toYaml .Values.wireguard.dns.nameservers | nindent 10 }}
       initContainers:
         - name: transmission-settings
-          image: "{{ include "twg.transmissionImage" . }}"
+          image: "{{ include "twg.transmissionImageRef" . }}"
           imagePullPolicy: {{ .Values.images.transmission.pullPolicy }}
           command: ["/bin/sh", "/twg/scripts/settings-init.sh"]
           securityContext:
+            {{- if $minimal }}
+            # The minimal image's user is PUID; this one chowns as root.
+            runAsUser: 0
+            {{- end }}
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
@@ -67,6 +72,11 @@ spec:
               value: {{ .Values.transmission.env.PGID | default "1000" | quote }}
             - name: TWG_BIND_TO_TUNNEL
               value: {{ .Values.transmission.bindToTunnel | quote }}
+            {{- if $minimal }}
+            # No root init in the minimal image: hand the volumes to PUID/PGID.
+            - name: TWG_OWN_DIRS
+              value: {{ printf "/config %s" (include "twg.dataPath" .) | quote }}
+            {{- end }}
             {{- with include "twg.rpcSecretName" . }}
             - name: RPC_USERNAME
               valueFrom:
@@ -89,6 +99,12 @@ spec:
               readOnly: true
             - name: settings-run
               mountPath: /twg/run
+            {{- if $minimal }}
+            {{- include "twg.storageMounts" . | nindent 12 }}
+            {{- with include "twg.dataMount" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.transmission.initResources | nindent 12 }}
 
@@ -194,10 +210,10 @@ spec:
 
       containers:
         - name: transmission
-          image: "{{ include "twg.transmissionImage" . }}"
+          image: "{{ include "twg.transmissionImageRef" . }}"
           imagePullPolicy: {{ .Values.images.transmission.pullPolicy }}
           securityContext:
-            {{- toYaml .Values.transmission.securityContext | nindent 12 }}
+            {{- include "twg.transmissionSecurityContext" . | nindent 12 }}
           env:
             {{- range $k, $v := .Values.transmission.env }}
             - name: {{ $k }}
@@ -207,7 +223,9 @@ spec:
             # --exit) with these credentials, then waits for it. Without them
             # the call fails and the pod is killed at the end of its grace
             # period, before Transmission saves its state.
+            {{- /* The minimal image stops on SIGTERM itself. */}}
             {{- $rpcSecret := include "twg.rpcSecretName" . }}
+            {{- if not $minimal }}
             {{- if $rpcSecret }}
             - name: USER
               valueFrom:
@@ -224,6 +242,7 @@ spec:
               value: {{ index .Values.transmission.settings "rpc-username" | quote }}
             - name: PASS
               value: {{ index .Values.transmission.settings "rpc-password" | quote }}
+            {{- end }}
             {{- end }}
           ports:
             - containerPort: {{ .Values.service.webPort }}
@@ -250,13 +269,11 @@ spec:
           resources:
             {{- toYaml .Values.transmission.resources | nindent 12 }}
           volumeMounts:
-            {{- if .Values.persistence.enabled }}
-            - name: transmission-storage
-              mountPath: /config
-              subPath: config
-            {{- else }}
-            - name: transmission-config
-              mountPath: /config
+            {{- include "twg.storageMounts" . | nindent 12 }}
+            {{- if $minimal }}
+            # The root filesystem is read-only.
+            - name: tmp
+              mountPath: /tmp
             {{- end }}
             - name: settings-run
               mountPath: /config/settings.json
@@ -277,19 +294,8 @@ spec:
             {{- with .Values.transmission.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- if .Values.persistence.downloads.enabled }}
-            - name: transmission-downloads
-              mountPath: {{ (.Values.persistence.mounts | default dict).data | default dict | dig "mountPath" "/data" }}
-            {{- else if .Values.persistence.enabled }}
-            - name: transmission-storage
-              {{- if and .Values.persistence.mounts .Values.persistence.mounts.data }}
-              mountPath: {{ default "/data" .Values.persistence.mounts.data.mountPath }}
-              {{- if .Values.persistence.mounts.data.subPath }}
-              subPath: {{ .Values.persistence.mounts.data.subPath }}
-              {{- end }}
-              {{- else }}
-              mountPath: /data
-              {{- end }}
+            {{- with include "twg.dataMount" . }}
+            {{- . | nindent 12 }}
             {{- end }}
 
       volumes:
@@ -309,6 +315,15 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        {{- if $minimal }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- if not (or .Values.persistence.enabled .Values.persistence.downloads.enabled) }}
+        - name: transmission-data
+          emptyDir: {}
+        {{- end }}
+        {{- end }}
         {{- if .Values.wireguard.portForwarding.natpmpGateway }}
         - name: forward
           emptyDir:

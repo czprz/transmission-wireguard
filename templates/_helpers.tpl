@@ -36,10 +36,12 @@ always wins, and overriding repository or tag drops the default digest.
 */}}
 {{- define "twg.image" -}}
 {{- $img := .img -}}
-{{- $ref := printf "%s:%s" (default .repo $img.repository) (default .tag $img.tag) -}}
+{{- $tag := default .tag $img.tag -}}
+{{- $ref := default .repo $img.repository -}}
+{{- if $tag }}{{ $ref = printf "%s:%s" $ref $tag }}{{ end -}}
 {{- if $img.digest -}}
 {{- printf "%s@%s" $ref $img.digest -}}
-{{- else if and (not $img.repository) (not $img.tag) -}}
+{{- else if and (not $img.repository) (not $img.tag) .digest -}}
 {{- printf "%s@%s" $ref .digest -}}
 {{- else -}}
 {{- $ref -}}
@@ -58,10 +60,44 @@ always wins, and overriding repository or tag drops the default digest.
 {{- include "twg.image" (dict "img" .Values.tests.image "repo" "docker.io/alpine/kubectl" "tag" $tag "digest" $digest) -}}
 {{- end -}}
 
+{{/* The Transmission image of the chosen flavor. */}}
+{{- define "twg.transmissionImageRef" -}}
+{{- if eq (include "twg.transmissionFlavor" .) "minimal" -}}
+{{- $img := .Values.images.transmission -}}
+{{- if not (or $img.tag $img.digest) -}}
+{{- fail "images.transmission.flavor=minimal needs images.transmission.tag or digest, since the chart doesn't pin a published ghcr.io/czprz/twg-transmission yet" -}}
+{{- end -}}
+{{- include "twg.image" (dict "img" $img "repo" "ghcr.io/czprz/twg-transmission" "tag" "" "digest" "") -}}
+{{- else -}}
+{{- include "twg.transmissionImage" . -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "twg.transmissionImage" -}}
 {{- $tag := default "4.1.3-r0-ls365" .Values.images.transmission.tag -}}
 {{- $digest := default "sha256:55aaeedf9fc354d34136387e15ee0ba4679096f20398dd2875867e5cd5cf8be5" .Values.images.transmission.digest -}}
 {{- include "twg.image" (dict "img" .Values.images.transmission "repo" "lscr.io/linuxserver/transmission" "tag" $tag "digest" $digest) -}}
+{{- end -}}
+
+{{- define "twg.transmissionFlavor" -}}
+{{- .Values.images.transmission.flavor | default "linuxserver" -}}
+{{- end -}}
+
+{{/*
+The Transmission container's securityContext. The minimal image needs no
+capabilities back and runs as PUID/PGID with a read-only root filesystem.
+*/}}
+{{- define "twg.transmissionSecurityContext" -}}
+{{- $sc := deepCopy .Values.transmission.securityContext -}}
+{{- if eq (include "twg.transmissionFlavor" .) "minimal" -}}
+{{- $caps := omit (default dict $sc.capabilities) "add" -}}
+{{- $_ := set $sc "capabilities" $caps -}}
+{{- $_ := set $sc "runAsUser" (.Values.transmission.env.PUID | default "1000" | int64) -}}
+{{- $_ := set $sc "runAsGroup" (.Values.transmission.env.PGID | default "1000" | int64) -}}
+{{- $_ := set $sc "runAsNonRoot" true -}}
+{{- $_ := set $sc "readOnlyRootFilesystem" true -}}
+{{- end -}}
+{{- toYaml $sc -}}
 {{- end -}}
 
 {{/* A mark in decimal or 0x hex as a decimal string, or "" if it is not one. */}}
@@ -150,6 +186,14 @@ true
 {{- end -}}
 
 {{- define "twg.validate" -}}
+{{- if eq (include "twg.transmissionFlavor" .) "minimal" -}}
+{{- range $k := list "PUID" "PGID" -}}
+{{- $v := index $.Values.transmission.env $k | default "1000" | toString -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" $v) -}}
+{{- fail (printf "transmission.env.%s %s must be a positive number with images.transmission.flavor=minimal, which runs Transmission as that user (never root)" $k $v) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- with .Values.images.wireguard -}}
 {{- if and .tag (not .repository) (regexMatch "-ls[0-9]+$" (toString .tag)) -}}
 {{- fail (printf "images.wireguard.tag %s is a linuxserver tag, but the default sidecar image is now ghcr.io/czprz/twg-wireguard. Remove the tag, or set images.wireguard.repository to ghcr.io/linuxserver/wireguard to keep that image" (toString .tag)) -}}
@@ -364,4 +408,38 @@ already in podSecurityContext win.
 {{- $_ := set $psc "sysctls" $sysctls -}}
 {{- end -}}
 {{- with $psc }}{{ toYaml . }}{{ end -}}
+{{- end -}}
+
+{{/* Transmission's /config mount. */}}
+{{- define "twg.storageMounts" -}}
+{{- if .Values.persistence.enabled -}}
+- name: transmission-storage
+  mountPath: /config
+  subPath: config
+{{- else -}}
+- name: transmission-config
+  mountPath: /config
+{{- end -}}
+{{- end -}}
+
+{{- define "twg.dataPath" -}}
+{{- (.Values.persistence.mounts | default dict).data | default dict | dig "mountPath" "/data" -}}
+{{- end -}}
+
+{{/* Transmission's downloads mount, if any. */}}
+{{- define "twg.dataMount" -}}
+{{- if .Values.persistence.downloads.enabled -}}
+- name: transmission-downloads
+  mountPath: {{ include "twg.dataPath" . }}
+{{- else if .Values.persistence.enabled -}}
+- name: transmission-storage
+  mountPath: {{ include "twg.dataPath" . }}
+  {{- with (.Values.persistence.mounts | default dict).data | default dict | dig "subPath" "" }}
+  subPath: {{ . }}
+  {{- end }}
+{{- else if eq (include "twg.transmissionFlavor" .) "minimal" -}}
+{{- /* Without persistence, the minimal image's read-only root has no /data. */}}
+- name: transmission-data
+  mountPath: {{ include "twg.dataPath" . }}
+{{- end -}}
 {{- end -}}

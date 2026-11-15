@@ -150,6 +150,12 @@ chart_args() {
     CHART_ARGS+=(--set wireguard.unprivileged.enabled=true)
     [[ ${IPV6:-0} != 1 ]] || CHART_ARGS+=(--set wireguard.unprivileged.blockRouterAdvertisements=true)
   fi
+  # A Transmission image built here (image/transmission), loaded into the
+  # cluster, as images.transmission.flavor=minimal.
+  if [[ -n ${TRANSMISSION_IMAGE:-} ]]; then
+    CHART_ARGS+=(--set images.transmission.flavor=minimal --set "images.transmission.repository=${TRANSMISSION_IMAGE%:*}"
+      --set "images.transmission.tag=${TRANSMISSION_IMAGE##*:}" --set images.transmission.pullPolicy=Never)
+  fi
   # A sidecar image built here (image/wireguard), loaded into the cluster.
   if [[ -n ${SIDECAR_IMAGE:-} ]]; then
     CHART_ARGS+=(--set "images.wireguard.repository=${SIDECAR_IMAGE%:*}" --set "images.wireguard.tag=${SIDECAR_IMAGE##*:}"
