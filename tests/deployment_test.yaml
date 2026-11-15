@@ -300,7 +300,7 @@ tests:
     asserts:
       - matchRegex:
           path: spec.template.spec.initContainers[1].image
-          pattern: ^ghcr\.io/linuxserver/wireguard:[^@]+@sha256:[0-9a-f]{64}$
+          pattern: ^ghcr\.io/czprz/twg-wireguard:[^@]+@sha256:[0-9a-f]{64}$
       - matchRegex:
           path: spec.template.spec.containers[0].image
           pattern: ^lscr\.io/linuxserver/transmission:[^@]+@sha256:[0-9a-f]{64}$
@@ -322,7 +322,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.initContainers[1].image
-          value: ghcr.io/linuxserver/wireguard:1.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          value: ghcr.io/czprz/twg-wireguard:1.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
   - it: mounts only wg0.conf from the WireGuard Secret
     template: templates/deployment.yaml

@@ -47,9 +47,9 @@ always wins, and overriding repository or tag drops the default digest.
 {{- end -}}
 
 {{- define "twg.wireguardImage" -}}
-{{- $tag := default "1.0.20260223-r0-ls126" .Values.images.wireguard.tag -}}
-{{- $digest := default "sha256:6bcf5d2f5a265c7e9835eaadd989938e681aabe8bf8bcd4556b61d463da6555c" .Values.images.wireguard.digest -}}
-{{- include "twg.image" (dict "img" .Values.images.wireguard "repo" "ghcr.io/linuxserver/wireguard" "tag" $tag "digest" $digest) -}}
+{{- $tag := default "1.0.20260223-20261111" .Values.images.wireguard.tag -}}
+{{- $digest := default "sha256:a3f0b14045a3ea0bac6e3507ce2a42b103a88b93db2b3cba57a5537e7f329648" .Values.images.wireguard.digest -}}
+{{- include "twg.image" (dict "img" .Values.images.wireguard "repo" "ghcr.io/czprz/twg-wireguard" "tag" $tag "digest" $digest) -}}
 {{- end -}}
 
 {{- define "twg.testImage" -}}
@@ -150,6 +150,11 @@ true
 {{- end -}}
 
 {{- define "twg.validate" -}}
+{{- with .Values.images.wireguard -}}
+{{- if and .tag (not .repository) (regexMatch "-ls[0-9]+$" (toString .tag)) -}}
+{{- fail (printf "images.wireguard.tag %s is a linuxserver tag, but the default sidecar image is now ghcr.io/czprz/twg-wireguard. Remove the tag, or set images.wireguard.repository to ghcr.io/linuxserver/wireguard to keep that image" (toString .tag)) -}}
+{{- end -}}
+{{- end -}}
 {{- if not (or .Values.wireguard.existingSecret .Values.wireguard.wg0Conf) -}}
 {{- fail "wireguard.wg0Conf or wireguard.existingSecret must be set" -}}
 {{- end -}}
