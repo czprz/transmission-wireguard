@@ -1,6 +1,7 @@
 apiVersion: v2
 name: transmission-wireguard
-description: Transmission forced through a WireGuard client sidecar (wg-quick) in the same Pod with a kill switch.
+description: Transmission forced through a WireGuard client sidecar (wg-quick)
+  in the same Pod with a kill switch.
 type: application
 kubeVersion: ">=1.29.0-0"
 version: 1.0.0
