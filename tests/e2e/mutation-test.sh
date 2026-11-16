@@ -3,10 +3,12 @@
 # and runs the Docker leak test against that firewall.sh, which must fail.
 # A rule whose removal fails no check is redundant or untested.
 #
-#   tests/e2e/mutation-test.sh --list [--changed BASE]
+#   tests/e2e/mutation-test.sh --list [--changed BASE] [--slow-first]
 #       the mutants (line numbers in files/firewall.sh); with --changed only
 #       those on lines changed since git revision BASE, or all of them if
-#       anything else in firewall.sh changed (a continued line, a variable)
+#       anything else in firewall.sh changed (a continued line, a variable);
+#       with --slow-first the baseline's mutants first: they survive, so
+#       each runs the whole suite, and CI spreads them over its batches
 #   tests/e2e/mutation-test.sh [LINE...]
 #       run them (default: all)
 #
@@ -66,18 +68,33 @@ mutate() {
 }
 
 if [[ ${1:-} == --list ]]; then
-  if [[ ${2:-} == --changed ]]; then
+  shift
+  base="" slow_first=0
+  while (($#)); do
+    case $1 in
+      --changed) base=${2:?--changed needs a git revision}; shift 2 ;;
+      --slow-first) slow_first=1; shift ;;
+      *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+  done
+  if [[ -n $base ]]; then
     # Assigned first, so a bad revision fails instead of listing nothing.
-    changed=$(changed_since "${3:?--changed needs a git revision}")
+    changed=$(changed_since "$base")
     others=$(comm -23 <(sort -u <<<"$changed" | grep .) <(list | sort) || true)
     if [[ -n $others ]]; then
       echo "firewall.sh changed outside the rules' own lines: every mutant runs" >&2
-      list
+      mutants=$(list)
     else
-      comm -12 <(list | sort) <(sort -u <<<"$changed" | grep .) | sort -n
+      mutants=$(comm -12 <(list | sort) <(sort -u <<<"$changed" | grep .) | sort -n)
     fi
   else
-    list
+    mutants=$(list)
+  fi
+  if ((slow_first)); then
+    for n in $mutants; do baseline_reason "$n" >/dev/null && echo "$n"; done
+    for n in $mutants; do baseline_reason "$n" >/dev/null || echo "$n"; done
+  else
+    [[ -z $mutants ]] || echo "$mutants"
   fi
   exit 0
 fi
