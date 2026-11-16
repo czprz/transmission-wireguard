@@ -40,8 +40,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Batches of 8: each job sets up the Docker test once per mutant, and
-      # at most 4 jobs run at once, so the main suite still gets runners.
+      # At most 6 batches, all running at once: each job sets up the Docker
+      # test once per mutant, and the run takes as long as its slowest
+      # batch. Mutants are dealt out round-robin, the baseline's first (they
+      # survive, so each runs the whole suite, ~9 minutes, against ~2 for
+      # one a check kills), so no batch collects the slow ones. Neighbouring
+      # rules, which tend to be caught by the same late check, end up in
+      # different batches too.
       - name: List mutants
         id: list
         run: |
@@ -53,13 +58,14 @@ jobs:
             base=$BASE_SHA
           fi
           if [ -n "$base" ]; then
-            lines=$(tests/e2e/mutation-test.sh --list --changed "$base")
+            lines=$(tests/e2e/mutation-test.sh --list --changed "$base" --slow-first)
           else
-            lines=$(tests/e2e/mutation-test.sh --list)
+            lines=$(tests/e2e/mutation-test.sh --list --slow-first)
           fi
           echo "Mutants: ${lines//$'\n'/ }"
           # Assigned first, so a jq error fails the step.
-          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | [range(0; length; 6) as $i | .[$i:$i + 6] | join(" ")]' <<<"$lines")
+          batches=$(jq -cRs 'split("\n") | map(select(length > 0)) | length as $l | ([$l, 6] | min) as $n |
+            [range(0; $n) as $i | [range($i; $l; $n) as $j | .[$j]] | join(" ")]' <<<"$lines")
           echo "batches=$batches" >> "$GITHUB_OUTPUT"
         env:
           EVENT: ${{ github.event_name }}
@@ -73,7 +79,7 @@ jobs:
     timeout-minutes: 150
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 6
       matrix:
         lines: ${{ fromJSON(needs.mutants.outputs.batches) }}
     steps:
