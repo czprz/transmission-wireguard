@@ -16,7 +16,8 @@
 /dist/
 Makefile
 renovate.json
-RELEASE_BODY.md
+release-please-config.json
+.release-please-manifest.json
 CONTRIBUTING.md
 SECURITY.md
 *.conf
