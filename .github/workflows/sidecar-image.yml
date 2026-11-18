@@ -149,7 +149,9 @@ jobs:
 
   publish:
     needs: [test, cluster]
-    if: github.event_name != 'pull_request'
+    # main only: a run from another branch must not publish a signed image
+    # (Renovate would propose it for the chart).
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -163,9 +165,14 @@ jobs:
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+        # Pinned: it runs in the job that signs and pushes the image.
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
@@ -197,8 +204,10 @@ jobs:
       - name: Version tag
         id: tags
         run: |
-          version=$(docker run --rm --entrypoint wg "${REF}@${DIGEST}" --version | awk '{ print $2 }')
-          [ -n "$version" ] || { echo "could not read the version from ${REF}@${DIGEST}" >&2; exit 1; }
+          # From wg's own version line only ("wireguard-tools vX.Y.Z ..."), so a
+          # warning printed by docker can't become the tag.
+          version=$(docker run --rm --entrypoint wg "${REF}@${DIGEST}" --version 2>&1 | sed -nE 's/^wireguard-tools v([0-9]+\.[0-9]+\.[0-9]+)( .*)?$/\1/p' | head -n1)
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "could not read a version from ${REF}@${DIGEST} (got '${version}')" >&2; exit 1; }
           tag="${REF}:${version#v}-$(date -u +%Y%m%d)"
           docker buildx imagetools create --tag "$tag" "${REF}@${DIGEST}"
           echo "tags=${tag},${SHA_TAG}" >> "$GITHUB_OUTPUT"

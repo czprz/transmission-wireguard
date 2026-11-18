@@ -89,16 +89,19 @@ VERSION=1.1.0
 helm install transmission oci://ghcr.io/czprz/transmission-wireguard --version "$VERSION" -f values.yaml
 ```
 
+> [!WARNING]
+> Always pass `--version`. Without it Helm installs the highest version in the registry, and releases between 0.8.0 and the first published 1.x were not pushed there: `helm install` without a version installs **0.8.0, which has no kill switch**.
+
 From a clone of this repository, install the working tree instead: `helm install transmission . -f values.yaml` (or `make install VALUES=values.yaml`).
 
 ### Verify the chart
 
-Releases from 1.0.0 on are signed with Sigstore (keyless, with the release workflow's GitHub identity) and carry a build provenance attestation. Before installing a version:
+Releases from 1.0.0 on are signed with Sigstore (keyless, with the identity of the release workflow on main) and carry a build provenance attestation; the package is also attached to its [GitHub release](https://github.com/czprz/transmission-wireguard/releases), whose notes give its digest. Before installing a version:
 
 ```bash
-VERSION=1.0.0
+VERSION=1.1.0
 cosign verify ghcr.io/czprz/transmission-wireguard:$VERSION \
-  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/helm-release\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/helm-release\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify oci://ghcr.io/czprz/transmission-wireguard:$VERSION --repo czprz/transmission-wireguard
 ```
@@ -317,7 +320,7 @@ Every change runs the Docker and cluster leak tests against it and scans it with
 
 ```bash
 cosign verify ghcr.io/czprz/twg-wireguard@sha256:<digest> \
-  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/sidecar-image\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/sidecar-image\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
