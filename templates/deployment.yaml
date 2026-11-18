@@ -37,6 +37,10 @@ spec:
         checksum/rpc: {{ print (include (print $.Template.BasePath "/secret-wg.yaml") .) (include (print $.Template.BasePath "/secret-rpc.yaml") .) | sha256sum }}
         {{- end }}
     spec:
+      {{- with .Values.serviceAccountName }}
+      serviceAccountName: {{ . | quote }}
+      {{- end }}
+      # Nothing in the pod talks to the API server.
       automountServiceAccountToken: false
       enableServiceLinks: false
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
@@ -240,9 +244,9 @@ spec:
           startupProbe:
             exec:
               command: ["/twg/scripts/firewall.sh", "tunnel"]
-            periodSeconds: 2
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
-            failureThreshold: 90
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
           readinessProbe:
             exec:
               command: ["/twg/scripts/firewall.sh", "tunnel"]
@@ -256,11 +260,11 @@ spec:
           livenessProbe:
             exec:
               command: ["/twg/scripts/firewall.sh", "live"]
-            periodSeconds: 30
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             # Renewing a NAT-PMP mapping and setting the port over RPC can
             # take up to ~17 s; a slow gateway must not restart the tunnel.
             timeoutSeconds: {{ ternary 20 5 (not (empty .Values.wireguard.portForwarding.natpmpGateway)) }}
-            failureThreshold: 3
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           resources:
             {{- toYaml .Values.wireguard.resources | nindent 12 }}
 
@@ -274,6 +278,9 @@ spec:
             {{- range $k, $v := .Values.transmission.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
+            {{- end }}
+            {{- with .Values.transmission.extraEnv }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
             # The image stops Transmission through its RPC (transmission-remote
             # --exit) with these credentials, then waits for it. Without them
@@ -314,9 +321,9 @@ spec:
           livenessProbe:
             exec:
               command: ["/bin/sh", "/twg/scripts/transmission-live.sh"]
-            periodSeconds: 30
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: 5
-            failureThreshold: 3
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           resources:
             {{- toYaml .Values.transmission.resources | nindent 12 }}
           volumeMounts:

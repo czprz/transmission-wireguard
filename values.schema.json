@@ -22,7 +22,11 @@
               "type": "string"
             },
             "pullPolicy": {
-              "type": "string"
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
             },
             "digest": {
               "type": "string",
@@ -41,7 +45,11 @@
               "type": "string"
             },
             "pullPolicy": {
-              "type": "string"
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
             },
             "digest": {
               "type": "string",
@@ -72,7 +80,9 @@
           ]
         },
         "webPort": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
         },
         "annotations": {
           "type": "object"
@@ -85,6 +95,54 @@
         },
         "exposePeerPorts": {
           "description": "Removed in 1.0: peers only connect through the VPN"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "nodePort": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "externalTrafficPolicy": {
+          "enum": [
+            "",
+            "Cluster",
+            "Local"
+          ]
+        },
+        "loadBalancerClass": {
+          "type": "string"
+        },
+        "loadBalancerSourceRanges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ipFamilyPolicy": {
+          "enum": [
+            "",
+            "SingleStack",
+            "PreferDualStack",
+            "RequireDualStack"
+          ]
+        },
+        "ipFamilies": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "IPv4",
+              "IPv6"
+            ]
+          },
+          "maxItems": 2
         }
       },
       "additionalProperties": false
@@ -220,7 +278,10 @@
           "type": "boolean"
         },
         "kind": {
-          "type": "string"
+          "enum": [
+            "Issuer",
+            "ClusterIssuer"
+          ]
         },
         "name": {
           "type": "string"
@@ -244,7 +305,11 @@
           "type": "boolean"
         },
         "type": {
-          "type": "string"
+          "enum": [
+            "pvc",
+            "hostPath"
+          ],
+          "description": "pvc, or hostPath with persistence.hostPath.path"
         },
         "accessModes": {
           "type": "array",
@@ -253,7 +318,8 @@
           }
         },
         "size": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$"
         },
         "storageClassName": {
           "type": "string"
@@ -280,7 +346,8 @@
               "type": "boolean"
             },
             "size": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$"
             },
             "accessModes": {
               "type": "array",
@@ -317,6 +384,15 @@
         },
         "keepOnUninstall": {
           "type": "boolean"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -383,6 +459,15 @@
             "required": [
               "name",
               "mountPath"
+            ]
+          }
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
             ]
           }
         }
@@ -615,7 +700,11 @@
               "type": "string"
             },
             "pullPolicy": {
-              "type": "string"
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
             },
             "digest": {
               "type": "string",
@@ -702,6 +791,34 @@
         },
         "failureThreshold": {
           "type": "integer"
+        },
+        "startup": {
+          "type": "object",
+          "properties": {
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "liveness": {
+          "type": "object",
+          "properties": {
+            "periodSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -764,6 +881,23 @@
           "name"
         ]
       }
+    },
+    "nameOverride": {
+      "type": "string",
+      "maxLength": 63
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "maxLength": 63
+    },
+    "commonLabels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "serviceAccountName": {
+      "type": "string"
     }
   }
 }

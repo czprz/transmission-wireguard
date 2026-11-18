@@ -39,7 +39,7 @@ tests:
       images.wireguard.repository: registry.example.com/mirror/wireguard
     asserts:
       - failedTemplate:
-          errorMessage: "images.wireguard.repository registry.example.com/mirror/wireguard needs images.wireguard.tag as well. The chart's default tag is for its own image (ghcr.io/czprz/twg-wireguard) and doesn't exist in another repository"
+          errorMessage: "images.wireguard.repository registry.example.com/mirror/wireguard needs images.wireguard.tag or digest as well. The chart's default tag is for its own image (ghcr.io/czprz/twg-wireguard) and doesn't exist in another repository"
 
   - template: templates/deployment.yaml
     it: keeps the linuxserver sidecar when its repository is set
@@ -145,6 +145,7 @@ tests:
     it: allows an exposed web UI with RPC auth
     set:
       ingress.enabled: true
+      ingress.hosts: [{ host: tx.example.com }]
       transmission.rpcAuth.existingSecret: tx-rpc
     asserts:
       - isKind:
@@ -154,6 +155,7 @@ tests:
     it: allows an exposed anonymous web UI when explicitly accepted
     set:
       ingress.enabled: true
+      ingress.hosts: [{ host: tx.example.com }]
       transmission.rpcAuth.allowAnonymous: true
     asserts:
       - isKind:
@@ -163,6 +165,7 @@ tests:
     it: accepts RPC auth set the pre-1.0 way in settings
     set:
       ingress.enabled: true
+      ingress.hosts: [{ host: tx.example.com }]
       transmission.settings.rpc-authentication-required: true
       transmission.settings.rpc-username: admin
       transmission.settings.rpc-password: s3cret

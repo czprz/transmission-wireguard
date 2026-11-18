@@ -54,7 +54,7 @@ tests:
           value: TransmissionWireguardVolumeFilling
       - equal:
           path: spec.groups[0].rules[0].expr
-          value: max by (namespace, pod) (kube_pod_init_container_status_ready{namespace="media", pod=~"twg-transmission-wireguard-[a-z0-9]+-[a-z0-9]+", container="wireguard"}) == 0
+          value: max by (namespace, pod) (kube_pod_init_container_status_ready{namespace="media", container="wireguard"} * on (namespace, pod) group_left () max by (namespace, pod) (kube_pod_owner{namespace="media", owner_kind="ReplicaSet", owner_name=~"twg-transmission-wireguard-[a-z0-9]+"})) == 0
       - equal:
           path: spec.groups[0].rules[0].for
           value: 5m
@@ -63,7 +63,7 @@ tests:
           value: kube_deployment_status_replicas_available{namespace="media", deployment="twg-transmission-wireguard"} < 1
       - matchRegex:
           path: spec.groups[0].rules[3].expr
-          pattern: 'persistentvolumeclaim=~"twg-transmission-wireguard\(-downloads\)\?"'
+          pattern: 'persistentvolumeclaim=~"\^\(twg-transmission-wireguard\)\$"'
       - equal:
           path: spec.groups[0].rules[0].annotations.summary
           value: "The WireGuard tunnel of {{ $labels.pod }} has been down for 5m"
@@ -99,3 +99,45 @@ tests:
           value:
             alert: Custom
             expr: vector(1)
+
+  - it: watches the claims actually mounted, existing ones too
+    template: templates/prometheusrule.yaml
+    capabilities:
+      apiVersions: [monitoring.coreos.com/v1/PrometheusRule]
+    set:
+      monitoring.prometheusRule.enabled: true
+      persistence.existingClaim: media-config
+      persistence.downloads.enabled: true
+      persistence.downloads.existingClaim: media
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[3].expr
+          pattern: 'persistentvolumeclaim=~"\^\(media-config\|media\)\$"'
+
+  - it: finds the pods through their ReplicaSet, so long release names still match
+    template: templates/prometheusrule.yaml
+    release:
+      name: a-very-long-release-name-for-transmission
+    capabilities:
+      apiVersions: [monitoring.coreos.com/v1/PrometheusRule]
+    set:
+      monitoring.prometheusRule.enabled: true
+    asserts:
+      - matchRegex:
+          path: spec.groups[0].rules[2].expr
+          pattern: 'owner_kind="ReplicaSet", owner_name=~"a-very-long-release-name-for-transmission-transmission-wireguar-\[a-z0-9\]\+"'
+      - notMatchRegex:
+          path: spec.groups[0].rules[2].expr
+          pattern: 'pod=~'
+
+  - it: leaves the volume alert out without a PVC
+    template: templates/prometheusrule.yaml
+    capabilities:
+      apiVersions: [monitoring.coreos.com/v1/PrometheusRule]
+    set:
+      monitoring.prometheusRule.enabled: true
+      persistence.enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 3

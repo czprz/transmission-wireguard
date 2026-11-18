@@ -13,7 +13,8 @@ Transmission is running behind a WireGuard sidecar with a chart-managed kill swi
 {{- end }}
 - DNS: {{ join ", " .Values.wireguard.dns.nameservers }} through the tunnel
 {{- $s := .Values.transmission.settings }}
-{{- if index $s "rpc-host-whitelist-enabled" }}
+{{- /* Transmission checks the Host header only while RPC auth is off. */}}
+{{- if and (index $s "rpc-host-whitelist-enabled") (not (include "twg.rpcAuthConfigured" .)) }}
 - Web UI hostnames allowed without RPC auth: the Service name{{ if .Values.ingress.enabled }}, the ingress hosts{{ end }}{{ if .Values.httpRoute.enabled }}, the HTTPRoute hostnames{{ end }} and {{ index $s "rpc-host-whitelist" | default "nothing else" }}.
   Reaching it under another name (an external proxy, a Tailscale name) gives HTTP 421; add the name to transmission.settings.rpc-host-whitelist.
 {{- end }}
@@ -26,7 +27,7 @@ Check for leaks from inside the cluster:
 {{- if .Values.tests.enabled }}
   helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
 {{- else }}
-  helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} --reset-then-reuse-values --set tests.enabled=true
+  helm upgrade {{ .Release.Name }} oci://ghcr.io/czprz/transmission-wireguard --version {{ .Chart.Version }} -n {{ .Release.Namespace }} --reset-then-reuse-values --set tests.enabled=true
   helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
 {{- end }}
 

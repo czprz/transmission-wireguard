@@ -4,12 +4,38 @@ metadata:
   name: {{ include "twg.fullname" . }}
   labels:
     {{- include "twg.labels" . | nindent 4 }}
+    {{- with .Values.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   {{- with .Values.service.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
   type: {{ .Values.service.type }}
+  {{- with .Values.service }}
+  {{- if and .externalTrafficPolicy (ne .type "ClusterIP") }}
+  # Local keeps the clients' own addresses: they must then be in
+  # firewall.webAllowedCIDRs.
+  externalTrafficPolicy: {{ .externalTrafficPolicy }}
+  {{- end }}
+  {{- if eq .type "LoadBalancer" }}
+  {{- with .loadBalancerClass }}
+  loadBalancerClass: {{ . }}
+  {{- end }}
+  {{- with .loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  {{- with .ipFamilyPolicy }}
+  ipFamilyPolicy: {{ . }}
+  {{- end }}
+  {{- with .ipFamilies }}
+  ipFamilies:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
   selector:
     {{- include "twg.selectorLabels" . | nindent 4 }}
   ports:
@@ -17,3 +43,6 @@ spec:
       port: {{ .Values.service.webPort }}
       targetPort: {{ .Values.service.webPort }}
       protocol: TCP
+      {{- if and .Values.service.nodePort (ne .Values.service.type "ClusterIP") }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}

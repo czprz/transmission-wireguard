@@ -1,16 +1,34 @@
+{{- /*
+Names: <release>-<chart>, as since 0.x (never shortened when the release name
+contains the chart name, which would rename existing releases' PVCs).
+fullnameOverride replaces it; nameOverride replaces the chart part and
+app.kubernetes.io/name, which is in the Deployment's immutable selector, so
+set it at install only.
+*/ -}}
+{{- define "twg.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{- define "twg.fullname" -}}
-{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- if .Values.fullnameOverride -}}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name (include "twg.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "twg.labels" -}}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+{{- include "twg.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+{{- with omit (.Values.commonLabels | default dict) "app.kubernetes.io/name" "app.kubernetes.io/instance" }}
+{{ toYaml . }}
+{{- end }}
 {{- end -}}
 
 {{- define "twg.selectorLabels" -}}
-app.kubernetes.io/name: {{ .Chart.Name }}
+app.kubernetes.io/name: {{ include "twg.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
@@ -199,6 +217,26 @@ true
 {{- end -}}
 
 {{- define "twg.validate" -}}
+{{- if and .Values.ingress.enabled (not .Values.ingress.hosts) -}}
+{{- fail "ingress.enabled needs ingress.hosts. An Ingress without rules routes nothing" -}}
+{{- end -}}
+{{- if and .Values.issuer.enabled (not .Values.ingress.enabled) (not .Values.httpRoute.enabled) -}}
+{{- fail "issuer.enabled needs ingress.enabled or httpRoute.enabled. Its HTTP-01 solver answers challenges through one of them" -}}
+{{- end -}}
+{{- $dataPath := include "twg.dataPath" . -}}
+{{- $mounts := list $dataPath "/config" -}}
+{{- range .Values.transmission.extraVolumeMounts }}{{ $mounts = append $mounts (trimSuffix "/" .mountPath) }}{{ end -}}
+{{- $settings := include "twg.settings" . | fromJson -}}
+{{- range $k := list "download-dir" "incomplete-dir" "watch-dir" -}}
+{{- $d := index $settings $k | default "" | toString -}}
+{{- if and $d (or (ne $k "incomplete-dir") (index $settings "incomplete-dir-enabled")) (or (ne $k "watch-dir") (index $settings "watch-dir-enabled")) -}}
+{{- $ok := false -}}
+{{- range $mounts }}{{ if or (eq $d .) (hasPrefix (printf "%s/" .) $d) }}{{ $ok = true }}{{ end }}{{ end -}}
+{{- if not $ok -}}
+{{- fail (printf "transmission.settings.%s %s is not on a volume (%s or a transmission.extraVolumeMounts path), so its files would go to the container's own layer and be lost on restart" $k $d $dataPath) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- if eq (include "twg.transmissionFlavor" .) "minimal" -}}
 {{- range $k := list "PUID" "PGID" -}}
 {{- $v := index $.Values.transmission.env $k | default "1000" | toString -}}
@@ -208,8 +246,8 @@ true
 {{- end -}}
 {{- end -}}
 {{- with .Values.images.wireguard -}}
-{{- if and .repository (not .tag) -}}
-{{- fail (printf "images.wireguard.repository %s needs images.wireguard.tag as well. The chart's default tag is for its own image (ghcr.io/czprz/twg-wireguard) and doesn't exist in another repository" .repository) -}}
+{{- if and .repository (not .tag) (not .digest) -}}
+{{- fail (printf "images.wireguard.repository %s needs images.wireguard.tag or digest as well. The chart's default tag is for its own image (ghcr.io/czprz/twg-wireguard) and doesn't exist in another repository" .repository) -}}
 {{- end -}}
 {{- if and .tag (not .repository) (regexMatch "-ls[0-9]+$" (toString .tag)) -}}
 {{- fail (printf "images.wireguard.tag %s is a linuxserver tag, but the default sidecar image is now ghcr.io/czprz/twg-wireguard. Remove the tag, or set images.wireguard.repository to ghcr.io/linuxserver/wireguard to keep that image" (toString .tag)) -}}
@@ -330,12 +368,17 @@ refuses, by another name. TWG_ variables and the image's server mode
 {{- fail (printf "wireguard.env must not set %s. Only TZ, PUID and PGID are allowed, as anything else reaches the root, NET_ADMIN sidecar's shell (BASH_ENV, SHELLOPTS, ...), the kill switch's own TWG_ settings or the image's server mode" $k) -}}
 {{- end -}}
 {{- end -}}
-{{- range $k, $_ := .Values.transmission.env -}}
+{{- $txEnv := list -}}
+{{- range $k, $_ := .Values.transmission.env }}{{ $txEnv = append $txEnv (list "transmission.env" $k) }}{{ end -}}
+{{- range .Values.transmission.extraEnv }}{{ $txEnv = append $txEnv (list "transmission.extraEnv" (.name | toString)) }}{{ end -}}
+{{- range $txEnv -}}
+{{- $where := index . 0 -}}
+{{- $k := index . 1 -}}
 {{- if hasPrefix "TWG_" $k -}}
-{{- fail (printf "transmission.env must not set %s. The chart sets every TWG_ variable itself" $k) -}}
+{{- fail (printf "%s must not set %s. The chart sets every TWG_ variable itself" $where $k) -}}
 {{- end -}}
 {{- if has $k (list "USER" "PASS") -}}
-{{- fail (printf "transmission.env must not set %s. The chart sets USER and PASS from transmission.rpcAuth, so the image can stop Transmission cleanly" $k) -}}
+{{- fail (printf "%s must not set %s. The chart sets USER and PASS from transmission.rpcAuth, so the image can stop Transmission cleanly" $where $k) -}}
 {{- end -}}
 {{- end -}}
 {{- if index $s "peer-port-random-on-start" -}}
@@ -451,12 +494,13 @@ already in podSecurityContext win.
 {{- end -}}
 
 {{- define "twg.dataPath" -}}
-{{- (.Values.persistence.mounts | default dict).data | default dict | dig "mountPath" "" | default "/data" -}}
+{{- (.Values.persistence.mounts | default dict).data | default dict | dig "mountPath" "" | default "/data" | trimSuffix "/" | default "/data" -}}
 {{- end -}}
 
 {{/* Transmission's downloads mount, if any. */}}
 {{- define "twg.dataMount" -}}
-{{- if .Values.persistence.downloads.enabled -}}
+{{- if include "twg.dataPathTaken" . -}}
+{{- else if .Values.persistence.downloads.enabled -}}
 - name: transmission-downloads
   mountPath: {{ include "twg.dataPath" . }}
 {{- else if .Values.persistence.enabled -}}
@@ -477,15 +521,80 @@ is read-only, so without persistence it has no /data, unless
 transmission.extraVolumeMounts mounts something there.
 */}}
 {{- define "twg.dataEmptyDir" -}}
-{{- if and (eq (include "twg.transmissionFlavor" .) "minimal") (not .Values.persistence.enabled) (not .Values.persistence.downloads.enabled) -}}
-{{- $path := include "twg.dataPath" . -}}
-{{- $taken := false -}}
-{{- range .Values.transmission.extraVolumeMounts }}{{ if eq (trimSuffix "/" .mountPath) $path }}{{ $taken = true }}{{ end }}{{ end -}}
-{{- if not $taken }}true{{ end -}}
+{{- if and (eq (include "twg.transmissionFlavor" .) "minimal") (not .Values.persistence.enabled) (not .Values.persistence.downloads.enabled) (not (include "twg.dataPathTaken" .)) -}}
+true
 {{- end -}}
 {{- end -}}
 
 {{/* Where an unprivileged sidecar's sysctls are set: "pod" or "initContainer". */}}
 {{- define "twg.sysctlsFrom" -}}
 {{- .Values.wireguard.unprivileged.sysctls | default "pod" -}}
+{{- end -}}
+
+{{/*
+transmission.settings as rendered into settings.json, as JSON: the RPC
+credentials left out (they come from the Secret), the hosts the web UI is
+reached under added to rpc-host-whitelist, and download, incomplete and
+watch dirs that still point under /data moved to the data mount when
+persistence.mounts.data.mountPath puts it elsewhere.
+*/}}
+{{- define "twg.settings" -}}
+{{- $settings := omit (deepCopy .Values.transmission.settings) "rpc-username" "rpc-password" -}}
+{{- $dataPath := include "twg.dataPath" . -}}
+{{- if ne $dataPath "/data" -}}
+{{- range $k := list "download-dir" "incomplete-dir" "watch-dir" -}}
+{{- $d := index $settings $k | default "" | toString -}}
+{{- if or (eq $d "/data") (hasPrefix "/data/" $d) -}}
+{{- $_ := set $settings $k (printf "%s%s" $dataPath (trimPrefix "/data" $d)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if index $settings "rpc-host-whitelist-enabled" -}}
+{{- $fullname := include "twg.fullname" . -}}
+{{- $hosts := splitList "," (index $settings "rpc-host-whitelist" | default "" | toString) -}}
+{{- $hosts = concat $hosts (list $fullname (printf "%s.%s" $fullname .Release.Namespace) (printf "%s.%s.svc" $fullname .Release.Namespace) (printf "%s.%s.svc.cluster.local" $fullname .Release.Namespace)) -}}
+{{- if .Values.ingress.enabled -}}
+{{- range .Values.ingress.hosts -}}
+{{- $hosts = append $hosts .host -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.httpRoute.enabled -}}
+{{- $hosts = concat $hosts .Values.httpRoute.hostnames -}}
+{{- end -}}
+{{- $_ := set $settings "rpc-host-whitelist" (without ($hosts | uniq) "" | join ",") -}}
+{{- end -}}
+{{- toJson $settings -}}
+{{- end -}}
+
+{{/* The claims this release's pods mount, for the PrometheusRule. */}}
+{{- define "twg.claimNames" -}}
+{{- $names := list -}}
+{{- if and .Values.persistence.enabled (ne .Values.persistence.type "hostPath") -}}
+{{- $names = append $names (default (include "twg.fullname" .) .Values.persistence.existingClaim) -}}
+{{- end -}}
+{{- if .Values.persistence.downloads.enabled -}}
+{{- $names = append $names (.Values.persistence.downloads.existingClaim | default (printf "%s-downloads" (include "twg.fullname" .))) -}}
+{{- end -}}
+{{- toJson $names -}}
+{{- end -}}
+
+{{/* "true" when a transmission.extraVolumeMount takes the data path. */}}
+{{- define "twg.dataPathTaken" -}}
+{{- $path := include "twg.dataPath" . -}}
+{{- range .Values.transmission.extraVolumeMounts }}{{ if eq (trimSuffix "/" .mountPath) $path }}true{{ end }}{{ end -}}
+{{- end -}}
+
+{{/*
+The issuer's name: issuer.name, or <fullname>-issuer. A ClusterIssuer is
+cluster-wide, so its default name has the namespace in it too: two
+namespaces with the same release name would otherwise fight over one.
+*/}}
+{{- define "twg.issuerName" -}}
+{{- if .Values.issuer.name -}}
+{{- .Values.issuer.name -}}
+{{- else if eq (default "Issuer" .Values.issuer.kind) "ClusterIssuer" -}}
+{{- printf "%s-%s-issuer" .Release.Namespace (include "twg.fullname" .) | trunc 253 -}}
+{{- else -}}
+{{- printf "%s-issuer" (include "twg.fullname" .) -}}
+{{- end -}}
 {{- end -}}

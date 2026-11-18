@@ -5,10 +5,15 @@ metadata:
   name: {{ include "twg.fullname" . }}
   labels:
     {{- include "twg.labels" . | nindent 4 }}
-  {{- if .Values.persistence.keepOnUninstall }}
-  # Downloads outlive `helm uninstall`; delete the PVC yourself.
+    {{- with .Values.persistence.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- $annotations := deepCopy (.Values.persistence.annotations | default dict) }}
+  {{- /* Downloads outlive `helm uninstall`; delete the PVC yourself. */}}
+  {{- if .Values.persistence.keepOnUninstall }}{{ $_ := set $annotations "helm.sh/resource-policy" "keep" }}{{ end }}
+  {{- with $annotations }}
   annotations:
-    helm.sh/resource-policy: keep
+    {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
   accessModes:
@@ -29,9 +34,14 @@ metadata:
   name: {{ include "twg.fullname" $ }}-downloads
   labels:
     {{- include "twg.labels" $ | nindent 4 }}
-  {{- if $.Values.persistence.keepOnUninstall }}
+    {{- with $.Values.persistence.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- $annotations := deepCopy ($.Values.persistence.annotations | default dict) }}
+  {{- if $.Values.persistence.keepOnUninstall }}{{ $_ := set $annotations "helm.sh/resource-policy" "keep" }}{{ end }}
+  {{- with $annotations }}
   annotations:
-    helm.sh/resource-policy: keep
+    {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
   accessModes:
