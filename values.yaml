@@ -95,9 +95,12 @@ issuer:
   # support turned on, and the Gateway the cert-manager.io/issuer annotation).
   enabled: false
   kind: Issuer
+  # Default: <release>-transmission-wireguard-issuer (a ClusterIssuer's has
+  # the namespace in front). The Ingress gets the matching annotation.
   name: ""
   email: ""
   server: https://acme-v02.api.letsencrypt.org/directory
+  # The Secret for the ACME account key (default: the issuer's name).
   privateKeySecretName: ""
 
 persistence:
@@ -120,9 +123,13 @@ persistence:
   #   path: /path/to/transmission
   #   type: Directory
 
+  # Where the data volume is mounted in Transmission (default /data), and
+  # optionally a subPath of the main PVC for it. Download, incomplete and
+  # watch dirs under /data move with it.
   # mounts:
   #   data:
   #     mountPath: /data
+  #     subPath: ""
 
   # A PVC of its own for /data (the downloads), so filling it cannot stop
   # Transmission from saving its config and resume files on the main volume.
@@ -181,13 +188,15 @@ transmission:
     rpc-bind-address: "::"
     rpc-port: 9091
     rpc-url: /transmission/
+    # Set from transmission.rpcAuth: leave these three alone.
     rpc-authentication-required: false
     rpc-username: ""
     rpc-password: ""
     rpc-whitelist: 127.0.0.1
     rpc-whitelist-enabled: false
-    # DNS-rebinding protection (applies when RPC auth is off). The Service
-    # name and ingress hosts are added automatically.
+    # DNS-rebinding protection (applies when RPC auth is off). The Service's
+    # names, the ingress hosts and the HTTPRoute hostnames are added
+    # automatically.
     rpc-host-whitelist: localhost
     rpc-host-whitelist-enabled: true
     # The kill switch only accepts inbound peers on this port, via the tunnel.
@@ -398,6 +407,7 @@ tests:
   # Optional: your VPN's exit addresses. With ipEchoUrl set, the pod's egress
   # address must then be one of them.
   vpnEgressIPs: []
+  # The test's kubectl image (default: alpine/kubectl, pinned by digest).
   image:
     repository: ""
     tag: ""

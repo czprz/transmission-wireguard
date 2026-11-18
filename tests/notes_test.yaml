@@ -50,3 +50,11 @@ tests:
           pattern: 'ifconfig|wget'
       - matchRegexRaw:
           pattern: 'curl -sk -m 5 -o /dev/null --interface "if!eth0"'
+
+  - it: says how to open the web UI
+    release:
+      name: tx
+      namespace: media
+    asserts:
+      - matchRegexRaw:
+          pattern: 'kubectl -n media port-forward svc/tx-transmission-wireguard 9091\s+then http://localhost:9091/transmission/web/'

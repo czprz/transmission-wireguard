@@ -23,6 +23,10 @@ Transmission is running behind a WireGuard sidecar with a chart-managed kill swi
   (kubectl -n {{ .Release.Namespace }} rollout restart deploy/{{ include "twg.fullname" . }}).
 {{- end }}
 
+Open the web UI (until you expose it with ingress, httpRoute or the Service type):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "twg.fullname" . }} {{ .Values.service.webPort }}
+  then http://localhost:{{ .Values.service.webPort }}/transmission/web/
+
 Check for leaks from inside the cluster:
 {{- if .Values.tests.enabled }}
   helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
