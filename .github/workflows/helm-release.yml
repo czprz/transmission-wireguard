@@ -1,33 +1,62 @@
 name: Helm Release
 
-# Started by helm-main.yml after a release commit; run by hand only to
-# re-publish. Either way the full test suite runs first.
+# Publishes a release tag's chart to GHCR, signed (keyless cosign) and with a
+# build provenance attestation, and attaches the package to the tag's GitHub
+# release. helm-main.yml calls it as soon as release-please has tagged a
+# release, after the full suite passed on that commit. The workflow code is
+# always main's; only the chart comes from the tag, so a CI bug frozen into a
+# tag can't keep that version from being published.
+#
+# Run it by hand (on main) to publish a tag again, e.g. after a failed push.
+# It refuses a version that is already in the registry unless overwrite is
+# set, so a published digest never changes under its users.
 "on":
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. v1.1.0"
+        type: string
+        required: true
+      overwrite:
+        description: "Publish again although this version is already in the registry"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-jobs:
-  verify:
-    uses: ./.github/workflows/helm-chart.yaml
-    permissions:
-      contents: read
+concurrency:
+  group: helm-release-${{ inputs.tag }}
+  cancel-in-progress: false
 
+jobs:
   release:
     runs-on: ubuntu-latest
-    needs: verify
+    timeout-minutes: 20
     permissions:
-      contents: read
+      # The package goes onto the tag's GitHub release.
+      contents: write
       packages: write
       # Keyless signing and the provenance attestation (Sigstore, with the
       # workflow's GitHub identity).
       id-token: write
       attestations: write
     steps:
-      - name: Checkout
+      - name: Only from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Run this from main (the signing identity is main's workflow), not ${GITHUB_REF}." >&2
+          exit 1
+
+      - name: Checkout the tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
         with:
+          ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0
 
       - name: Set up Helm
@@ -43,17 +72,20 @@ jobs:
         run: |
           echo "result=$(helm show chart . | sed -n 's/^version: //p')" >> "$GITHUB_OUTPUT"
 
-      - name: Verify tag matches chart version
+      # A release tag on main whose Chart.yaml version is the tag's.
+      - name: Verify the tag
         run: |
-          if [ "${GITHUB_REF_TYPE}" != tag ]; then
-            echo "Run this on a release tag, not the ${GITHUB_REF_TYPE} ${GITHUB_REF_NAME}."
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "$TAG is not a release tag (vX.Y.Z)" >&2; exit 1; }
+          if [ "${TAG#v}" != "${CHART_VERSION}" ]; then
+            echo "Tag version (${TAG#v}) does not match Chart.yaml version (${CHART_VERSION})." >&2
             exit 1
           fi
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "${TAG_VERSION}" != "${{ steps.chart.outputs.result }}" ]; then
-            echo "Tag version (${TAG_VERSION}) does not match Chart.yaml version (${{ steps.chart.outputs.result }})."
-            exit 1
-          fi
+          git fetch -q origin main
+          git merge-base --is-ancestor "refs/tags/${TAG}" origin/main ||
+            { echo "${TAG} is not on main" >&2; exit 1; }
+        env:
+          TAG: ${{ inputs.tag }}
+          CHART_VERSION: ${{ steps.chart.outputs.result }}
 
       # helm pushes with its own login; cosign and the attestation use Docker's.
       - name: Log in to GHCR
@@ -62,6 +94,21 @@ jobs:
           echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Not published yet
+        run: |
+          ref="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/transmission-wireguard"
+          if helm show chart "$ref" --version "${CHART_VERSION}" >/dev/null 2>&1; then
+            if [ "${OVERWRITE}" = true ]; then
+              echo "::warning::${CHART_VERSION} is already published; overwriting it as asked."
+            else
+              echo "${CHART_VERSION} is already published at ${ref}; set overwrite to publish it again." >&2
+              exit 1
+            fi
+          fi
+        env:
+          CHART_VERSION: ${{ steps.chart.outputs.result }}
+          OVERWRITE: ${{ inputs.overwrite || false }}
 
       - name: Package test
         run: tests/package-test.sh
@@ -98,3 +145,19 @@ jobs:
           subject-name: ${{ steps.push.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - name: Attach the package to the GitHub release
+        run: |
+          gh release upload "${TAG}" dist/*.tgz --clobber
+          {
+            echo
+            echo "**Chart:** \`${IMAGE}:${TAG#v}\` (\`${DIGEST}\`), signed; see the README's \"Verify the chart\"."
+          } > "$RUNNER_TEMP/digest.md"
+          gh release view "${TAG}" --json body -q .body > "$RUNNER_TEMP/notes.md"
+          grep -qF "${DIGEST}" "$RUNNER_TEMP/notes.md" || cat "$RUNNER_TEMP/digest.md" >> "$RUNNER_TEMP/notes.md"
+          gh release edit "${TAG}" --notes-file "$RUNNER_TEMP/notes.md"
+        env:
+          TAG: ${{ inputs.tag }}
+          IMAGE: ${{ steps.push.outputs.image }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
