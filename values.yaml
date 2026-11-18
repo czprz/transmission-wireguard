@@ -298,17 +298,24 @@ wireguard:
     privileged: true
 
   # Run the sidecar with only NET_ADMIN and NET_RAW instead of privileged:
-  # the chart sets privileged: false, adds those capabilities and sets
-  # net.ipv4.conf.all.src_valid_mark=1 in the pod's sysctls. The kubelet
-  # must allow that sysctl (--allowed-unsafe-sysctls, or allowedUnsafeSysctls
-  # in its config); otherwise the pod fails with SysctlForbidden.
+  # the chart sets privileged: false, drops every other capability, turns
+  # off privilege escalation, uses the runtime's seccomp profile and has
+  # net.ipv4.conf.all.src_valid_mark=1 set for the pod (see sysctls).
   unprivileged:
     enabled: false
+    # Where the sysctls are set:
+    # - pod: in the pod's securityContext. The kubelet must allow them
+    #   (--allowed-unsafe-sysctls, or allowedUnsafeSysctls in its config);
+    #   otherwise the pod fails with SysctlForbidden.
+    # - initContainer: a privileged init container writes them into the
+    #   pod's network namespace and exits; no kubelet change needed. The
+    #   long-running sidecar stays unprivileged.
+    sysctls: pod
     # Also set net.ipv6.conf.eth0.accept_ra_pinfo and
-    # accept_ra_rt_info_max_plen to 0 (allow them on the kubelet too), which
-    # the kill switch can't do without privileged: router advertisements then
-    # can't add IPv6 routes past the tunnel. Only on IPv6 pod networks: the
-    # pod won't start where eth0 has no IPv6.
+    # accept_ra_rt_info_max_plen to 0, which the kill switch can't do
+    # without privileged: router advertisements then can't add IPv6 routes
+    # past the tunnel. With sysctls: pod, only on IPv6 pod networks (allow
+    # them on the kubelet too): the pod won't start where eth0 has no IPv6.
     blockRouterAdvertisements: false
 
 # Kill switch, installed in the pod network namespace before the tunnel starts.

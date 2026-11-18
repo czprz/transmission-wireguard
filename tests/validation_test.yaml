@@ -48,7 +48,7 @@ tests:
       images.wireguard.tag: 1.0.20260223-r0-ls126
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[1].image
+          path: spec.template.spec.initContainers[2].image
           value: ghcr.io/linuxserver/wireguard:1.0.20260223-r0-ls126
 
   - template: templates/deployment.yaml
@@ -396,7 +396,7 @@ tests:
         Endpoint = 203.0.113.10:51820
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_WG_FWMARK, value: "4026531839" }
 
   - template: templates/deployment.yaml
@@ -456,7 +456,7 @@ tests:
       networkPolicy.enabled: false
     asserts:
       - failedTemplate:
-          errorMessage: "wireguard.env must not set TWG_LOCAL_MARK. The chart sets every TWG_ variable of the kill switch itself"
+          errorMessage: "wireguard.env must not set TWG_LOCAL_MARK. Only TZ, PUID and PGID are allowed, as anything else reaches the root, NET_ADMIN sidecar's shell (BASH_ENV, SHELLOPTS, ...), the kill switch's own TWG_ settings or the image's server mode"
 
   - template: templates/deployment.yaml
     it: refuses kill switch variables in transmission.env
@@ -482,7 +482,17 @@ tests:
       networkPolicy.enabled: false
     asserts:
       - failedTemplate:
-          errorMessage: "wireguard.env must not set PEERS. It switches the image to server mode, which is not supported"
+          errorMessage: "wireguard.env must not set PEERS. Only TZ, PUID and PGID are allowed, as anything else reaches the root, NET_ADMIN sidecar's shell (BASH_ENV, SHELLOPTS, ...), the kill switch's own TWG_ settings or the image's server mode"
+
+  - template: templates/deployment.yaml
+    it: refuses shell start-up variables in wireguard.env
+    set:
+      wireguard.env.BASH_ENV: $(iptables -P OUTPUT ACCEPT)
+      wireguard.existingSecret: wg
+      networkPolicy.enabled: false
+    asserts:
+      - failedTemplate:
+          errorMessage: "wireguard.env must not set BASH_ENV. Only TZ, PUID and PGID are allowed, as anything else reaches the root, NET_ADMIN sidecar's shell (BASH_ENV, SHELLOPTS, ...), the kill switch's own TWG_ settings or the image's server mode"
 
   - template: templates/deployment.yaml
     it: refuses a peer port equal to the web port

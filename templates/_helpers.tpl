@@ -25,8 +25,21 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "twg.rpcSecretName" -}}
 {{- if .Values.transmission.rpcAuth.existingSecret -}}
 {{- .Values.transmission.rpcAuth.existingSecret -}}
-{{- else if and .Values.transmission.rpcAuth.username .Values.transmission.rpcAuth.password -}}
+{{- else if or (and .Values.transmission.rpcAuth.username .Values.transmission.rpcAuth.password) (include "twg.legacyRpcAuth" .) -}}
 {{- printf "%s-rpc" (include "twg.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+"true" for RPC credentials set the old way, in transmission.settings: they
+go into the chart's Secret like rpcAuth's, never into the ConfigMap or the
+pod spec.
+*/}}
+{{- define "twg.legacyRpcAuth" -}}
+{{- $s := .Values.transmission.settings -}}
+{{- $a := .Values.transmission.rpcAuth -}}
+{{- if and (not $a.existingSecret) (not (and $a.username $a.password)) (eq (toString (index $s "rpc-authentication-required")) "true") (index $s "rpc-username") (index $s "rpc-password") -}}
+true
 {{- end -}}
 {{- end -}}
 
@@ -305,12 +318,16 @@ true
 {{- if not .Values.transmission.bindToTunnel -}}
 {{- fail "transmission.bindToTunnel must be true. Unbound peer sockets can learn and announce the pod's own IPv6 address" -}}
 {{- end -}}
+{{- /*
+An allowlist: the sidecar runs as root with NET_ADMIN, its command and probes
+are bash, and bash runs code from variables such as BASH_ENV, SHELLOPTS with
+PS4, or BASH_FUNC_*, which would be the conf hooks firewall.allowConfHooks
+refuses, by another name. TWG_ variables and the image's server mode
+(PEERS, ...) are out too.
+*/ -}}
 {{- range $k, $_ := .Values.wireguard.env -}}
-{{- if hasPrefix "TWG_" $k -}}
-{{- fail (printf "wireguard.env must not set %s. The chart sets every TWG_ variable of the kill switch itself" $k) -}}
-{{- end -}}
-{{- if has $k (list "PEERS" "SERVERURL" "SERVERPORT" "PEERDNS" "INTERNAL_SUBNET" "ALLOWEDIPS" "PERSISTENTKEEPALIVE_PEERS") -}}
-{{- fail (printf "wireguard.env must not set %s. It switches the image to server mode, which is not supported" $k) -}}
+{{- if not (has $k (list "TZ" "PUID" "PGID")) -}}
+{{- fail (printf "wireguard.env must not set %s. Only TZ, PUID and PGID are allowed, as anything else reaches the root, NET_ADMIN sidecar's shell (BASH_ENV, SHELLOPTS, ...), the kill switch's own TWG_ settings or the image's server mode" $k) -}}
 {{- end -}}
 {{- end -}}
 {{- range $k, $_ := .Values.transmission.env -}}
@@ -381,10 +398,18 @@ NET_ADMIN + NET_RAW (what the README documents and the Docker suite runs).
 {{- define "twg.wireguardSecurityContext" -}}
 {{- $sc := deepCopy (.Values.wireguard.securityContext | default dict) -}}
 {{- if .Values.wireguard.unprivileged.enabled -}}
+{{- /* Only what wg-quick and the kill switch need: none of the runtime's
+default capabilities (CHOWN, DAC_OVERRIDE, SETUID, ...), no privilege
+escalation, the runtime's seccomp profile. */ -}}
 {{- $_ := set $sc "privileged" false -}}
+{{- $_ := set $sc "allowPrivilegeEscalation" false -}}
 {{- $caps := deepCopy ($sc.capabilities | default dict) -}}
+{{- $_ := set $caps "drop" (concat (list "ALL") ($caps.drop | default list) | uniq) -}}
 {{- $_ := set $caps "add" (concat ($caps.add | default list) (list "NET_ADMIN" "NET_RAW") | uniq) -}}
 {{- $_ := set $sc "capabilities" $caps -}}
+{{- if not $sc.seccompProfile -}}
+{{- $_ := set $sc "seccompProfile" (dict "type" "RuntimeDefault") -}}
+{{- end -}}
 {{- end -}}
 {{- toYaml $sc -}}
 {{- end -}}
@@ -397,7 +422,7 @@ already in podSecurityContext win.
 */}}
 {{- define "twg.podSecurityContext" -}}
 {{- $psc := deepCopy (.Values.podSecurityContext | default dict) -}}
-{{- if .Values.wireguard.unprivileged.enabled -}}
+{{- if and .Values.wireguard.unprivileged.enabled (eq (include "twg.sysctlsFrom" .) "pod") -}}
 {{- $want := list (dict "name" "net.ipv4.conf.all.src_valid_mark" "value" "1") -}}
 {{- if .Values.wireguard.unprivileged.blockRouterAdvertisements -}}
 {{- $want = concat $want (list (dict "name" "net.ipv6.conf.eth0.accept_ra_pinfo" "value" "0") (dict "name" "net.ipv6.conf.eth0.accept_ra_rt_info_max_plen" "value" "0")) -}}
@@ -458,4 +483,9 @@ transmission.extraVolumeMounts mounts something there.
 {{- range .Values.transmission.extraVolumeMounts }}{{ if eq (trimSuffix "/" .mountPath) $path }}{{ $taken = true }}{{ end }}{{ end -}}
 {{- if not $taken }}true{{ end -}}
 {{- end -}}
+{{- end -}}
+
+{{/* Where an unprivileged sidecar's sysctls are set: "pod" or "initContainer". */}}
+{{- define "twg.sysctlsFrom" -}}
+{{- .Values.wireguard.unprivileged.sysctls | default "pod" -}}
 {{- end -}}

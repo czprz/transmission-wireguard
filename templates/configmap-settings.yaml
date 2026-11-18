@@ -1,4 +1,5 @@
-{{- $settings := deepCopy .Values.transmission.settings -}}
+{{- /* RPC credentials only ever reach settings.json from the Secret (settings-init.sh). */ -}}
+{{- $settings := omit (deepCopy .Values.transmission.settings) "rpc-username" "rpc-password" -}}
 {{- if index $settings "rpc-host-whitelist-enabled" -}}
 {{- $fullname := include "twg.fullname" . -}}
 {{- $hosts := splitList "," (index $settings "rpc-host-whitelist" | default "" | toString) -}}

@@ -29,7 +29,13 @@ spec:
         # Secrets are only read at start; roll the pod when they change.
         # (With existingSecret, restart the pod yourself after editing it.)
         checksum/wg: {{ include (print $.Template.BasePath "/secret-wg.yaml") . | sha256sum }}
-        checksum/rpc: {{ include (print $.Template.BasePath "/secret-rpc.yaml") . | sha256sum }}
+        {{- /* The RPC Secret's checksum alone would let anyone who can read
+        pods test password guesses offline. Hashed with the WireGuard Secret
+        (its private key), it can't be; without an inline wg0Conf there is
+        no such secret here, so restart the pod after changing rpcAuth. */}}
+        {{- if and .Values.wireguard.wg0Conf (include "twg.rpcSecretName" .) (not .Values.transmission.rpcAuth.existingSecret) }}
+        checksum/rpc: {{ print (include (print $.Template.BasePath "/secret-wg.yaml") .) (include (print $.Template.BasePath "/secret-rpc.yaml") .) | sha256sum }}
+        {{- end }}
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
@@ -50,6 +56,31 @@ spec:
         nameservers:
           {{- toYaml .Values.wireguard.dns.nameservers | nindent 10 }}
       initContainers:
+        # Only the Address lines of wg0.conf, for the next init container:
+        # that one runs the Transmission image (linuxserver's, by default),
+        # which so never sees the private key.
+        - name: tunnel-address
+          image: "{{ include "twg.wireguardImage" . }}"
+          imagePullPolicy: {{ .Values.images.wireguard.pullPolicy }}
+          # grep exits 1 when nothing matches: settings-init.sh says what is missing.
+          command: ["/bin/sh", "-c", "umask 022; grep -iE '^[[:space:]]*Address[[:space:]]*=' /twg/wg/wg0.conf >/twg/run/wg-address || [ $? -eq 1 ]"]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: wgconf
+              mountPath: /twg/wg
+              readOnly: true
+            - name: settings-run
+              mountPath: /twg/run
+          resources:
+            {{- toYaml .Values.transmission.initResources | nindent 12 }}
+
         - name: transmission-settings
           image: "{{ include "twg.transmissionImageRef" . }}"
           imagePullPolicy: {{ .Values.images.transmission.pullPolicy }}
@@ -72,6 +103,8 @@ spec:
               value: {{ .Values.transmission.env.PGID | default "1000" | quote }}
             - name: TWG_BIND_TO_TUNNEL
               value: {{ .Values.transmission.bindToTunnel | quote }}
+            - name: TWG_WG_CONF
+              value: /twg/run/wg-address
             {{- if $minimal }}
             # No root init in the minimal image: hand the volumes to PUID/PGID.
             - name: TWG_OWN_DIRS
@@ -94,9 +127,6 @@ spec:
               mountPath: /twg/scripts
             - name: transmission-settings
               mountPath: /twg/settings
-            - name: wgconf
-              mountPath: /twg/wg
-              readOnly: true
             - name: settings-run
               mountPath: /twg/run
             {{- if $minimal }}
@@ -107,6 +137,30 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.transmission.initResources | nindent 12 }}
+
+        {{- if and .Values.wireguard.unprivileged.enabled (eq (include "twg.sysctlsFrom" .) "initContainer") }}
+        # The sysctls an unprivileged sidecar can't write: set once in the
+        # pod's network namespace, where they stay, by a privileged
+        # container that exits right away, so the kubelet needn't allow them.
+        - name: sysctls
+          image: "{{ include "twg.wireguardImage" . }}"
+          imagePullPolicy: {{ .Values.images.wireguard.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo 1 >/proc/sys/net/ipv4/conf/all/src_valid_mark
+              {{- if .Values.wireguard.unprivileged.blockRouterAdvertisements }}
+              for f in accept_ra_pinfo accept_ra_rt_info_max_plen; do
+                [ ! -e /proc/sys/net/ipv6/conf/eth0/$f ] || echo 0 >/proc/sys/net/ipv6/conf/eth0/$f
+              done
+              {{- end }}
+          securityContext:
+            privileged: true
+          resources:
+            {{- toYaml .Values.transmission.initResources | nindent 12 }}
+        {{- end }}
 
         # Native sidecar (restartPolicy: Always): Transmission is not started
         # until the startupProbe confirms the kill switch and tunnel are up.
@@ -203,7 +257,9 @@ spec:
             exec:
               command: ["/twg/scripts/firewall.sh", "live"]
             periodSeconds: 30
-            timeoutSeconds: 5
+            # Renewing a NAT-PMP mapping and setting the port over RPC can
+            # take up to ~17 s; a slow gateway must not restart the tunnel.
+            timeoutSeconds: {{ ternary 20 5 (not (empty .Values.wireguard.portForwarding.natpmpGateway)) }}
             failureThreshold: 3
           resources:
             {{- toYaml .Values.wireguard.resources | nindent 12 }}
@@ -237,11 +293,6 @@ spec:
                 secretKeyRef:
                   name: {{ $rpcSecret }}
                   key: {{ .Values.transmission.rpcAuth.passwordKey }}
-            {{- else if include "twg.rpcAuthConfigured" . }}
-            - name: USER
-              value: {{ index .Values.transmission.settings "rpc-username" | quote }}
-            - name: PASS
-              value: {{ index .Values.transmission.settings "rpc-password" | quote }}
             {{- end }}
             {{- end }}
           ports:

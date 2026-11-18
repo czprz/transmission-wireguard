@@ -17,7 +17,7 @@ tests:
     template: templates/deployment.yaml
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_NATPMP_GATEWAY, value: "" }
       - notContains:
           path: spec.template.spec.volumes
@@ -41,13 +41,13 @@ tests:
       transmission.rpcAuth.existingSecret: tx-rpc
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_NATPMP_GATEWAY, value: 10.2.0.1 }
       - contains:
-          path: spec.template.spec.initContainers[1].volumeMounts
+          path: spec.template.spec.initContainers[2].volumeMounts
           content: { name: forward, mountPath: /twg/forward }
       - contains:
-          path: spec.template.spec.initContainers[1].volumeMounts
+          path: spec.template.spec.initContainers[2].volumeMounts
           content: { name: rpc-auth, mountPath: /twg/rpc, readOnly: true }
       - contains:
           path: spec.template.spec.containers[0].volumeMounts

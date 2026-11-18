@@ -19,7 +19,8 @@
 #                     K3D_KUBECONFIG the k3d cluster's name and kubeconfig
 #   IPV6=1            a dual-stack cluster: adds the IPv6 leak checks
 #   SIDECAR=unprivileged  installs with wireguard.unprivileged (the cluster
-#                     scripts allow its sysctls on the kubelet)
+#                     scripts allow its sysctls on the kubelet);
+#                     unprivileged-init sets them from an init container
 #   SIDECAR_IMAGE, TRANSMISSION_IMAGE  images built here and loaded into the
 #                     cluster (image/wireguard, image/transmission as the
 #                     minimal flavor)

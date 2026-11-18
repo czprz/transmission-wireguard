@@ -49,7 +49,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["firewall.sh"]
-          pattern: 'usage. \$0 apply\|check\|tunnel\|live'
+          pattern: 'usage. \$0 apply\|check\|tunnel\|status\|live'
       - matchRegex:
           path: data["settings-init.sh"]
           pattern: bind-address-ipv4
