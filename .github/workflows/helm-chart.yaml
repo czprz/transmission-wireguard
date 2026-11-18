@@ -181,6 +181,16 @@ jobs:
             kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
             helm: v4.3.1
             sidecar: unprivileged
+          # The same, with the sysctls from an init container (no kubelet change).
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.37"
+            kind: v0.33.0
+            node: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+            kubectl: v1.37.0
+            kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
+            helm: v4.3.1
+            sidecar: unprivileged-init
           # Upgrades from the last release tag, as its users would run them.
           - cni: kindnet
             ipv6: 1

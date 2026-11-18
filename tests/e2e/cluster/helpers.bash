@@ -141,10 +141,12 @@ chart_args() {
   )
   # wireguard.unprivileged: the sidecar with NET_ADMIN + NET_RAW and the
   # pod's sysctls (the cluster scripts allow them on the kubelet).
-  if [[ ${SIDECAR:-privileged} == unprivileged ]]; then
+  # unprivileged-init: the same, with the sysctls set by an init container.
+  if [[ ${SIDECAR:-privileged} == unprivileged* ]]; then
     CHART_ARGS+=(--set wireguard.unprivileged.enabled=true)
     [[ ${IPV6:-0} != 1 ]] || CHART_ARGS+=(--set wireguard.unprivileged.blockRouterAdvertisements=true)
   fi
+  [[ ${SIDECAR:-} != unprivileged-init ]] || CHART_ARGS+=(--set wireguard.unprivileged.sysctls=initContainer)
   # A Transmission image built here (image/transmission), loaded into the
   # cluster, as images.transmission.flavor=minimal.
   if [[ -n ${TRANSMISSION_IMAGE:-} ]]; then

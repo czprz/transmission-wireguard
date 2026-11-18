@@ -17,16 +17,16 @@ tests:
       - isKind:
           of: Deployment
       - equal:
-          path: spec.template.spec.initContainers[0].name
+          path: spec.template.spec.initContainers[1].name
           value: transmission-settings
       - equal:
-          path: spec.template.spec.initContainers[1].name
+          path: spec.template.spec.initContainers[2].name
           value: wireguard
       - equal:
-          path: spec.template.spec.initContainers[1].restartPolicy
+          path: spec.template.spec.initContainers[2].restartPolicy
           value: Always
       - equal:
-          path: spec.template.spec.initContainers[1].startupProbe.exec.command
+          path: spec.template.spec.initContainers[2].startupProbe.exec.command
           value: ["/twg/scripts/firewall.sh", "tunnel"]
       - lengthEqual:
           path: spec.template.spec.containers
@@ -39,13 +39,13 @@ tests:
     template: templates/deployment.yaml
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[1].command
+          path: spec.template.spec.initContainers[2].command
           value: ["/bin/bash", "-c", "/twg/scripts/firewall.sh apply && exec /init"]
       - equal:
-          path: spec.template.spec.initContainers[1].livenessProbe.exec.command
+          path: spec.template.spec.initContainers[2].livenessProbe.exec.command
           value: ["/twg/scripts/firewall.sh", "live"]
       - equal:
-          path: spec.template.spec.initContainers[1].readinessProbe.exec.command
+          path: spec.template.spec.initContainers[2].readinessProbe.exec.command
           value: ["/twg/scripts/firewall.sh", "tunnel"]
 
   - it: passes firewall settings to the sidecar
@@ -66,16 +66,16 @@ tests:
         Endpoint = 203.0.113.10:51820
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_PEER_PORT, value: "6881" }
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_WEB_ALLOWED_CIDRS, value: "10.42.0.0/16 10.0.5.0/24" }
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_HANDSHAKE_MAX_AGE, value: "300" }
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_ALLOW_CONF_HOOKS, value: "false" }
       - contains:
           path: spec.template.spec.containers[0].ports
@@ -98,7 +98,7 @@ tests:
     template: templates/deployment.yaml
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[1].volumeMounts
+          path: spec.template.spec.initContainers[2].volumeMounts
           content: { name: settings-run, mountPath: /twg/run, readOnly: true }
 
   - it: opts the pod out of service mesh injection unless overridden
@@ -150,7 +150,7 @@ tests:
           path: spec.template.spec.terminationGracePeriodSeconds
           value: 60
       - equal:
-          path: spec.template.spec.initContainers[0].resources.limits.memory
+          path: spec.template.spec.initContainers[1].resources.limits.memory
           value: 64Mi
 
   - it: mounts extra volumes into Transmission only
@@ -168,14 +168,14 @@ tests:
           path: spec.template.spec.containers[0].volumeMounts
           content: { name: media, mountPath: /data/complete }
       - notContains:
-          path: spec.template.spec.initContainers[1].volumeMounts
+          path: spec.template.spec.initContainers[2].volumeMounts
           content: { name: media, mountPath: /data/complete }
 
   - it: restarts a tunnel without a recent handshake by default
     template: templates/deployment.yaml
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_HANDSHAKE_MAX_AGE, value: "300" }
 
   - it: gives the image the RPC credentials it stops Transmission with
@@ -196,7 +196,7 @@ tests:
             name: PASS
             valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: password } }
 
-  - it: passes RPC credentials set the pre-1.0 way in settings
+  - it: passes RPC credentials set the pre-1.0 way in settings through the chart's Secret
     template: templates/deployment.yaml
     set:
       transmission.rpcAuth.username: ""
@@ -207,7 +207,46 @@ tests:
     asserts:
       - contains:
           path: spec.template.spec.containers[0].env
-          content: { name: USER, value: legacy }
+          content: { name: PASS, valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: password } } }
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: { name: PASS, value: legacy-pass }
+
+  - it: keeps pre-1.0 RPC credentials out of the ConfigMap, in the chart's Secret
+    template: templates/configmap-settings.yaml
+    set:
+      transmission.rpcAuth.username: ""
+      transmission.rpcAuth.password: ""
+      transmission.settings.rpc-authentication-required: true
+      transmission.settings.rpc-username: legacy
+      transmission.settings.rpc-password: legacy-pass
+    asserts:
+      - notMatchRegex:
+          path: data["settings.json"]
+          pattern: legacy-pass|rpc-username|rpc-password
+
+  - it: puts pre-1.0 RPC credentials into the chart's Secret
+    template: templates/secret-rpc.yaml
+    set:
+      transmission.rpcAuth.username: ""
+      transmission.rpcAuth.password: ""
+      transmission.settings.rpc-authentication-required: true
+      transmission.settings.rpc-username: legacy
+      transmission.settings.rpc-password: legacy-pass
+    asserts:
+      - equal:
+          path: stringData
+          value: { username: legacy, password: legacy-pass }
+
+  - it: salts the RPC checksum with the WireGuard Secret, or leaves it out
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: ""
+      wireguard.existingSecret: wg
+      networkPolicy.enabled: false
+    asserts:
+      - isNull:
+          path: spec.template.metadata.annotations["checksum/rpc"]
 
   - it: passes no RPC credentials for an anonymous web UI
     template: templates/deployment.yaml
@@ -251,7 +290,7 @@ tests:
           path: spec.template.spec.containers[0].securityContext.seccompProfile.type
           value: RuntimeDefault
       - equal:
-          path: spec.template.spec.initContainers[0].securityContext.seccompProfile.type
+          path: spec.template.spec.initContainers[1].securityContext.seccompProfile.type
           value: RuntimeDefault
 
   - it: keeps an indented wg0.conf intact in the Secret
@@ -290,7 +329,7 @@ tests:
       transmission.rpcAuth.existingSecret: tx-rpc
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[0].env
+          path: spec.template.spec.initContainers[1].env
           content:
             name: RPC_PASSWORD
             valueFrom: { secretKeyRef: { name: tx-rpc, key: password } }
@@ -299,7 +338,7 @@ tests:
     template: templates/deployment.yaml
     asserts:
       - matchRegex:
-          path: spec.template.spec.initContainers[1].image
+          path: spec.template.spec.initContainers[2].image
           pattern: ^ghcr\.io/czprz/twg-wireguard:[^@]+@sha256:[0-9a-f]{64}$
       - matchRegex:
           path: spec.template.spec.containers[0].image
@@ -321,7 +360,7 @@ tests:
       images.wireguard.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[1].image
+          path: spec.template.spec.initContainers[2].image
           value: ghcr.io/czprz/twg-wireguard:1.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
   - it: mounts only wg0.conf from the WireGuard Secret
@@ -394,10 +433,10 @@ tests:
     template: templates/deployment.yaml
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_LOCAL_MARK, value: "0x10000000" }
       - contains:
-          path: spec.template.spec.initContainers[1].env
+          path: spec.template.spec.initContainers[2].env
           content: { name: TWG_WG_CONF, value: /config/wg_confs/wg0.conf }
 
   - it: mounts the downloads PVC at /data instead of the main volume
@@ -451,7 +490,7 @@ tests:
     template: templates/deployment.yaml
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[1].securityContext
+          path: spec.template.spec.initContainers[2].securityContext
           value: { privileged: true }
       - isNull:
           path: spec.template.spec.securityContext
@@ -468,8 +507,12 @@ tests:
       wireguard.unprivileged.enabled: true
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[1].securityContext
-          value: { privileged: false, capabilities: { add: [NET_ADMIN, NET_RAW] } }
+          path: spec.template.spec.initContainers[2].securityContext
+          value:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL], add: [NET_ADMIN, NET_RAW] }
+            seccompProfile: { type: RuntimeDefault }
       - equal:
           path: spec.template.spec.securityContext.sysctls
           value: [{ name: net.ipv4.conf.all.src_valid_mark, value: "1" }]
@@ -518,8 +561,58 @@ tests:
         capabilities: { add: [NET_ADMIN] }
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[1].securityContext
+          path: spec.template.spec.initContainers[2].securityContext
           value:
             privileged: false
+            allowPrivilegeEscalation: false
             seccompProfile: { type: RuntimeDefault }
-            capabilities: { add: [NET_ADMIN, NET_RAW] }
+            capabilities: { drop: [ALL], add: [NET_ADMIN, NET_RAW] }
+
+  - it: sets an unprivileged sidecar's sysctls from a privileged init container when asked
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: *unprivconf
+      wireguard.unprivileged.enabled: true
+      wireguard.unprivileged.sysctls: initContainer
+      wireguard.unprivileged.blockRouterAdvertisements: true
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[2].name
+          value: sysctls
+      - equal:
+          path: spec.template.spec.initContainers[2].securityContext
+          value: { privileged: true }
+      - matchRegex:
+          path: spec.template.spec.initContainers[2].command[2]
+          pattern: src_valid_mark[\s\S]*accept_ra_pinfo
+      - equal:
+          path: spec.template.spec.initContainers[3].securityContext.privileged
+          value: false
+      - isNull:
+          path: spec.template.spec.securityContext
+
+  - it: gives the Transmission image's init container only wg0.conf's Address lines
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[0].name
+          value: tunnel-address
+      - contains:
+          path: spec.template.spec.initContainers[0].volumeMounts
+          content: { name: wgconf, mountPath: /twg/wg, readOnly: true }
+      - notContains:
+          path: spec.template.spec.initContainers[1].volumeMounts
+          content: { name: wgconf, mountPath: /twg/wg, readOnly: true }
+      - contains:
+          path: spec.template.spec.initContainers[1].env
+          content: { name: TWG_WG_CONF, value: /twg/run/wg-address }
+
+  - it: gives the liveness probe time for NAT-PMP when port forwarding is on
+    template: templates/deployment.yaml
+    set:
+      wireguard.wg0Conf: *unprivconf
+      wireguard.portForwarding.natpmpGateway: 10.2.0.1
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[2].livenessProbe.timeoutSeconds
+          value: 20

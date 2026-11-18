@@ -21,7 +21,7 @@ tests:
           path: spec.template.spec.containers[0].securityContext.capabilities.add
           value: [SETUID, SETGID, CHOWN]
       - isNull:
-          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          path: spec.template.spec.initContainers[1].securityContext.runAsUser
 
   - it: needs a tag or digest for the minimal image
     template: templates/deployment.yaml
@@ -41,7 +41,7 @@ tests:
           path: spec.template.spec.containers[0].image
           value: ghcr.io/czprz/twg-transmission@sha256:0000000000000000000000000000000000000000000000000000000000000000
       - equal:
-          path: spec.template.spec.initContainers[0].image
+          path: spec.template.spec.initContainers[1].image
           value: ghcr.io/czprz/twg-transmission@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
   - it: runs the minimal image as PUID/PGID with no capabilities and a read-only root
@@ -78,19 +78,19 @@ tests:
       persistence.mounts.data.mountPath: /media
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[0].securityContext.runAsUser
+          path: spec.template.spec.initContainers[1].securityContext.runAsUser
           value: 0
       - equal:
-          path: spec.template.spec.initContainers[0].securityContext.capabilities
+          path: spec.template.spec.initContainers[1].securityContext.capabilities
           value: { drop: [ALL], add: [CHOWN] }
       - contains:
-          path: spec.template.spec.initContainers[0].env
+          path: spec.template.spec.initContainers[1].env
           content: { name: TWG_OWN_DIRS, value: /config /media }
       - contains:
-          path: spec.template.spec.initContainers[0].volumeMounts
+          path: spec.template.spec.initContainers[1].volumeMounts
           content: { name: transmission-storage, mountPath: /config, subPath: config }
       - contains:
-          path: spec.template.spec.initContainers[0].volumeMounts
+          path: spec.template.spec.initContainers[1].volumeMounts
           content: { name: transmission-downloads, mountPath: /media }
 
   - it: leaves the stop credentials out for the minimal image (it stops on SIGTERM)
@@ -104,7 +104,7 @@ tests:
           path: spec.template.spec.containers[0].env
           content: { name: USER, valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: username } } }
       - contains:
-          path: spec.template.spec.initContainers[0].env
+          path: spec.template.spec.initContainers[1].env
           content: { name: RPC_USERNAME, valueFrom: { secretKeyRef: { name: RELEASE-NAME-transmission-wireguard-rpc, key: username } } }
 
   - it: refuses root as the minimal image's user
@@ -128,7 +128,7 @@ tests:
           path: spec.template.spec.containers[0].volumeMounts
           content: { name: transmission-data, mountPath: /data }
       - contains:
-          path: spec.template.spec.initContainers[0].volumeMounts
+          path: spec.template.spec.initContainers[1].volumeMounts
           content: { name: transmission-data, mountPath: /data }
       - contains:
           path: spec.template.spec.volumes

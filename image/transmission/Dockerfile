@@ -13,12 +13,14 @@ FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5
 # Transmission 4.1.x from Alpine: the weekly rebuild takes its fixes, but
 # never a new minor version without a change here.
 ARG TRANSMISSION_MINOR=4.1
+# apk itself is removed; its database (/lib/apk/db) stays, so vulnerability
+# scanners (Trivy, Grype) can see the installed packages.
 RUN apk add --no-cache \
       "transmission-daemon~${TRANSMISSION_MINOR}" \
       jq \
       curl \
       netcat-openbsd \
-    && rm -rf /sbin/apk /etc/apk /lib/apk /usr/share/apk /var/cache/apk \
+    && rm -rf /sbin/apk /etc/apk /lib/apk/exec /usr/share/apk /var/cache/apk \
     && for a in nc wget telnet ftpget ftpput tftp whois nslookup traceroute traceroute6 ping ping6 udhcpc udhcpc6 ntpd; do \
          for d in /bin /sbin /usr/bin /usr/sbin; do [ ! -L "$d/$a" ] || rm "$d/$a"; done; \
        done \

@@ -57,6 +57,10 @@ Each way traffic could get out, or the release could break, and where it is test
 | Start order: Transmission before the kill switch and tunnel | `cluster/10-start` |
 | An upgrade from the last release failing, or losing the downloads | `cluster/10-start` (upgrade runs) |
 | A rule no test depends on | `tests/e2e/mutation-test.sh` |
+| A packet (`AF_PACKET`) socket in the pod, sending past netfilter | `firewall.sh check` (fails while one is open) |
+| A NAT-PMP gateway forwarding the web UI's port, opening RPC on the VPN side | `docker/20-port-forwarding` |
+| Code run in the root sidecar through `wireguard.env` (`BASH_ENV`, ...) | `tests/validation_test.yaml` (allowlist) |
+| The WireGuard private key in the Transmission image's init container | `tests/deployment_test.yaml` (`tunnel-address`) |
 
 - CI downloads nothing from GitHub releases: tools come from container images by digest, the Go module proxy (kind) or dl.k8s.io (kubectl), and the CNI manifests from jsDelivr and quay.io, each pinned by checksum.
 - CI: require the `ci-passed` job in branch protection; it fails unless every test job passed (GitHub counts a skipped job as passed).

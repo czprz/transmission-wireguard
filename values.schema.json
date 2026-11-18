@@ -446,6 +446,13 @@
             "enabled": {
               "type": "boolean"
             },
+            "sysctls": {
+              "enum": [
+                "pod",
+                "initContainer"
+              ],
+              "description": "Where an unprivileged sidecar's sysctls are set"
+            },
             "blockRouterAdvertisements": {
               "type": "boolean"
             }

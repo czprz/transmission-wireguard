@@ -169,7 +169,9 @@ spec:
             # routable pod IPs) a leak would show one of these.
             node=$(kubectl get pod "$pod" -o jsonpath='{.spec.nodeName}')
             own=$(kubectl get pod "$pod" -o jsonpath='{range .status.podIPs[*]}{.ip} {end}{range .status.hostIPs[*]}{.ip} {end}{.status.hostIP}')
-            if in_wg /twg/scripts/firewall.sh live; then
+            # status: live's checks without its actions (no failover, no
+            # NAT-PMP renewal), so the test changes nothing in the pod.
+            if in_wg /twg/scripts/firewall.sh status; then
               pass "kill switch rules intact and tunnel up"
             else
               fail "kill switch or tunnel check failed (see the wireguard container log)"

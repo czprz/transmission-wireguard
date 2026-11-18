@@ -523,6 +523,7 @@ check_family() {
         log "IPv4 $FWD holds more than the forwarded port"
         return 1
       fi
+      [[ ${BASH_REMATCH[1]} != "$WEB_PORT" ]] || { log "IPv4 $FWD opens the web port ${WEB_PORT} on $WG_IFACE"; return 1; }
     fi
   fi
 
@@ -544,6 +545,14 @@ check() {
   ruleset=$(nft list ruleset 2>/dev/null) || { log "cannot list the nft ruleset"; return 1; }
   if grep -Eqw 'dup|fwd|TEE' <<<"$ruleset"; then
     log "a rule duplicates or forwards packets (nft dup/fwd or TEE)"
+    return 1
+  fi
+  # A packet (AF_PACKET) socket sends frames straight to an interface, past
+  # every netfilter hook, and nothing in the pod needs one: any (from a
+  # debug container or an exec with NET_RAW) is a bypass in progress.
+  # /proc/net/packet lists this network namespace's.
+  if [[ -n $(sed 1d /proc/net/packet 2>/dev/null) ]]; then
+    log "a packet socket (AF_PACKET) is open in the pod's network namespace: it can send past the kill switch"
     return 1
   fi
   # tc filters (mirred redirect, BPF) act after POSTROUTING, so none may
@@ -629,6 +638,11 @@ port_forward() {
     log "NAT-PMP: ${NATPMP_GATEWAY} gave no usable port: $(tail -n1 <<<"$out")"
     return 0
   fi
+  # Opened on wg0, the web port would put the web UI on the VPN side.
+  if ((port == WEB_PORT)); then
+    log "NAT-PMP: ${NATPMP_GATEWAY} forwards port ${port}, the web UI's: refused"
+    return 0
+  fi
   rules=$(iptables -w -S "$FWD" | sed 1d)
   if [[ $rules != *"--dport $port -j ACCEPT"* || $(cat "$FORWARD_DIR/port" 2>/dev/null) != "$port" ]]; then
     # One transaction, so check() never sees half of it.
@@ -703,12 +717,10 @@ live_exit() {
   fi
 }
 
-live() {
+# The newest handshake must be younger than HANDSHAKE_MAX_AGE (when that
+# is checked at all). Changes nothing.
+handshake_ok() {
   local now hs newest=0 key since switched
-  tunnel
-  fail_over
-  port_forward
-  status_note
   ((HANDSHAKE_MAX_AGE > 0)) && keepalive_on || return 0
   now=$(date +%s)
   while read -r _ hs; do ((hs > newest)) && newest=$hs; done < <(wg show "$WG_IFACE" latest-handshakes)
@@ -722,6 +734,14 @@ live() {
     peer_report why
     return 1
   fi
+}
+
+live() {
+  tunnel
+  fail_over
+  port_forward
+  status_note
+  handshake_ok
 }
 
 detect_families "${1:-}"
@@ -739,9 +759,15 @@ case "${1:-}" in
     ;;
   check) check ;;
   tunnel) tunnel ;;
+  # What live checks, without its actions (failover, port forwarding, the
+  # termination log): for the helm test.
+  status)
+    tunnel
+    handshake_ok
+    ;;
   live)
     trap 'live_exit $?' EXIT
     live
     ;;
-  *) die "usage: $0 apply|check|tunnel|live" ;;
+  *) die "usage: $0 apply|check|tunnel|status|live" ;;
 esac

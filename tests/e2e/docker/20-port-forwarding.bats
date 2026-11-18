@@ -109,6 +109,34 @@ teardown_file() {
   ((rc == 1)) || fail "the check did not notice the web port opened on wg0 (exit $rc)"
 }
 
+# A gateway that hands out the web port: opened on wg0, it would put the web
+# UI on the VPN side. The probe must refuse it (the earlier port stays), and
+# check must fail on a TWG-FORWARDED that holds only the web port.
+start_responder() {
+  docker rm -f "$P-natpmp" >/dev/null 2>&1 || true
+  docker run -d --name "$P-natpmp" --network "container:$P-server" --entrypoint python3 "$NATPMP_IMAGE" -c "$(FORWARDED_PORT=$1 responder)" >/dev/null
+}
+refused_web_port() { probe 2>&1 | grep -qF "forwards port ${WEB_PORT}, the web UI's: refused"; }
+
+@test "a forwarded port equal to the web port is refused, and check fails on one" {
+  start_responder "$WEB_PORT"
+  local ok=1 rc=0
+  wait_until 30 refused_web_port || ok=0
+  [[ $(forwarded_rules) != *"--dport $WEB_PORT "* ]] || ok=2
+  # The probe's own rule shape, but for the web port.
+  printf '%s\n' '*filter' '-F TWG-FORWARDED' \
+    "-A TWG-FORWARDED -i wg0 -p tcp -m tcp --dport $WEB_PORT -j ACCEPT" \
+    "-A TWG-FORWARDED -i wg0 -p udp -m udp --dport $WEB_PORT -j ACCEPT" 'COMMIT' |
+    docker exec -i "$P-wg" iptables-restore -w --noflush || true
+  as_root /twg/scripts/firewall.sh check 2>/dev/null || rc=$?
+  as_root iptables -w -F TWG-FORWARDED || true
+  start_responder "$FORWARDED_PORT"
+  wait_until 60 forwarded || fail "the forwarded port did not come back afterwards"
+  ((ok != 0)) || fail "the probe did not refuse the web port from the gateway"
+  ((ok != 2)) || fail "TWG-FORWARDED opened the web port"
+  ((rc == 1)) || fail "check passed with the web port in TWG-FORWARDED (exit $rc)"
+}
+
 @test "no packet left eth0 outside the tunnel, and the canaries got only VPN traffic with the port forwarded" {
   hits_check "with the port forwarded"
 }
