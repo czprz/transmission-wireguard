@@ -48,7 +48,12 @@ tx_on_port() {
 }
 
 setup_file() {
-  ((NATPMP)) || skip "the sidecar image has no natpmpc (set SIDECAR_IMAGE to the chart's own image)"
+  if ! ((NATPMP)); then
+    # CI tests the chart's own image, which has natpmpc: there, a skip would
+    # hide that these checks never ran.
+    [[ ${REQUIRE_NATPMP:-0} != 1 ]] || { echo "REQUIRE_NATPMP=1, but the sidecar image has no natpmpc" >&2; return 1; }
+    skip "the sidecar image has no natpmpc (set SIDECAR_IMAGE to the chart's own image)"
+  fi
   ensure_healthy
   docker rm -f "$P-natpmp" >/dev/null 2>&1 || true
   docker run -d --name "$P-natpmp" --network "container:$P-server" --entrypoint python3 "$NATPMP_IMAGE" -c "$(responder)" >/dev/null

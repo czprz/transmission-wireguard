@@ -27,4 +27,17 @@ else
   failed=1
 fi
 
+# Artifact Hub lists the images from Chart.yaml: they must be the defaults.
+for pair in wireguard:wireguardImage transmission:transmissionImage leak-test:testImage; do
+  name=${pair%%:*}
+  want=$(default_image "${pair#*:}")
+  got=$(awk -v n="$name" '$0 ~ "- name: "n"$" { getline; sub(/^ *image: */, ""); print }' Chart.yaml)
+  if [[ $got == "$want" ]]; then
+    echo "PASS  artifacthub.io/images lists the default $name image"
+  else
+    echo "FAIL  artifacthub.io/images lists $name as '${got}', but the default is $want"
+    failed=1
+  fi
+done
+
 exit "$failed"
