@@ -1,0 +1,40 @@
+name: Weekly failure report
+
+# A failed scheduled run of these workflows opens an issue, or adds to the
+# open one, instead of only an email. In a workflow of its own: as a job in
+# helm-chart.yaml, its issues: write would exceed what helm-main.yml grants
+# the reusable call, and GitHub would refuse to start Helm Main at all.
+"on":
+  workflow_run:
+    workflows:
+      - "Helm Chart"
+      - "Sidecar image"
+      - "Transmission image"
+      - "Kill switch mutation test"
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the issue
+        run: |
+          title="Weekly run failed: ${WORKFLOW}"
+          n=$(gh issue list -R "$REPO" --state open --search "in:title \"${title}\"" --json number,title -q ".[] | select(.title == \"${title}\") | .number" | head -n1)
+          if [ -n "$n" ]; then
+            gh issue comment "$n" -R "$REPO" --body "Failed again: ${RUN_URL}"
+          else
+            gh issue create -R "$REPO" --title "$title" --body "The scheduled run failed: ${RUN_URL}"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}

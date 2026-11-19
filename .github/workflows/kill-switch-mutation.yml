@@ -123,30 +123,3 @@ jobs:
         run: jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")' <<<"$NEEDS" >/dev/null || { echo "$NEEDS"; exit 1; }
         env:
           NEEDS: ${{ toJSON(needs) }}
-
-  # A failed weekly run opens an issue, or adds to the open one, instead of
-  # only an email.
-  report:
-    if: failure() && github.event_name == 'schedule'
-    needs: [mutation-passed]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      issues: write
-    steps:
-      - name: Open or update the issue
-        run: |
-          title="Weekly run failed: ${WORKFLOW}"
-          run_url="${SERVER}/${REPO}/actions/runs/${RUN_ID}"
-          n=$(gh issue list -R "$REPO" --state open --search "in:title \"${title}\"" --json number,title -q ".[] | select(.title == \"${title}\") | .number" | head -n1)
-          if [ -n "$n" ]; then
-            gh issue comment "$n" -R "$REPO" --body "Failed again: ${run_url}"
-          else
-            gh issue create -R "$REPO" --title "$title" --body "The scheduled run failed: ${run_url}"
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-          WORKFLOW: ${{ github.workflow }}
-          SERVER: ${{ github.server_url }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
