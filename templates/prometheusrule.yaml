@@ -5,8 +5,12 @@
 {{- end -}}
 {{- $name := include "twg.fullname" $ -}}
 {{- $ns := $.Release.Namespace -}}
-{{- /* The Deployment's pods: <name>-<ReplicaSet hash>-<suffix>. */ -}}
-{{- $pods := printf "namespace=%q, pod=~%q" $ns (printf "%s-[a-z0-9]+-[a-z0-9]+" $name) -}}
+{{- /* The Deployment's pods, by their ReplicaSet (<name>-<hash>): a pod's
+own name is cut short for long names, so a pattern on it can miss. */ -}}
+{{- $owned := printf "* on (namespace, pod) group_left () max by (namespace, pod) (kube_pod_owner{namespace=%q, owner_kind=\"ReplicaSet\", owner_name=~%q})" $ns (printf "%s-[a-z0-9]+" (regexQuoteMeta $name)) -}}
+{{- $claims := include "twg.claimNames" $ | fromJsonArray -}}
+{{- $claimRe := list -}}
+{{- range $claims }}{{ $claimRe = append $claimRe (regexQuoteMeta .) }}{{ end -}}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -28,7 +32,7 @@ spec:
         # server stopped answering fails the liveness probe instead, after
         # wireguard.handshakeMaxAgeSeconds: the Restarting alert.)
         - alert: TransmissionWireguardTunnelDown
-          expr: max by (namespace, pod) (kube_pod_init_container_status_ready{ {{- $pods }}, container="wireguard"}) == 0
+          expr: max by (namespace, pod) (kube_pod_init_container_status_ready{namespace={{ $ns | quote }}, container="wireguard"} {{ $owned }}) == 0
           for: {{ .tunnelDownFor }}
           labels:
             severity: {{ .severity }}
@@ -46,17 +50,20 @@ spec:
         - alert: TransmissionWireguardRestarting
           expr: |
             sum by (namespace, pod) (
-              increase(kube_pod_container_status_restarts_total{ {{- $pods }}}[30m])
-              or increase(kube_pod_init_container_status_restarts_total{ {{- $pods }}}[30m])
+              (
+                increase(kube_pod_container_status_restarts_total{namespace={{ $ns | quote }}}[30m])
+                or increase(kube_pod_init_container_status_restarts_total{namespace={{ $ns | quote }}}[30m])
+              ) {{ $owned }}
             ) > {{ .restartsPer30m }}
           labels:
             severity: {{ .severity }}
           annotations:
             summary: "Containers of {{ "{{" }} $labels.pod {{ "}}" }} restarted more than {{ .restartsPer30m }} times in 30 minutes"
             description: "A failing liveness probe restarts Transmission when it lost its peer port, and the sidecar when the VPN server has not answered for wireguard.handshakeMaxAgeSeconds. See their logs."
+        {{- if $claims }}
         - alert: TransmissionWireguardVolumeFilling
           expr: |
-            kubelet_volume_stats_available_bytes{namespace={{ $ns | quote }}, persistentvolumeclaim=~{{ printf "%s(-downloads)?" $name | quote }}}
+            kubelet_volume_stats_available_bytes{namespace={{ $ns | quote }}, persistentvolumeclaim=~{{ printf "^(%s)$" (join "|" $claimRe) | quote }}}
               / kubelet_volume_stats_capacity_bytes < {{ .volumeFreeRatio }}
           for: 15m
           labels:
@@ -64,6 +71,7 @@ spec:
           annotations:
             summary: "PVC {{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} has less than {{ mulf .volumeFreeRatio 100 }}% free"
             description: "Transmission stops writing when the volume is full."
+        {{- end }}
         {{- with .extraRules }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

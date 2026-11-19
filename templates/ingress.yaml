@@ -7,7 +7,7 @@ metadata:
     {{- include "twg.labels" . | nindent 4 }}
   {{- $annotations := deepCopy (default dict .Values.ingress.annotations) -}}
   {{- if .Values.issuer.enabled }}
-    {{- $issuerName := default (printf "%s-issuer" (include "twg.fullname" .)) .Values.issuer.name -}}
+    {{- $issuerName := include "twg.issuerName" . -}}
     {{- if eq (default "Issuer" .Values.issuer.kind) "ClusterIssuer" -}}
       {{- $_ := set $annotations "cert-manager.io/cluster-issuer" $issuerName -}}
     {{- else -}}
@@ -27,7 +27,8 @@ spec:
     - host: {{ .host | quote }}
       http:
         paths:
-          {{- range .paths }}
+          {{- /* No paths: the whole host. */}}
+          {{- range (.paths | default (list (dict "path" "/" "pathType" "Prefix"))) }}
           - path: {{ .path }}
             pathType: {{ .pathType | default "Prefix" }}
             backend:

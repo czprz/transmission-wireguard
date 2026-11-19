@@ -1,0 +1,301 @@
+suite: chart options
+
+templates:
+  - templates/deployment.yaml
+  - templates/service.yaml
+  - templates/pvc.yaml
+  - templates/ingress.yaml
+  - templates/issuer.yaml
+  - templates/configmap-scripts.yaml
+  - templates/configmap-settings.yaml
+  - templates/secret-wg.yaml
+  - templates/secret-rpc.yaml
+  - templates/NOTES.txt
+
+values:
+  - values/base.yaml
+
+tests:
+  # Upgrades depend on these: a Deployment's selector is immutable, and a
+  # renamed PVC would leave the downloads behind.
+  - it: keeps the names and selectors releases since 0.x have
+    template: templates/deployment.yaml
+    release:
+      name: tx
+    asserts:
+      - equal:
+          path: metadata.name
+          value: tx-transmission-wireguard
+      - equal:
+          path: spec.selector.matchLabels
+          value: { app.kubernetes.io/name: transmission-wireguard, app.kubernetes.io/instance: tx }
+
+  - it: keeps the Service's name and selector
+    template: templates/service.yaml
+    release:
+      name: tx
+    asserts:
+      - equal:
+          path: metadata.name
+          value: tx-transmission-wireguard
+      - equal:
+          path: spec.selector
+          value: { app.kubernetes.io/name: transmission-wireguard, app.kubernetes.io/instance: tx }
+
+  - it: keeps the PVC's name
+    template: templates/pvc.yaml
+    release:
+      name: tx
+    asserts:
+      - equal:
+          path: metadata.name
+          value: tx-transmission-wireguard
+
+  - it: names everything after fullnameOverride
+    template: templates/deployment.yaml
+    set:
+      fullnameOverride: torrents
+    asserts:
+      - equal:
+          path: metadata.name
+          value: torrents
+
+  - it: uses nameOverride for the names and the name label
+    template: templates/deployment.yaml
+    release:
+      name: tx
+    set:
+      nameOverride: torrents
+    asserts:
+      - equal:
+          path: metadata.name
+          value: tx-torrents
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: torrents
+
+  - it: adds commonLabels and the app version, never over the selector labels
+    template: templates/service.yaml
+    release:
+      name: tx
+    set:
+      commonLabels: { team: media, app.kubernetes.io/instance: other }
+    asserts:
+      - equal:
+          path: metadata.labels.team
+          value: media
+      - equal:
+          path: metadata.labels["app.kubernetes.io/instance"]
+          value: tx
+      - isNotNull:
+          path: metadata.labels["app.kubernetes.io/version"]
+
+  - it: moves the download dirs with the data mount
+    template: templates/configmap-settings.yaml
+    set:
+      persistence.mounts.data.mountPath: /downloads
+    asserts:
+      - matchRegex:
+          path: data["settings.json"]
+          pattern: '"download-dir":"/downloads/complete".*"incomplete-dir":"/downloads/incomplete".*"watch-dir":"/downloads/watch"'
+
+  - it: refuses a download dir on no volume
+    template: templates/deployment.yaml
+    set:
+      transmission.settings.download-dir: /media/complete
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.settings.download-dir /media/complete is not on a volume (/data or a transmission.extraVolumeMounts path), so its files would go to the container's own layer and be lost on restart"
+
+  - it: accepts a download dir on an extra volume mount
+    template: templates/deployment.yaml
+    set:
+      transmission.settings.download-dir: /media/complete
+      extraVolumes: [{ name: media, emptyDir: {} }]
+      transmission.extraVolumeMounts: [{ name: media, mountPath: /media }]
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: leaves /data to an extra volume mount there, with persistence on
+    template: templates/deployment.yaml
+    set:
+      extraVolumes: [{ name: media, emptyDir: {} }]
+      transmission.extraVolumeMounts: [{ name: media, mountPath: /data }]
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: media, mountPath: /data }
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: transmission-storage, mountPath: /data }
+
+  - it: routes a host without paths as a whole
+    template: templates/ingress.yaml
+    set:
+      ingress.enabled: true
+      ingress.hosts: [{ host: tx.example.com }]
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /
+      - equal:
+          path: spec.rules[0].http.paths[0].pathType
+          value: Prefix
+
+  - it: refuses an Ingress without hosts
+    template: templates/deployment.yaml
+    set:
+      ingress.enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "ingress.enabled needs ingress.hosts. An Ingress without rules routes nothing"
+
+  - it: refuses an issuer nothing can solve challenges through
+    template: templates/deployment.yaml
+    set:
+      issuer.enabled: true
+      issuer.email: you@example.com
+    asserts:
+      - failedTemplate:
+          errorMessage: "issuer.enabled needs ingress.enabled or httpRoute.enabled. Its HTTP-01 solver answers challenges through one of them"
+
+  - it: labels the issuer and puts the namespace in a ClusterIssuer's default name
+    template: templates/issuer.yaml
+    release:
+      name: tx
+      namespace: media
+    set:
+      issuer.enabled: true
+      issuer.kind: ClusterIssuer
+      issuer.email: you@example.com
+      ingress.enabled: true
+      ingress.hosts: [{ host: tx.example.com }]
+    asserts:
+      - equal:
+          path: metadata.name
+          value: media-tx-transmission-wireguard-issuer
+      - isNotNull:
+          path: metadata.labels["app.kubernetes.io/instance"]
+
+  - it: sets the Service options for a load balancer
+    template: templates/service.yaml
+    set:
+      service.type: LoadBalancer
+      service.nodePort: 30091
+      service.externalTrafficPolicy: Local
+      service.loadBalancerSourceRanges: [192.168.1.0/24]
+      service.ipFamilyPolicy: PreferDualStack
+      service.labels: { exposed: "true" }
+    asserts:
+      - equal:
+          path: spec.externalTrafficPolicy
+          value: Local
+      - equal:
+          path: spec.loadBalancerSourceRanges
+          value: [192.168.1.0/24]
+      - equal:
+          path: spec.ipFamilyPolicy
+          value: PreferDualStack
+      - equal:
+          path: spec.ports[0].nodePort
+          value: 30091
+      - equal:
+          path: metadata.labels.exposed
+          value: "true"
+
+  - it: leaves node ports and traffic policy off a ClusterIP Service
+    template: templates/service.yaml
+    set:
+      service.nodePort: 30091
+      service.externalTrafficPolicy: Local
+    asserts:
+      - isNull:
+          path: spec.externalTrafficPolicy
+      - isNull:
+          path: spec.ports[0].nodePort
+
+  - it: runs as the given ServiceAccount, still without its token
+    template: templates/deployment.yaml
+    set:
+      serviceAccountName: transmission
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: transmission
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: adds extraEnv to Transmission, and refuses the chart's own names in it
+    template: templates/deployment.yaml
+    set:
+      transmission.extraEnv:
+        - name: TRANSMISSION_WEB_HOME
+          value: /web
+      transmission.rpcAuth.allowAnonymous: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: { name: TRANSMISSION_WEB_HOME, value: /web }
+
+  - it: refuses USER in transmission.extraEnv
+    template: templates/deployment.yaml
+    set:
+      transmission.extraEnv: [{ name: USER, value: someone }]
+    asserts:
+      - failedTemplate:
+          errorMessage: "transmission.extraEnv must not set USER. The chart sets USER and PASS from transmission.rpcAuth, so the image can stop Transmission cleanly"
+
+  - it: takes the liveness and startup probe timings from values
+    template: templates/deployment.yaml
+    set:
+      probes.liveness.periodSeconds: 60
+      probes.liveness.failureThreshold: 5
+      probes.startup.failureThreshold: 150
+    asserts:
+      - equal:
+          path: spec.template.spec.initContainers[2].livenessProbe.periodSeconds
+          value: 60
+      - equal:
+          path: spec.template.spec.initContainers[2].livenessProbe.failureThreshold
+          value: 5
+      - equal:
+          path: spec.template.spec.initContainers[2].startupProbe.failureThreshold
+          value: 150
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.periodSeconds
+          value: 60
+
+  - it: annotates and labels the PVCs, next to the keep policy
+    template: templates/pvc.yaml
+    set:
+      persistence.annotations: { backup.velero.io/backup-volumes: data }
+      persistence.labels: { backup: daily }
+    asserts:
+      - equal:
+          path: metadata.annotations
+          value: { backup.velero.io/backup-volumes: data, helm.sh/resource-policy: keep }
+      - equal:
+          path: metadata.labels.backup
+          value: daily
+
+  - it: pins a mirrored sidecar by digest alone
+    template: templates/deployment.yaml
+    set:
+      images.wireguard.repository: registry.example.com/twg-wireguard
+      images.wireguard.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[2].image
+          pattern: '^registry\.example\.com/twg-wireguard:.*@sha256:0{64}$'
+
+  - it: says nothing about HTTP 421 while RPC auth is on
+    template: templates/NOTES.txt
+    set:
+      transmission.rpcAuth.existingSecret: tx-rpc
+    asserts:
+      - notMatchRegexRaw:
+          pattern: HTTP 421

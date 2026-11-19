@@ -2,7 +2,9 @@
 apiVersion: cert-manager.io/v1
 kind: {{ default "Issuer" .Values.issuer.kind }}
 metadata:
-  name: {{ default (printf "%s-issuer" (include "twg.fullname" .)) .Values.issuer.name }}
+  name: {{ include "twg.issuerName" . }}
+  labels:
+    {{- include "twg.labels" . | nindent 4 }}
 spec:
   acme:
     server: {{ .Values.issuer.server | quote }}

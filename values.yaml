@@ -2,6 +2,15 @@
 # release for a second instance.
 replicaCount: 1
 
+# Resource names are <release>-transmission-wireguard. fullnameOverride
+# replaces that; nameOverride replaces its second part and the
+# app.kubernetes.io/name label, which is in the Deployment's immutable
+# selector: set it at install only.
+nameOverride: ""
+fullnameOverride: ""
+# Labels for every resource (not the pod selector).
+commonLabels: {}
+
 images:
   wireguard:
     # Default: the chart's own sidecar image, ghcr.io/czprz/twg-wireguard
@@ -34,6 +43,19 @@ service:
   # through the VPN, so the Service carries no peer ports.
   webPort: 9091
   annotations: {}
+  labels: {}
+  # NodePort/LoadBalancer only: a fixed node port (empty: one is assigned).
+  nodePort: null
+  # NodePort/LoadBalancer only. Local keeps clients' own source addresses;
+  # add their ranges to firewall.webAllowedCIDRs then.
+  externalTrafficPolicy: ""
+  # LoadBalancer only.
+  loadBalancerClass: ""
+  # Who may reach the web UI through the load balancer, e.g. your LAN.
+  loadBalancerSourceRanges: []
+  # Dual-stack Services: SingleStack, PreferDualStack or RequireDualStack.
+  ipFamilyPolicy: ""
+  ipFamilies: []
 
 ingress:
   enabled: false
@@ -89,6 +111,9 @@ persistence:
   # delete it yourself afterwards. A later install under the same release
   # name and namespace picks it up again.
   keepOnUninstall: true
+  # On both of the chart's PVCs, e.g. a backup tool's opt-in (Velero, k8up).
+  annotations: {}
+  labels: {}
   # storageClassName: ""
   # existingClaim: ""
   # hostPath:
@@ -200,6 +225,13 @@ transmission:
   #   - name: media
   #     mountPath: /data/complete
   extraVolumeMounts: []
+
+  # More environment variables for Transmission, as Kubernetes EnvVars
+  # (with valueFrom, unlike transmission.env). TWG_*, USER and PASS are
+  # refused.
+  extraEnv: []
+  #  - name: TRANSMISSION_WEB_HOME
+  #    value: /web/flood
 
 wireguard:
   # Provide a FULL WireGuard CLIENT config here (wg0.conf):
@@ -411,6 +443,10 @@ imagePullSecrets: []
 
 priorityClassName: ""
 
+# An existing ServiceAccount for the pod (empty: the namespace's default).
+# Its token is never mounted: nothing in the pod talks to the API server.
+serviceAccountName: ""
+
 # Time for Transmission to stop (it saves resume data and sends its
 # "stopped" announces through the still-running tunnel).
 terminationGracePeriodSeconds: 60
@@ -422,11 +458,22 @@ extraVolumes: []
 #      server: nas.example.internal
 #      path: /media
 
+# Readiness of both containers (initialDelaySeconds: Transmission's only).
 probes:
   initialDelaySeconds: 10
   periodSeconds: 10
   timeoutSeconds: 3
   failureThreshold: 3
+  # The sidecar's startup: how long the tunnel may take to come up
+  # (periodSeconds x failureThreshold, 3 minutes by default).
+  startup:
+    periodSeconds: 2
+    failureThreshold: 90
+  # Liveness of both containers: the sidecar's (tunnel, handshakes, port
+  # forwarding) and Transmission's (still bound to the tunnel).
+  liveness:
+    periodSeconds: 30
+    failureThreshold: 3
 
 # Node scheduling and resource management
 nodeSelector: {}
