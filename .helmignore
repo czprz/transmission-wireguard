@@ -13,6 +13,7 @@
 /ci/
 /image/
 /tests/
+/docs/
 /dist/
 Makefile
 renovate.json

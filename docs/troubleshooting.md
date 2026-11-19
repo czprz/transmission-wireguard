@@ -1,0 +1,34 @@
+# Troubleshooting
+
+- **Pod stuck in `Init` / sidecar crash-looping?**
+  - `kubectl logs <pod> -c wireguard` shows `[twg-firewall] FATAL: ...` when `wg0.conf` is refused (hostname endpoint, split tunnel, PreUp/PostUp/PreDown/PostDown hooks).
+  - Without a handshake, check that `wireguard.endpoints` matches the `Endpoint` line (the NetworkPolicy only allows that address).
+  - `FATAL: the route to the endpoint ... has MTU 9001`: add `MTU = 1420` to `[Interface]`.
+  - `FATAL: Address in ... changed since the pod started`: restart the pod (`kubectl rollout restart`).
+- **Sidecar restarting with `no handshake within 300s`?**
+  - The liveness probe says why where kubectl shows it: `kubectl describe pod <pod>` (the `wireguard` container's Last State message) and `kubectl logs <pod> -c wireguard --previous`. Every 5 minutes it also logs the peers' state, so the log shows when handshakes stopped.
+  - Each peer line has the last handshake and wg's byte counters:
+    - `no handshake yet, received 0 bytes, sent N bytes`: the server never answered. This is the provider side, not your network: a key the provider rotated or revoked, an expired account, or the server's WireGuard down (it can still answer ping). Check the key in your provider's account first, then that UDP to the endpoint isn't blocked on the way.
+    - `sent 0 bytes`: nothing left the pod. Check the `Endpoint` and that `wireguard.endpoints` matches it.
+    - A handshake that is old, with bytes received: the server answered and then stopped. The server is down, the key was revoked since, or UDP to it is blocked now. `wireguard.failover` switches to another server in that case.
+- **Pod never created?**
+  - `kubectl describe rs` shows `violates PodSecurity`: the namespace needs the `privileged` Pod Security level (see the README's [Requirements](https://github.com/czprz/transmission-wireguard/blob/main/README.md#requirements)).
+  - `exceeded quota` or `must specify limits`: set the `resources` (and `transmission.initResources`) your ResourceQuota requires.
+- **Pod never Ready in a service mesh?**
+  - The chart opts the pod out of Istio (sidecar and ambient) and Linkerd. A mesh whose injection ignores those annotations and labels can't work through the kill switch.
+- **Web UI unreachable?**
+  - The source (ingress controller, kubelet) must be in `firewall.webAllowedCIDRs`, and in `networkPolicy.ingressFrom` if you set it.
+  - A LoadBalancer or NodePort that keeps the client's source address (`service.externalTrafficPolicy: Local`, and some cloud load balancers anyway) shows public client IPs, which the default private ranges don't cover. Add your clients' ranges, or use an ingress. The same applies to global (non-ULA) IPv6 pod CIDRs.
+  - HTTP 421 means the hostname isn't in `rpc-host-whitelist` (checked only while RPC auth is off).
+  - The UI is at `/transmission/web/`, not `/`.
+- **DNS failures?**
+  - Lookups go to `wireguard.dns.nameservers` through the tunnel. Use a resolver your VPN allows (usually the provider's).
+  - Cluster-internal names do not resolve from this pod, by design.
+- **Multiple replicas?**
+  - Not supported: `replicaCount` must be 1. Install another release, with its own storage and WireGuard config, for a second instance.
+- **`Permission denied` from `wg`, `wg-quick` or `readlink` in the sidecar log?**
+  - Recent Ubuntu hosts ship AppArmor profiles that attach to those binaries by path, and they apply inside containers too, privileged or not. Check with `sudo aa-status` on the node; disable the offending profile (`sudo aa-disable <profile>`) or use a node image without it.
+- **PVC/hostPath issues?**
+  - Check your storage class and access modes. With `images.transmission.flavor: minimal`, an NFS share must already be writable by `PUID`/`PGID` (see [images.md](images.md#the-minimal-transmission-image)).
+- **`no signatures found` from cosign?**
+  - Use cosign 2.6 or later: releases are signed in the newer bundle format.

@@ -1,15 +1,29 @@
 # transmission-wireguard
 
-Run Transmission through a WireGuard client sidecar in the same Pod. This chart is designed for public repos: keep private WireGuard configs in a Kubernetes Secret, not in Git.
+[![CI](https://github.com/czprz/transmission-wireguard/actions/workflows/helm-main.yml/badge.svg)](https://github.com/czprz/transmission-wireguard/actions/workflows/helm-main.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/czprz/transmission-wireguard/blob/main/LICENSE)
 
-## What this chart does
+A Helm chart that runs [Transmission](https://transmissionbt.com/) behind a WireGuard client sidecar in the same Pod, with a kill switch: Transmission's traffic can only leave through the VPN, and if the tunnel goes down, it is blocked, not leaked. Keep your WireGuard config in a Kubernetes Secret, not in Git.
 
-- Runs the chart's own minimal WireGuard image ([`ghcr.io/czprz/twg-wireguard`](#sidecar-image)) as a native sidecar and `linuxserver/transmission` in one Pod
-- Installs a kill switch in the Pod's network namespace **before** the tunnel starts: traffic can only leave through WireGuard, and a crashed or restarting tunnel fails closed
-- Starts Transmission only after the kill switch and tunnel are up
-- Adds an egress NetworkPolicy so the CNI only lets the Pod reach the VPN server, even if the in-pod firewall were removed
-- Resolves DNS through the tunnel, binds Transmission's peer sockets to the tunnel address, and keeps the web UI unreachable from the VPN side
-- Creates a Transmission `settings.json` from values
+## How it works
+
+- The chart's own minimal WireGuard image ([`ghcr.io/czprz/twg-wireguard`](#images)) runs as a native sidecar next to Transmission.
+- It installs a kill switch in the Pod's network namespace **before** the tunnel starts. Traffic can only leave through WireGuard, and a crashed or restarting tunnel fails closed.
+- Transmission starts only once the kill switch and the tunnel are up.
+- An egress NetworkPolicy lets the Pod reach only the VPN server, even if the in-pod firewall were removed.
+- DNS goes through the tunnel. Transmission's peer sockets are bound to the tunnel address, and the web UI is unreachable from the VPN side.
+- Transmission's `settings.json` is written from your values.
+
+| Layer | What it does |
+|---|---|
+| Kill switch ([`files/firewall.sh`](https://github.com/czprz/transmission-wireguard/blob/main/files/firewall.sh)) | Runs in the WireGuard sidecar before `wg-quick`. IPv4 and IPv6 default to DROP; only `wg0`, WireGuard's own encrypted packets (by fwmark, and only as UDP to the `Endpoint` addresses) and the web UI's replies to `firewall.webAllowedCIDRs` may leave. The final decision is made in mangle `POSTROUTING`, on the interface a packet really leaves by, so nat rules, marks or nft chains that re-route a packet can't get it out `eth0`. Inbound: peers on `peer-port` via `wg0`, the web UI from `firewall.webAllowedCIDRs` outside the tunnel. Nothing in the tunnel lifecycle removes these rules. |
+| Start order | WireGuard is a native sidecar with a startup probe; Transmission is not started until the kill switch and `wg0` are up. |
+| Probes | Sidecar liveness fails if the rules are altered, `wg0` is gone or a packet socket is open in the pod, and a restart re-applies the rules. Optional handshake-age check (`wireguard.handshakeMaxAgeSeconds`). Transmission's liveness fails when the tunnel address exists but Transmission isn't listening for peers on it. |
+| NetworkPolicy | Egress only to `wireguard.endpoints` on UDP. Enforced by the CNI outside the pod. |
+| DNS | `dnsPolicy: None` with `wireguard.dns.nameservers`, reached through the tunnel. Cluster DNS would forward your lookups upstream from the node. |
+| Transmission | Peer sockets always bound to the tunnel address (loopback for a family the tunnel lacks), Local Peer Discovery and UPnP/NAT-PMP off, peer ports not on the Service, no network capabilities. |
+
+The threats each part covers, and the tests that prove it, are in [ARCHITECTURE.md](https://github.com/czprz/transmission-wireguard/blob/main/ARCHITECTURE.md).
 
 ## Requirements
 
@@ -17,118 +31,104 @@ Run Transmission through a WireGuard client sidecar in the same Pod. This chart 
 - Helm 3.14+ or Helm 4
 - Linux 5.6+ on the nodes (kernel WireGuard)
 - A CNI that enforces NetworkPolicy (Calico, Cilium, ...) for the second layer of protection
-- A namespace at the `privileged` Pod Security level: the sidecar is privileged, or adds `NET_ADMIN`, and both are outside `baseline`. In a `baseline` or `restricted` namespace the pod is never created, and the reason only shows in the ReplicaSet's events. Label the namespace: `kubectl label namespace <ns> pod-security.kubernetes.io/enforce=privileged`
-- cert-manager (optional, only if you enable the issuer template)
+- A namespace at the `privileged` Pod Security level: the sidecar is privileged, or adds `NET_ADMIN`, and both are outside `baseline`. In a `baseline` or `restricted` namespace the pod is never created, and the reason only shows in the ReplicaSet's events.
+- cert-manager, only if you let the chart create an issuer
 
-CI tests every change, and every week, on these combinations (`.github/workflows/helm-chart.yaml`):
+[docs/testing.md](https://github.com/czprz/transmission-wireguard/blob/main/docs/testing.md) lists the Kubernetes, Helm and CNI combinations CI tests.
 
-| Kubernetes | Helm | CNI | Also |
-|---|---|---|---|
-| 1.29 | 3.14 | kindnet | the oldest supported versions |
-| 1.32 | 3.22 | Calico | |
-| 1.34 | 4.3 | Cilium | |
-| 1.37 | 3.22 | kindnet | upgrade from the last release |
-| 1.37 | 4.3 | kindnet | fresh install, upgrade from the last release, and `wireguard.unprivileged` |
+## Quick start
 
-The kill switch itself is also tested on Docker: on amd64 with a privileged and an unprivileged sidecar, and on arm64. Report security problems as [SECURITY.md](SECURITY.md) describes.
+1. **A namespace** where privileged pods may run:
 
-## Install
+   ```bash
+   kubectl create namespace transmission
+   kubectl label namespace transmission pod-security.kubernetes.io/enforce=privileged
+   ```
 
-1) Create the WireGuard secret (recommended)
+2. **The WireGuard config**, from your VPN provider (see [Preparing wg0.conf](#preparing-wg0conf)), as a Secret with a single `wg0.conf` key:
 
-```bash
-kubectl create secret generic wg-client \
-  --from-file=wg0.conf=/path/to/wg0.conf
-```
+   ```bash
+   kubectl -n transmission create secret generic wg-client --from-file=wg0.conf=/path/to/wg0.conf
+   ```
 
-The Secret should hold only `wg0.conf`; other keys are not mounted.
+3. **The web UI's credentials** (required unless you set `transmission.rpcAuth.allowAnonymous: true`):
 
-2) Create the web UI credentials (required unless you set `transmission.rpcAuth.allowAnonymous: true`)
+   ```bash
+   kubectl -n transmission create secret generic transmission-rpc \
+     --from-literal=username=admin \
+     --from-literal=password="$(openssl rand -base64 24)"
+   ```
 
-```bash
-kubectl create secret generic transmission-rpc \
-  --from-literal=username=admin \
-  --from-literal=password="$(openssl rand -base64 24)"
-```
+4. **A values file**, `my-values.yaml`:
 
-3) Create a values override file
+   ```yaml
+   wireguard:
+     existingSecret: wg-client
+     # The Endpoint line of wg0.conf, for the egress NetworkPolicy.
+     endpoints:
+       - ip: 203.0.113.10
+         port: 51820
+     dns:
+       nameservers:
+         - 10.2.0.1   # your VPN provider's resolver (see Provider notes)
 
-```yaml
-wireguard:
-  existingSecret: wg-client
-  # The Endpoint from wg0.conf, for the egress NetworkPolicy.
-  endpoints:
-    - ip: 203.0.113.10
-      port: 51820
-  dns:
-    nameservers:
-      - 10.64.0.1   # your VPN provider's resolver
+   transmission:
+     rpcAuth:
+       existingSecret: transmission-rpc   # keys: username, password
 
-transmission:
-  rpcAuth:
-    existingSecret: transmission-rpc   # keys: username, password
+   persistence:
+     size: 50Gi
+   ```
 
-ingress:
-  enabled: true
-  className: nginx
-  hosts:
-    - host: transmission.example.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - hosts:
-        - transmission.example.com
-      secretName: transmission-ingress-tls
-```
+5. **Install** a released version (see [Releases](https://github.com/czprz/transmission-wireguard/releases)):
 
-4) Install a released version (see [Releases](https://github.com/czprz/transmission-wireguard/releases)):
+   ```bash
+   VERSION=1.1.0
+   helm install transmission oci://ghcr.io/czprz/transmission-wireguard --version "$VERSION" \
+     -n transmission -f my-values.yaml
+   ```
 
-```bash
-VERSION=1.1.0
-helm install transmission oci://ghcr.io/czprz/transmission-wireguard --version "$VERSION" -f values.yaml
-```
+   > [!WARNING]
+   > Always pass `--version`, so you install, and later upgrade to, exactly the version you read the notes for. Versions before 1.0 are still in the registry, and they have no kill switch.
 
-> [!WARNING]
-> Always pass `--version`. Without it Helm installs the highest version in the registry, and releases between 0.8.0 and the first published 1.x were not pushed there: `helm install` without a version installs **0.8.0, which has no kill switch**.
+6. **Open the web UI.** It isn't exposed outside the cluster until you [set that up](#exposing-the-web-ui); until then:
 
-From a clone of this repository, install the working tree instead: `helm install transmission . -f values.yaml` (or `make install VALUES=values.yaml`).
+   ```bash
+   kubectl -n transmission port-forward svc/transmission-transmission-wireguard 9091
+   ```
 
-### Verify the chart
+   and open <http://localhost:9091/transmission/web/>.
 
-Releases from 1.0.0 on are signed with Sigstore (keyless, with the identity of the release workflow on main) and carry a build provenance attestation; the package is also attached to its [GitHub release](https://github.com/czprz/transmission-wireguard/releases), whose notes give its digest. Before installing a version:
+7. **Check for leaks** with the chart's test, from inside the cluster:
 
-```bash
-VERSION=1.1.0
-cosign verify ghcr.io/czprz/transmission-wireguard:$VERSION \
-  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/helm-release\.yml@refs/heads/main$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
-gh attestation verify oci://ghcr.io/czprz/transmission-wireguard:$VERSION --repo czprz/transmission-wireguard
-```
+   ```bash
+   helm upgrade transmission oci://ghcr.io/czprz/transmission-wireguard --version "$VERSION" \
+     -n transmission --reset-then-reuse-values --set tests.enabled=true
+   helm test transmission -n transmission --logs
+   ```
 
-## WireGuard config notes
+   It checks that the kill switch is intact and the tunnel is up, that `eth0` is closed, that Transmission holds no network capabilities and that DNS uses only your nameservers. See [Verifying the egress path](#verifying-the-egress-path).
 
-The sidecar refuses to start unless the following hold. The chart checks the same rules when it renders an inline `wg0Conf`; with `existingSecret` it can't see the config, so only the sidecar checks it.
+From a clone of this repository, install the working tree instead: put your values in `values.local.yaml` (it's gitignored) and run `make install`, or `helm install transmission . -n transmission -f values.local.yaml`.
 
-- `Endpoint` is an IP address with a port. DNS is blocked until the tunnel is up.
-- `AllowedIPs` includes `0.0.0.0/0` (add `::/0` for IPv6): full tunnel only. Splitting it into `0.0.0.0/1, 128.0.0.0/1` doesn't count, because `wg-quick` only sets up its fwmark routing for `/0`.
-- With any IPv6 range in `AllowedIPs`, `Address` includes an IPv6 address. Otherwise IPv6 would enter the tunnel with the pod's own address as its source. Without IPv6 ranges, IPv6 is blocked.
-- There is no `Table =` line, and `FwMark`, if set, equals `firewall.wgFwmark` (51820). The kill switch relies on `wg-quick`'s fwmark routing.
-- Where the pod's network has jumbo frames (AWS VPC CNI's 9001, for example), there is an `MTU` line (`MTU = 1420`). Without one, `wg-quick` sizes the tunnel from the route to the endpoint, so the encrypted packets would be fragmented on the internet's 1500-byte paths, and many paths drop fragments. The sidecar refuses a missing `MTU` when that route's MTU is above 1500.
-- There are **no** `PreUp`/`PostUp`/`PreDown`/`PostDown` hooks. The chart owns the kill switch. Hooks run as root with `NET_ADMIN`, so any of them, directly or through a script, could open it. The old recommended `PreDown = iptables -P OUTPUT ACCEPT; iptables -F OUTPUT` opened the firewall on every tunnel restart while Transmission kept running. If you really need a hook, set `firewall.allowConfHooks: true` and make sure it never touches the firewall or routing.
+## Preparing wg0.conf
 
-The kill switch lets WireGuard's own packets out only as UDP to the `Endpoint` addresses in `wg0.conf`. If the server moves to another address mid-session ("roaming", which VPN providers practically never do), the tunnel stops instead of following it. The sidecar's handshake check (`wireguard.handshakeMaxAgeSeconds`, 300 by default) then restarts it, which goes back to the `Endpoint`.
+Download a WireGuard config from your VPN provider. The sidecar refuses to start unless:
 
-`PersistentKeepalive = 25` is recommended, and the handshake check only runs with it: without keepalives an idle tunnel stops handshaking. A `DNS =` line is optional; the pod uses `wireguard.dns.nameservers`, so copy your provider's resolver there. The default (Cloudflare `1.1.1.1`) is reached through the tunnel but means Cloudflare sees your lookups.
+- `Endpoint` is an IP address with a port, not a hostname: DNS is blocked until the tunnel is up.
+- `AllowedIPs` includes `0.0.0.0/0` (add `::/0` for IPv6). Only a full tunnel works: `0.0.0.0/1, 128.0.0.0/1` doesn't count, because `wg-quick` only sets up its fwmark routing for `/0`.
+- With an IPv6 range in `AllowedIPs`, `Address` has an IPv6 address too. Otherwise IPv6 would enter the tunnel with the pod's own address. Without IPv6 ranges, IPv6 is blocked.
+- There is no `Table =` line, and `FwMark`, if set, equals `firewall.wgFwmark` (51820).
+- There are **no** `PreUp`/`PostUp`/`PreDown`/`PostDown` hooks: the chart owns the kill switch, and hooks run as root with `NET_ADMIN`. (`firewall.allowConfHooks: true` allows them, if you really need one that never touches the firewall or routing.)
+- On networks with jumbo frames (AWS VPC CNI's 9001, for example), there is an `MTU = 1420` line.
 
-Changes to an inline `wg0Conf` or `rpcAuth.username`/`password` roll the pod on `helm upgrade`. With `existingSecret`, restart it yourself after editing the Secret: `kubectl rollout restart deploy/<release>-transmission-wireguard`. Kubernetes updates the mounted Secret in the running pod, and a sidecar restart reads it. If its `Address` changed, the sidecar refuses to start until the pod restarts, because Transmission is still bound to the old addresses.
-
-Example `wg0.conf` (redact your private key before sharing):
+`PersistentKeepalive = 25` is recommended, and the handshake check needs it. A `DNS =` line is optional: the pod uses `wireguard.dns.nameservers`, so put your provider's resolver there. The default, Cloudflare's `1.1.1.1`, works through the tunnel but means Cloudflare sees your lookups.
 
 ```ini
 [Interface]
-PrivateKey = <REDACTED>
-Address = 10.64.0.2/32
+PrivateKey = <PRIVATE_KEY>
+Address = 10.2.0.2/32, fd00::2/128   # IPv4-only config? Then drop ::/0 below.
+DNS = 10.2.0.1
 
 [Peer]
 PublicKey = <SERVER_PUBLIC_KEY>
@@ -136,6 +136,35 @@ AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = 203.0.113.10:51820
 PersistentKeepalive = 25
 ```
+
+**A Secret, or inline?** With `wireguard.existingSecret` (above) the chart never sees the config: set `wireguard.endpoints` by hand, and only the sidecar checks the rules. With `wireguard.wg0Conf` in a private, gitignored values file, the chart parses the endpoints itself, checks the config when it renders, and rolls the pod when it changes. After editing an `existingSecret`, restart the pod yourself: `kubectl -n transmission rollout restart deploy/transmission-transmission-wireguard`.
+
+### Provider notes
+
+Checked in late 2026; providers change these, so confirm with yours.
+
+| Provider | `wireguard.dns.nameservers` | Port forwarding | Notes |
+|---|---|---|---|
+| Proton VPN | `10.2.0.1` | NAT-PMP: `wireguard.portForwarding.natpmpGateway: 10.2.0.1`, on a P2P server, with NAT-PMP enabled when you create the config | |
+| Mullvad | `10.64.0.1` | None (removed in 2023) | Its configs have an IPv4 and an IPv6 `Address` |
+| AirVPN | `10.128.0.1` | A fixed port from the client area: set `transmission.settings.peer-port` to it | Its configs have a `PresharedKey`, which rules out `wireguard.failover`; pick an IP endpoint, not a hostname |
+| IVPN | `172.16.0.1` | None (removed in 2023) | Pick an IP endpoint in the config generator |
+
+### Port forwarding
+
+Without an inbound port, peers can't connect to you, and seeding suffers.
+
+**NAT-PMP** (Proton VPN, among others):
+
+```yaml
+wireguard:
+  portForwarding:
+    natpmpGateway: 10.2.0.1   # the gateway inside the tunnel
+```
+
+The sidecar's liveness probe renews the mapping every 30 seconds, opens just that port on `wg0`, and sets it as Transmission's peer port over RPC on loopback, so announces carry it. A gateway that doesn't answer is logged and retried; downloads still work without a forwarded port. A gateway that offers the web UI's port is refused. NAT-PMP is IPv4 only and needs the chart's sidecar image (the default).
+
+**A fixed port** from your provider (AirVPN, for example): set `transmission.settings.peer-port` to it. The kill switch accepts peers on that port through `wg0` only.
 
 ### Failover to other servers
 
@@ -151,101 +180,67 @@ wireguard:
         port: 51820
 ```
 
-Once the current server's last handshake is `afterSeconds` old, the sidecar's liveness probe replaces the peer with the next in the list, and after the last one with `wg0.conf`'s again. Only `PublicKey` and `Endpoint` change: the key, the addresses and `AllowedIPs` stay those of `wg0.conf`, so Transmission keeps its bindings. The kill switch and the NetworkPolicy let WireGuard reach every listed server and nothing else. A new peer gets the whole `handshakeMaxAgeSeconds` to answer before the probe fails. A restart of the sidecar goes back to `wg0.conf`'s peer.
+Once the current server's last handshake is `afterSeconds` old, the liveness probe replaces the peer with the next in the list, and after the last with `wg0.conf`'s again. Only `PublicKey` and `Endpoint` change, so Transmission keeps its bindings. The kill switch and the NetworkPolicy let WireGuard reach every listed server and nothing else. It needs `PersistentKeepalive` and a single `[Peer]` without `PresharedKey`; a failover takes 3 to 4 minutes.
 
-It needs `PersistentKeepalive` and a single `[Peer]` without `PresharedKey`. A working tunnel handshakes only every 2 minutes, so `afterSeconds` can't be lower than 180, and a failover takes 3 to 4 minutes.
+## Exposing the web UI
 
-### Port forwarding
+The web UI is at `/transmission/web/` on the Service's port 9091. Anything that reaches it from outside the tunnel must come from `firewall.webAllowedCIDRs` (the private ranges by default, which cover ingress controllers and Gateways in the cluster).
 
-Without an inbound port, peers can't connect to you, and seeding suffers. VPN providers that forward a port over NAT-PMP (Proton VPN, among others) work with:
+### Ingress, with cert-manager
 
 ```yaml
-wireguard:
-  portForwarding:
-    natpmpGateway: 10.2.0.1   # Proton's gateway inside the tunnel
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: transmission.example.com   # all paths by default
+  tls:
+    - hosts:
+        - transmission.example.com
+      secretName: transmission-ingress-tls
+
+# Optional: let the chart create a Let's Encrypt issuer for it.
+issuer:
+  enabled: true
+  kind: Issuer   # or ClusterIssuer
+  email: you@example.com
 ```
 
-It needs the chart's sidecar image (the default), which has `natpmpc`; the linuxserver image does not. Use a server that allows port forwarding (Proton: a P2P server, with NAT-PMP enabled when you create the WireGuard config).
+With an issuer of your own, leave `issuer.enabled` off and reference it in `ingress.annotations` (`cert-manager.io/cluster-issuer: <name>`). See the [cert-manager docs](https://cert-manager.io/docs/installation/).
 
-- The sidecar's liveness probe renews the mapping every 30 seconds; a mapping lasts 60.
-- It opens just that port, just on `wg0`, in a chain that the kill switch's check lets hold nothing else.
-- It sets the port as Transmission's peer port over RPC on loopback, with the web UI's credentials, so announces carry it.
+### Gateway API
 
-A gateway that doesn't answer is logged and retried; downloads still work without a forwarded port. NAT-PMP is IPv4 only.
+With a Gateway API implementation (Envoy Gateway, Cilium, Istio, NGINX Gateway Fabric, ...) attach an `HTTPRoute` to your Gateway:
 
-## How traffic is kept in the tunnel
+```yaml
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - transmission.example.com
+```
 
-| Layer | What it does |
-|---|---|
-| Kill switch (`files/firewall.sh`) | Runs in the WireGuard sidecar before `wg-quick`. IPv4 and IPv6 default to DROP; only `wg0`, WireGuard's own encrypted packets (by fwmark, and only as UDP to the `Endpoint` addresses) and the web UI's replies to `firewall.webAllowedCIDRs` may leave. The final decision is made in mangle `POSTROUTING`, on the interface a packet really leaves by, so nat rules, marks or nft chains that re-route a packet can't get it out `eth0`. Inbound: peers on `peer-port` via `wg0`, the web UI from `firewall.webAllowedCIDRs` outside the tunnel. Nothing in the tunnel lifecycle removes these rules. |
-| Start order | WireGuard is a native sidecar with a startup probe; Transmission is not started until the kill switch and `wg0` are up. |
-| Probes | Sidecar liveness fails if the rules are altered or `wg0` is gone, and a restart re-applies the rules. Optional handshake-age check (`wireguard.handshakeMaxAgeSeconds`: 0, or at least 180, since WireGuard re-handshakes only every 2 minutes). Transmission's liveness fails when the tunnel address exists but Transmission isn't listening for peers on it: it binds once at start, so after starting while the tunnel was down it would never accept a peer again. |
-| NetworkPolicy | Egress only to `wireguard.endpoints` on UDP. Enforced by the CNI outside the pod. |
-| DNS | `dnsPolicy: None` with `wireguard.dns.nameservers`, reached through the tunnel. Cluster DNS would forward your lookups upstream from the node. |
-| Transmission | Peer sockets always bound to the tunnel address (loopback for a family the tunnel lacks), Local Peer Discovery and UPnP/NAT-PMP off, peer ports not on the Service, no network capabilities. |
+TLS is configured on the Gateway's listener. `httpRoute.matches` (default: every path) and `httpRoute.filters` shape the route's one rule. With `issuer.enabled` and no Ingress, the issuer solves HTTP-01 challenges with a route on the same Gateways; that needs cert-manager's Gateway API support turned on, and the `cert-manager.io/issuer` annotation on the Gateway.
 
-## Upgrading from 1.0
+### LoadBalancer or NodePort
 
-- **The sidecar image is now the chart's own `ghcr.io/czprz/twg-wireguard`** (see [Sidecar image](#sidecar-image)) instead of `linuxserver/wireguard`. Nothing to do unless you override `images.wireguard`. To keep the linuxserver image (or a mirror of it), set `repository`, `tag` and `digest` together, as [Sidecar image](#sidecar-image) shows. A `repository` without a `tag`, or a linuxserver `tag` without a `repository`, is refused, since the chart's default tag only exists for its own image. A `digest` alone (say the linuxserver one) is looked up in `ghcr.io/czprz/twg-wireguard` and won't be found: remove it, or set the repository and tag with it. `wireguard.env` (`TZ`, `PUID`, `PGID`) is only read by the linuxserver image.
-- **`wireguard.env` may only set `TZ`, `PUID` and `PGID`.** The sidecar runs as root with `NET_ADMIN` and its command and probes are bash, which runs code from variables such as `BASH_ENV`: any other key is refused.
-- **`wireguard.unprivileged` is stricter**: besides `NET_ADMIN` and `NET_RAW` the sidecar drops every capability, can't escalate privileges and uses the runtime's seccomp profile. `wireguard.unprivileged.sysctls: initContainer` sets its sysctls from a short privileged init container instead of the pod's `securityContext`, so the kubelet needn't allow them.
-- **RPC credentials set in `transmission.settings`** (`rpc-username`/`rpc-password`, the pre-1.0 way) now go into the chart's RPC Secret instead of the ConfigMap and the pod spec. `transmission.rpcAuth` is still the place for them.
-- **The pod rolls on an `rpcAuth` change only with an inline `wireguard.wg0Conf`.** The RPC Secret's checksum is now hashed with the WireGuard Secret, so it can't be used to guess the password offline; with `wireguard.existingSecret` there is nothing secret to hash it with, so it's left out: restart the pod (`kubectl rollout restart`) after changing `rpcAuth`.
-- **A `tunnel-address` init container** (the sidecar image) now copies only the `Address` lines of `wg0.conf` for the Transmission image's init container, which no longer gets the private key.
+```yaml
+service:
+  type: LoadBalancer
+  loadBalancerSourceRanges: [192.168.1.0/24]   # who may reach it
+  externalTrafficPolicy: Local                 # keeps the clients' own addresses...
+firewall:
+  webAllowedCIDRs: [192.168.1.0/24, 10.0.0.0/8]  # ...so allow them here too
+```
 
-## Upgrading to 1.0
+The ingress hosts and HTTPRoute hostnames are added to Transmission's `rpc-host-whitelist`. Under any other name (an external proxy, a Tailscale name), with RPC auth off, add it to `transmission.settings.rpc-host-whitelist`, or you get HTTP 421.
 
-1.0 turns the kill switch on unconditionally and changes several defaults. Upgrade with `--reset-then-reuse-values` (Helm 3.14+) or your values file. `--reuse-values` keeps only your old values and drops the new defaults, so the upgrade fails with a nil pointer error. Before upgrading:
+## Storage
 
-- **Kubernetes 1.29+** is required (native sidecars).
-- **Remove hooks from `wg0.conf`.** `PreUp`/`PostUp`/`PreDown`/`PostDown` lines (earlier versions of this README recommended `iptables` ones) are refused. `firewall.allowConfFirewallHooks` is now `firewall.allowConfHooks`.
-- **Set `wireguard.endpoints`** when using `existingSecret`. The egress NetworkPolicy needs the VPN server's IP and port. If your CNI doesn't enforce NetworkPolicy, set `networkPolicy.enabled: false` instead.
-- **DNS** now goes through the tunnel to `wireguard.dns.nameservers`. Set your VPN provider's resolver. `dns.override: false` is refused: cluster DNS can't be reached through the tunnel.
-- **`transmission.securityContext` must drop `ALL` capabilities.** Only harmless ones may be added back (the default `SETUID`, `SETGID`, `CHOWN` are fine). A `null` securityContext is refused, since the runtime's defaults include `NET_RAW`.
-- **`firewall.wgFwmark`** must be between 1 and 4294967295. It is also wg-quick's routing table, so 253-255 and 1000 are refused, and any value other than 51820 needs the same `FwMark` line in `wg0.conf`.
-- **`wg0.conf` needs an IPv4 `Address`** (with `0.0.0.0/0`, traffic would otherwise carry the pod's own IPv4 address into the tunnel).
-- **`wireguard.wg0Conf` and `wireguard.existingSecret` can't both be set**, nor `rpcAuth.existingSecret` with `rpcAuth.username`/`password`.
-- **RPC auth in `transmission.settings` needs `rpc-authentication-required: true`** as a boolean; the string `"false"` (or `"true"`) no longer counts.
-- **Capabilities are dropped with `ALL`.** `CAP_ALL` drops nothing at runtime and is refused; `DAC_READ_SEARCH` can no longer be added back.
-- **RPC auth** is required, also for a ClusterIP-only UI: without it any pod in the cluster can add torrents (with trackers it controls, linking them to your VPN address) or set a script to run. Move `rpc-username`/`rpc-password` from `transmission.settings` to `transmission.rpcAuth` (settings still work), or set `rpcAuth.allowAnonymous: true`.
-- **Unknown values are refused.** The schema rejects keys it doesn't know (a typo such as `wireguard.dns.nameserver` used to be ignored silently), nameservers that aren't IPs and `webAllowedCIDRs` that aren't CIDRs.
-- **Peer sockets are always bound to the tunnel.** `bindToTunnel: false` and `bind-address-ipv4`/`-ipv6` in `transmission.settings` are refused; `peer-port` must differ from `service.webPort`.
-- **IPv6 in the tunnel needs a tunnel IPv6 address.** Any IPv6 range in `AllowedIPs` (`::/0`, `0::/0`, `2000::/3`, ...) without an IPv6 `Address` is refused (the pod's own IPv6 address would reach the VPN); drop the IPv6 ranges to block IPv6 instead.
-- **`replicaCount` must be 1**, `firewall.wgFwmark` must not set bit `0x10000000`, and the old `service.peerPortTcp`/`peerPortUdp` are refused.
-- **An RPC Secret with an empty username or password** stops the pod instead of leaving the web UI open.
-- **`TWG_*` variables and the image's server mode** (`PEERS`, `SERVERURL`, ...) are refused in `wireguard.env` / `transmission.env`.
-- **The Deployment uses `strategy: Recreate`**, so an upgrade never runs two pods on one WireGuard key; expect a short gap.
-  **If Helm 4 installed the release**, add `--server-side=false` to this one upgrade: `helm upgrade <release> <chart> --server-side=false ...`. Without it the upgrade fails with `spec.strategy.rollingUpdate: Forbidden`, because Helm 4's server-side apply leaves the old strategy's settings in place. Releases installed with Helm 3 upgrade as usual, with Helm 3 or 4. CI runs both upgrades.
-- **`rpc-host-whitelist-enabled` is now `true`.** The Service name and ingress hosts are allowed automatically. If you reach the UI under another name (Gateway API, an external proxy, a Tailscale name), add it to `transmission.settings.rpc-host-whitelist` or you get HTTP 421.
-- **`transmission.settings.rpc-port` must equal `service.webPort`**, and `peer-port-random-on-start` must be `false`.
-- **Peer ports are off the Service.** `service.exposePeerPorts`, `peerPortTcp` and `peerPortUdp` are gone; peers connect through the VPN (forward a port at your provider and set `peer-port`).
-- **Host mounts are off**: `wireguard.kernelMode.mountLibModules` and `mountTun` default to `false` (kernel WireGuard is built into Linux 5.6+).
-- **`wireguard.handshakeMaxAgeSeconds` defaults to 300**: a tunnel without a handshake for 5 minutes is restarted (only with `PersistentKeepalive` in `wg0.conf`). Set 0 to turn it off.
-- **A missing `MTU` is refused on jumbo-frame networks** (the route to the endpoint has an MTU above 1500). Add `MTU = 1420` to `wg0.conf`.
-- **The web UI listens on `::`** (IPv4 and IPv6), falling back to `0.0.0.0` in pods without IPv6. Set `transmission.settings.rpc-bind-address` to keep the old behaviour.
-- **The PVC is kept on `helm uninstall`** (`persistence.keepOnUninstall: true`), so downloads survive it; delete the PVC yourself, or set it to `false`.
-- **The pod opts out of Istio and Linkerd** (injection annotations, and the ambient label `istio.io/dataplane-mode: none`): a mesh proxy can't reach its control plane through the kill switch. Override them in `podAnnotations`/`podLabels` if you must.
-- **Transmission now stops cleanly.** The image stops it through its RPC with `USER`/`PASS`, which the chart never set, so with RPC auth every shutdown waited out the grace period and ended in a kill (exit 137) without Transmission saving its state. The chart now sets them from `transmission.rpcAuth` (so they can't be set in `transmission.env`), and `terminationGracePeriodSeconds` is 60 (was Kubernetes' 30) for a slow shutdown with many torrents.
-- **The chart is published at `oci://ghcr.io/czprz/transmission-wireguard`** (the repository moved from `dever-labs`).
-- **`persistence.downloads`** puts `/data` on a PVC of its own. It's off by default; see [Persistence](#persistence) before turning it on for an existing install.
-
-## Transmission settings
-
-Transmission settings are rendered into `settings.json` on startup. A good way to build a baseline is:
-
-1) Run Transmission once.
-2) Export its generated `settings.json`.
-3) Paste the fields you want into `values.yaml` under `transmission.settings`.
-
-`values.yaml` is the only place settings live. Transmission runs with a read-only `settings.json` that the init container writes at every start, so **changes made in the web UI (Edit > Preferences) or with `transmission-remote` apply until the pod restarts and are then lost**. Put them in `transmission.settings` to keep them. (Per-torrent state, such as the torrent list, priorities and progress, is in `/config` on the volume and survives restarts.)
-
-Official docs:
-- https://github.com/transmission/transmission/blob/main/docs/Editing-Configuration-Files.md
-- https://github.com/transmission/transmission/blob/main/docs/Configuration-Files.md
-
-## Persistence
-
-The chart supports PVC or hostPath. By default it creates a 10Gi `ReadWriteOnce` PVC with the cluster's default storage class; set `persistence.storageClassName`, `existingClaim`, or `type: hostPath` with `hostPath.path` to change that. It holds both `/config` and `/data`, so size it for your downloads. `helm uninstall` keeps the chart's PVCs (`persistence.keepOnUninstall`); delete them yourself when you're done with the data.
+By default the chart creates a 10Gi `ReadWriteOnce` PVC with the cluster's default storage class. It holds `/config` and `/data`, so size it for your downloads. Set `persistence.storageClassName`, `existingClaim`, or `type: hostPath` with `hostPath.path` to change that. `persistence.annotations` and `labels` go on the chart's PVCs, for a backup tool's opt-in, for example.
 
 For a new install, give the downloads a PVC of their own, so a full download disk can't stop Transmission from saving its config and resume files:
 
@@ -260,7 +255,7 @@ persistence:
 
 It's off by default because on an existing install it would hide the downloads already on the main volume: copy them over first.
 
-To keep downloads on an NFS or SMB share, add it under `extraVolumes` and mount it in the Transmission container with `transmission.extraVolumeMounts`:
+To keep downloads on an NFS or SMB share, add it under `extraVolumes` and mount it with `transmission.extraVolumeMounts`:
 
 ```yaml
 extraVolumes:
@@ -274,237 +269,111 @@ transmission:
       mountPath: /data/complete
 ```
 
-`podAnnotations`, `podLabels`, `imagePullSecrets`, `priorityClassName` and `terminationGracePeriodSeconds` apply to the pod as usual.
+`persistence.mounts.data.mountPath` moves the data volume (default `/data`); the download, incomplete and watch directories move with it. A directory on no volume is refused, since its files would be lost on restart.
 
-## Ingress and cert-manager issuer
+## Transmission settings
 
-Use ingress (or [Gateway API](#gateway-api)) only if you plan to expose the Transmission web UI outside the cluster.
-If ingress is disabled, there is no need for cert-manager or an issuer.
+`transmission.settings` becomes Transmission's `settings.json` (see Transmission's [configuration files](https://github.com/transmission/transmission/blob/main/docs/Editing-Configuration-Files.md)). Add only the keys you want to change. Don't paste a whole exported `settings.json`, since the chart owns some keys:
 
-cert-manager setup guide: https://cert-manager.io/docs/installation/
+- `bind-address-ipv4` and `bind-address-ipv6` are refused: they are always the tunnel address.
+- `rpc-port` must equal `service.webPort`, and `peer-port-random-on-start` must be `false` (the kill switch only accepts peers on the fixed `peer-port`).
+- The web UI's credentials belong in `transmission.rpcAuth`; the chart sets `rpc-username`, `rpc-password` and `rpc-authentication-required` from it.
 
-You can let the chart create an Issuer/ClusterIssuer for cert-manager:
+**Changes made in the web UI (Edit > Preferences) or with `transmission-remote` are lost when the pod restarts.** Transmission runs with a read-only `settings.json` that the init container writes at every start. Put such changes in `transmission.settings`. Per-torrent state (the torrent list, priorities, progress) is in `/config` on the volume and survives restarts.
 
-```yaml
-ingress:
-  enabled: true
-  className: nginx
+## Images
 
-issuer:
-  enabled: true
-  kind: Issuer # or ClusterIssuer
-  email: you@example.com
-```
+- **Sidecar:** `ghcr.io/czprz/twg-wireguard` (from [`image/wireguard`](https://github.com/czprz/transmission-wireguard/tree/main/image/wireguard)): `wg-quick`, iptables/nftables, iproute2, `resolvconf` and `natpmpc`, no init system, package manager or busybox network clients.
+- **Transmission:** `lscr.io/linuxserver/transmission` by default. With `images.transmission.flavor: minimal`, the chart's own non-root image (`ghcr.io/czprz/twg-transmission`, from [`image/transmission`](https://github.com/czprz/transmission-wireguard/tree/main/image/transmission)) runs Transmission with no capabilities and a read-only root filesystem; until the chart pins a published digest, set its `tag` or `digest`.
 
-If you already have an issuer, leave `issuer.enabled` false and reference your issuer in `ingress.annotations`.
+Default images are pinned by digest; overriding `repository` or `tag` drops the default digest, so set `digest` too. Both of the chart's images are scanned on every change, rebuilt weekly for Alpine's fixes, signed with cosign and have a build provenance attestation. [docs/images.md](https://github.com/czprz/transmission-wireguard/blob/main/docs/images.md) has the details: keeping the linuxserver sidecar, the minimal image's ownership handling, and verification commands.
 
-### Gateway API
+### Verifying the chart
 
-With a Gateway API implementation (Envoy Gateway, Cilium, Istio, NGINX Gateway Fabric, ...) attach an `HTTPRoute` to your Gateway instead of, or next to, the Ingress:
-
-```yaml
-httpRoute:
-  enabled: true
-  parentRefs:
-    - name: public
-      namespace: gateway-system
-      sectionName: https
-  hostnames:
-    - transmission.example.com
-```
-
-TLS is configured on the Gateway's listener. The hostnames are added to `rpc-host-whitelist` like ingress hosts. `httpRoute.matches` (default: every path) and `httpRoute.filters` shape the route's one rule. The Gateway's pods reach the web UI from inside the cluster, so the default `firewall.webAllowedCIDRs` cover them; with `networkPolicy.ingressFrom` set, allow their namespace there too.
-
-With `issuer.enabled` and no Ingress, the issuer solves HTTP-01 challenges with a route on the same Gateways (without `sectionName` and `port`, since challenges arrive on port 80). That needs cert-manager's Gateway API support turned on, and the `cert-manager.io/issuer` (or `cluster-issuer`) annotation on the Gateway for the certificate itself.
-
-## Sidecar image
-
-`image/wireguard` builds the sidecar's image: Alpine with `wg-quick`, iptables and nftables, iproute2, `resolvconf` and `natpmpc`, and nothing else. It has no init system, no package manager and no busybox network clients. Its `/init` brings `wg0` up and takes it down on stop; the kill switch, installed before that, stays either way.
-
-Every change runs the Docker and cluster leak tests against it and scans it with Trivy (fixable HIGH and CRITICAL fail the build). Merges to main and a weekly rebuild, for Alpine's fixes, publish it to `ghcr.io/czprz/twg-wireguard` for amd64 and arm64. Each published image is signed with cosign and has a build provenance attestation:
+Releases from 1.0.0 on are signed with Sigstore (keyless, with the identity of the release workflow on main) and carry a build provenance attestation; the package is also attached to its [GitHub release](https://github.com/czprz/transmission-wireguard/releases), whose notes give its digest. With cosign 2.6 or later (older versions can't read the signature's format and report "no signatures found"):
 
 ```bash
-cosign verify ghcr.io/czprz/twg-wireguard@sha256:<digest> \
-  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/sidecar-image\.yml@refs/heads/main$' \
+VERSION=1.1.0
+cosign verify ghcr.io/czprz/transmission-wireguard:$VERSION \
+  --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/helm-release\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/czprz/transmission-wireguard:$VERSION --repo czprz/transmission-wireguard
 ```
 
-It is the chart's default sidecar image, pinned by digest, and Renovate proposes each rebuild. To keep the linuxserver image instead (it works with the kill switch, but has no `natpmpc` and brings s6, a package manager and busybox's network clients into the privileged container):
+## Verifying the egress path
 
-```yaml
-images:
-  wireguard:
-    repository: ghcr.io/linuxserver/wireguard
-    tag: 1.0.20260223-r0-ls126
-    digest: sha256:6bcf5d2f5a265c7e9835eaadd989938e681aabe8bf8bcd4556b61d463da6555c
-```
+`helm test` checks a running release from inside the cluster (enable it with `tests.enabled: true`, as in the Quick start). It runs on the release pod's node and checks:
 
-## Transmission image
-
-The default Transmission image is `lscr.io/linuxserver/transmission`. Its s6 init runs as root and then drops to `PUID`/`PGID`, so the container needs `SETUID`, `SETGID` and `CHOWN`. `image/transmission` builds a minimal alternative: Alpine's `transmission-daemon` (4.1.x) with the web UI, `jq`, and `curl` and OpenBSD `nc` for the leak tests, but no init system, package manager or other network clients. It runs as `PUID`/`PGID` from the start, with no capabilities, `runAsNonRoot` and a read-only root filesystem (`/tmp` is an `emptyDir`), and stops on `SIGTERM` by itself:
-
-```yaml
-images:
-  transmission:
-    flavor: minimal
-    digest: sha256:<a published digest>   # or tag
-```
-
-The chart's init container still runs as root, with only `CHOWN`. It writes `settings.json` and gives `PUID`/`PGID` the `/config` and `/data` mount points, plus the download, incomplete and watch directories `settings.json` names under them. It never changes ownership recursively, but it does change those directories' owner, including on a `hostPath` volume, so point `hostPath` at a tree meant for `PUID`/`PGID`. Volumes from `extraVolumeMounts` (an NFS share, say) are left alone: they must already be writable by `PUID`/`PGID`, since Transmission can't fix their ownership as a non-root user. Without persistence, `/data` is an `emptyDir`, because the root filesystem is read-only. Moving an existing install from the linuxserver image works if your files already belong to `PUID`/`PGID` (the linuxserver image keeps them that way). The minimal image follows Alpine's Transmission package, so its version can trail the linuxserver image's, which sets `appVersion`.
-
-Every change scans it with Trivy and runs the cluster leak test with it as the Transmission container. Merges to main and a weekly rebuild publish it to `ghcr.io/czprz/twg-transmission` for amd64 and arm64, signed with cosign and with a build provenance attestation (verify it like the sidecar image, with `transmission-image.yml` as the workflow). The chart doesn't pin it yet, so set its tag or digest.
-
-## Security notes
-
-- `replicaCount` must be 1: replicas would share one WireGuard key.
-- Keep `wg0.conf` in a Secret, not in Git.
-- The web UI requires RPC credentials (`transmission.rpcAuth`) unless `allowAnonymous` is set. They are read from a Secret into a read-only `settings.json`, never stored in the ConfigMap.
-- The WireGuard sidecar is privileged by default because `wg-quick` sets `net.ipv4.conf.all.src_valid_mark`. If you can allow that sysctl on the kubelet (`--allowed-unsafe-sysctls`, or `allowedUnsafeSysctls` in its config file), run it with only `NET_ADMIN` and `NET_RAW` instead (CI runs the Docker leak test this way too):
-
-  ```yaml
-  wireguard:
-    unprivileged:
-      enabled: true                      # privileged: false, NET_ADMIN + NET_RAW, src_valid_mark=1
-      blockRouterAdvertisements: true    # IPv6 pod networks only; allow these two sysctls as well
-  ```
-
-  The chart then sets the sysctl in the pod's `securityContext` (next to any in `podSecurityContext`). Without it allowed, the pod fails with `SysctlForbidden`. An unprivileged sidecar can't write `/proc/sys`, so it can't stop IPv6 router advertisements from adding routes past the tunnel. Nothing leaks then, but IPv6 can stop working; the sidecar logs a warning. `blockRouterAdvertisements` sets `net.ipv6.conf.eth0.accept_ra_pinfo` and `accept_ra_rt_info_max_plen` to `0` to close that. Leave it off where pods have no IPv6, since the pod won't start without those sysctls.
-- Transmission runs without network capabilities (with `images.transmission.flavor: minimal`, without any capabilities and never as root). The chart refuses a `transmission.securityContext` that is missing, privileged, doesn't drop `ALL`, or adds anything beyond file and user capabilities (`CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`, ...). Root in that container (the image's init, `kubectl exec`) could otherwise bypass the kill switch: `NET_RAW` alone allows `SO_MARK` and raw sockets on `eth0`.
-- Anyone who can `kubectl exec` into the WireGuard sidecar is root with `NET_ADMIN` there and can open the kill switch. So can anyone who can add an ephemeral container, which shares the pod's network namespace: not only with `kubectl debug --profile=netadmin` or `sysadmin`, but with any profile that leaves the runtime's default capabilities, which include `NET_RAW` (a packet socket on `eth0` skips netfilter entirely). The kill switch's check fails while any packet (`AF_PACKET`) socket is open in the pod, so the sidecar turns unready and the tunnel-down alert fires, but it can't stop one. Limit `pods/exec` and `pods/ephemeralcontainers` in the namespace.
-- `tests.enabled` adds a Role that lets the `helm test` pod exec into any pod in the namespace, including the sidecar, while the test runs (Helm deletes it afterwards; an interrupted `helm test` can leave it behind: `kubectl delete role,rolebinding,serviceaccount -l app.kubernetes.io/instance=<release>`). The test only reads: it runs the sidecar's `firewall.sh status`, which checks like the liveness probe without its failover or NAT-PMP actions.
-- A NAT-PMP gateway that offers the web UI's port is refused: that port is never opened on `wg0`, and the check fails if it ever is.
-- Default images are pinned by digest. Overriding `images.*.repository` or `tag` drops the default digest; set `images.*.digest` to keep pulls immutable.
-- Inline `rpcAuth` credentials are hashed into a pod annotation (so changes roll the pod). Use a strong password, or `rpcAuth.existingSecret`.
-
-## Monitoring
-
-With the Prometheus Operator, kube-state-metrics and the kubelet's volume stats scraped (kube-prometheus-stack does all three), `monitoring.prometheusRule.enabled: true` adds alerts for:
-
-| Alert | When |
-|---|---|
-| `TransmissionWireguardTunnelDown` | The WireGuard sidecar has not been ready for `tunnelDownFor` (5m). It is ready only while the kill switch is intact, `wg0` is up and wg-quick's policy routing is in place. Nothing leaks then; Transmission's traffic just stops. |
-| `TransmissionWireguardUnavailable` | No pod has been available for `unavailableFor` (10m). |
-| `TransmissionWireguardRestarting` | Containers restarted more than `restartsPer30m` (2) times in 30 minutes. This is also how a VPN server that stopped answering shows: its last handshake gets older than `wireguard.handshakeMaxAgeSeconds`, and the liveness probe restarts the sidecar. |
-| `TransmissionWireguardVolumeFilling` | A release PVC has less than `volumeFreeRatio` (10%) free. |
-
-Set `monitoring.prometheusRule.labels` to what your Prometheus selects rules by (`release: kube-prometheus-stack`, for example). Nothing in the pod serves metrics: an exporter would need a port through the kill switch, or `NET_ADMIN` to read WireGuard's state, which can open it.
-
-## Verify egress IP
-
-`helm test` checks a running release from inside the cluster. It is off by default, so enable it first:
-
-```bash
-helm upgrade <release> <chart> -n <namespace> --reset-then-reuse-values --set tests.enabled=true
-helm test <release> -n <namespace> --logs
-```
-
-It runs on the release pod's node (egress addresses can differ per node) and checks:
-
-- the kill switch rules are intact and the tunnel is up (in every running pod of the release);
-- the Transmission container holds no `NET_RAW`, `NET_ADMIN` or `SYS_ADMIN` capability at runtime (raw sockets would bypass iptables), whatever a webhook added;
-- a socket bound to `eth0` can't reach the Kubernetes API, though the test pod can (and, where the node has an IPv6 address, the kubelet over IPv6);
+- the kill switch rules are intact and the tunnel is up, in every running pod of the release (read-only: it runs the sidecar's `firewall.sh status`);
+- the Transmission container holds no `NET_RAW`, `NET_ADMIN` or `SYS_ADMIN` capability at runtime, whatever a webhook added;
+- a socket bound to `eth0` can't reach the Kubernetes API, though the test pod can;
 - the pod uses only `wireguard.dns.nameservers`;
-- optionally, that the public address the pod gets from `tests.ipEchoUrl` differs from the cluster's own, the pod's and its node's addresses (IPv4, and IPv6 where the cluster has it), and that `eth0` can't reach it. Set `tests.vpnEgressIPs` to your VPN's exit addresses (IPv4, IPv6 or both) to require one of them per family; without it the test pod must land on the release pod's node.
+- optionally, that the public address the pod gets from `tests.ipEchoUrl` differs from the cluster's own, and is one of `tests.vpnEgressIPs`. Only point `tests.ipEchoUrl` at an echo endpoint you run yourself: it sees your VPN address and your real address side by side.
 
-While the test runs, a temporary Role lets the test pod exec into pods in the namespace. Helm deletes it after the run, pass or fail. The finished test pod stays until the next run so `--logs` can read it; `helm uninstall` leaves it behind, so delete it afterwards with `kubectl delete pod <release>-transmission-wireguard-test`. The test is off by default because tools that deploy with `helm template` (kustomize `helmCharts`, some GitOps setups) ignore hook annotations and would create that Role permanently. Leave it off there, or render with `--skip-tests`. By default the test contacts nothing outside the cluster. `tests.ipEchoUrl` is off by default because the echo endpoint sees your VPN address and your real address side by side; only set it to one you run yourself (any endpoint that answers with the caller's IP as plain text). Set `tests.enabled: false` to drop the test. A default-deny NetworkPolicy in the namespace must let the test pod reach the API server (and the echo endpoint, if set).
+While the test runs, a temporary Role lets the test pod exec into pods in the namespace; Helm deletes it afterwards. The test is off by default because tools that deploy with `helm template` (kustomize `helmCharts`, some GitOps setups) ignore hook annotations and would create that Role permanently; leave it off there, or render with `--skip-tests`.
 
-By hand, check that `eth0` is closed: a request bound to it must fail with curl exit 7 (refused) or 28 (timed out). The Kubernetes API answers any ordinary pod, so exit 0 would be a leak. Nothing outside the cluster is contacted:
+By hand: a request bound to `eth0` must fail with curl exit 7 (refused) or 28 (timed out); exit 0 would be a leak.
 
 ```bash
-kubectl exec deploy/<release>-transmission-wireguard -c transmission -- sh -c \
+kubectl -n transmission exec deploy/transmission-transmission-wireguard -c transmission -- sh -c \
   'h=$KUBERNETES_SERVICE_HOST; case $h in *:*) h="[$h]" ;; esac
    curl -sk -m 5 -o /dev/null --interface "if!eth0" "https://$h:$KUBERNETES_SERVICE_PORT/version"; echo "curl exit $?"'
 ```
 
-Comparing the pod's public address with the cluster's needs an IP echo endpoint; use `tests.ipEchoUrl` with one you run yourself, since a public one sees both addresses.
+## Monitoring
 
-## Testing
+With the Prometheus Operator, kube-state-metrics and the kubelet's volume stats scraped (kube-prometheus-stack does all three), `monitoring.prometheusRule.enabled: true` adds alerts:
 
-- `make lint`: `helm lint`, the helm-unittest suites in `tests/`, `tests/schema-test.sh` (the schema refuses typos and bad addresses) `tests/metadata-test.sh` (`appVersion` is the default Transmission version) and `tests/package-test.sh` (the package holds the whole chart and nothing else, never a local `wg0.conf` or values file).
-- `make e2e-docker`: a bats suite (`tests/e2e/docker/`) that builds a dual-stack Pod-like network namespace in Docker with the chart's images and scripts, a WireGuard server and a canary, then tries to leak over IPv4 and IPv6: sockets bound to `eth0`, UDP (DNS and another port), ICMP, Transmission's own tracker announces, a deleted `wg0`, sidecar restarts and SIGKILL, tampered and flushed rules, packets marked by a stray mangle rule or re-routed by a nat rule, duplicating nft rules, unsafe configs. Every leak probe must be refused or time out, and every canary counts the packets that arrive from the pod's own address, so a leak fails the test however the client saw it; a probe that can't run fails the test too. Needs Docker with kernel WireGuard.
-- `make e2e-kind CNI=kindnet|calico|cilium`: creates a kind cluster with that CNI (kindnet dual-stack, with IPv6 checks) and runs the cluster suite (`tests/e2e/cluster/`) there. It adds start order, kubelet probes, pod DNS, UDP, the Service, `helm test` against a healthy and a tampered pod, the NetworkPolicy holding with the in-pod kill switch verifiably flushed, a refused `existingSecret` keeping Transmission from starting, a downloads PVC, and pod termination (Transmission must exit 0 within the grace period). CI also validates the rendered chart against the cluster's API server. The leak checks run first without the NetworkPolicy, so they test the in-pod kill switch alone. `SIDECAR=unprivileged` installs it with `wireguard.unprivileged` (the cluster scripts allow its sysctls on the kubelet). Delete the cluster afterwards with `kind delete cluster`.
-- `make e2e-k3d`: the cluster suite on a throwaway k3d cluster (k3s's own CNI and NetworkPolicy controller, IPv4 only), for a local run without kind. It leaves your other k3d clusters and `~/.kube/config` alone.
-- `make e2e-upgrade [CLUSTER=k3d]`: installs the last release, upgrades it to this chart and runs the cluster suite on the upgraded release.
-- `make mutation`: turns off each firewall rule in turn and runs the Docker suite, which must fail every time. The few rules in `tests/e2e/mutation-baseline.txt` are exempt, each with its reason: another rule already covers every packet they match.
+| Alert | When |
+|---|---|
+| `TransmissionWireguardTunnelDown` | The sidecar has not been ready for `tunnelDownFor` (5m): the kill switch, `wg0` or wg-quick's policy routing is not in place. Nothing leaks then; Transmission's traffic just stops. |
+| `TransmissionWireguardUnavailable` | No pod has been available for `unavailableFor` (10m). |
+| `TransmissionWireguardRestarting` | Containers restarted more than `restartsPer30m` (2) times in 30 minutes, which is also how a VPN server that stopped answering shows. |
+| `TransmissionWireguardVolumeFilling` | One of the release's PVCs has less than `volumeFreeRatio` (10%) free. |
 
-Each check is one named bats test. A suite builds its environment once; every test leaves it healthy, so one failure does not hide the next. `FILTER='<name>'` runs only the matching checks, after a fresh setup, for example `make e2e-docker FILTER='UDP leaves'`. CI shows each failed check by name in the run's summary and keeps the JUnit report. [ARCHITECTURE.md](ARCHITECTURE.md#threats-and-the-tests-that-cover-them) maps each threat to the tests that cover it.
+Set `monitoring.prometheusRule.labels` to what your Prometheus selects rules by (`release: kube-prometheus-stack`, for example). Nothing in the pod serves metrics: an exporter would need a port through the kill switch.
 
-CI runs on every pull request, on pushes to `dev` and `main`, and weekly:
-- **The Docker suite:** on amd64 and arm64, and once with the sidecar unprivileged (`make e2e-docker SIDECAR=unprivileged`).
-- **The cluster suite, on kind:**
-  - on Kubernetes 1.29 (the oldest the chart supports) up to 1.37;
-  - on kindnet, Calico and Cilium;
-  - with Helm 3 and Helm 4;
-  - once with the sidecar unprivileged (`wireguard.unprivileged`, dual-stack);
-  - as an upgrade from the last release, with Helm 3 and with Helm 4.
-- **The mutation test:** weekly with every mutant; on pull requests only the mutants on lines they change in `files/firewall.sh`, or all of them if the Docker suite changes.
+## Security model
 
-## Values overview
+- `replicaCount` must be 1: replicas would share one WireGuard key.
+- The web UI requires RPC credentials (`transmission.rpcAuth`) unless `allowAnonymous` is set. They stay in a Secret and reach Transmission only through its read-only `settings.json`.
+- The WireGuard sidecar is privileged by default, because `wg-quick` sets `net.ipv4.conf.all.src_valid_mark`. `wireguard.unprivileged.enabled` runs it with only `NET_ADMIN` and `NET_RAW` (every other capability dropped, RuntimeDefault seccomp). Its sysctls are set either in the pod's `securityContext` (`sysctls: pod`; the kubelet must allow them with `--allowed-unsafe-sysctls`), or by a short privileged init container (`sysctls: initContainer`; no kubelet change). On IPv6 pod networks add `blockRouterAdvertisements: true`, so router advertisements can't add IPv6 routes past the tunnel.
+- `wireguard.env` may only set `TZ`, `PUID` and `PGID`: the sidecar's shell would run code from others (`BASH_ENV`, ...).
+- Transmission runs without network capabilities. The chart refuses a `transmission.securityContext` that is missing, privileged, doesn't drop `ALL`, or adds anything beyond file and user capabilities. Root in that container could otherwise bypass the kill switch: `NET_RAW` alone allows `SO_MARK` and raw sockets on `eth0`. With `images.transmission.flavor: minimal` it has no capabilities at all and never runs as root.
+- Anyone who can `kubectl exec` into the sidecar is root with `NET_ADMIN` there and can open the kill switch. So can anyone who can add an ephemeral container, which shares the pod's network namespace, with any profile that keeps the runtime's default `NET_RAW` (a packet socket on `eth0` skips netfilter). The kill switch's check fails while any packet socket is open in the pod, so the sidecar turns unready and the tunnel-down alert fires, but it can't stop one. Limit `pods/exec` and `pods/ephemeralcontainers` in the namespace.
+- `tests.enabled` adds a Role that lets the test pod exec into any pod in the namespace while `helm test` runs. An interrupted test can leave it behind: `kubectl delete role,rolebinding,serviceaccount -l app.kubernetes.io/instance=<release>`.
 
-See `values.yaml` for the full list of configuration options.
+Report security problems as [SECURITY.md](https://github.com/czprz/transmission-wireguard/blob/main/SECURITY.md) describes.
 
-[![CI](https://github.com/czprz/transmission-wireguard/actions/workflows/helm-main.yml/badge.svg)](https://github.com/czprz/transmission-wireguard/actions/workflows/helm-main.yml)
+## FAQ
 
----
+**How do Sonarr, Radarr and other \*arr apps connect?** Point them at host `transmission-transmission-wireguard.transmission.svc` (`<release>-transmission-wireguard.<namespace>.svc`), port 9091, URL base `/transmission/`, with the RPC credentials. The Service's names are already in `rpc-host-whitelist`. They need the downloads on the same volume (an `existingClaim` that both mount, `ReadWriteMany` if on different nodes) or a remote path mapping.
 
-> **Quickstart**
->
-> 1. Create your WireGuard secret:
->    ```bash
->    kubectl create secret generic wg-client --from-file=wg0.conf=/path/to/wg0.conf
->    ```
-> 2. Copy and edit `values.yaml` for your needs.
-> 3. Install:
->    ```bash
->    helm install transmission oci://ghcr.io/czprz/transmission-wireguard --version <version> -f values.yaml
->    ```
-> 4. [Verify egress IP](#verify-egress-ip) to confirm VPN routing.
+**Why are my preferences gone after a restart?** Settings live in `transmission.settings`; changes in the web UI are lost on restart (see [Transmission settings](#transmission-settings)).
 
----
+**Can I use another web UI (Flood for Transmission, Transmissionic, ...)?** Mount its files with `extraVolumes` and `transmission.extraVolumeMounts`, and point Transmission at them with `transmission.extraEnv: [{name: TRANSMISSION_WEB_HOME, value: <mount path>}]`.
 
-# User & Contributor Guide
+**How do I run a second instance?** Install another release, with its own WireGuard config (or key) and storage. Replicas aren't supported.
 
-- See [ARCHITECTURE.md](ARCHITECTURE.md) for a diagram and explanation of how the chart works.
-- See [CONTRIBUTING.md](CONTRIBUTING.md) if you want to help improve this chart.
-- For troubleshooting and advanced usage, see below.
+**Does it work in a service mesh?** The chart opts the pod out of Istio (sidecar and ambient) and Linkerd: a mesh proxy can't reach its control plane through the kill switch.
 
-# Troubleshooting
+**What are the resources called?** `<release>-transmission-wireguard`; `fullnameOverride` replaces that. `nameOverride` replaces the second part, and the `app.kubernetes.io/name` label in the Deployment's immutable selector, so set it at install only.
 
-- **Pod stuck in `Init` / sidecar crash-looping?**
-  - `kubectl logs <pod> -c wireguard` shows `[twg-firewall] FATAL: ...` when `wg0.conf` is refused (hostname endpoint, split tunnel, PreUp/PostUp/PreDown/PostDown hooks).
-  - Without a handshake, check that `wireguard.endpoints` matches the `Endpoint` line (the NetworkPolicy only allows that address).
-  - `FATAL: the route to the endpoint ... has MTU 9001`: add `MTU = 1420` to `[Interface]`.
-  - `FATAL: Address in ... changed since the pod started`: restart the pod (`kubectl rollout restart`).
-- **Sidecar restarting with `no handshake within 300s`?**
-  - The liveness probe says why where kubectl shows it: `kubectl describe pod <pod>` (the `wireguard` container's Last State message) and `kubectl logs <pod> -c wireguard --previous`. Every 5 minutes it also logs the peers' state, so the log shows when handshakes stopped.
-  - Each peer line has the last handshake and wg's byte counters:
-    - `no handshake yet, received 0 bytes, sent N bytes`: the server never answered. This is the provider side, not your network: a key the provider rotated or revoked, an expired account, or the server's WireGuard down (it can still answer ping). Check the key in your provider's account first, then that UDP to the endpoint isn't blocked on the way.
-    - `sent 0 bytes`: nothing left the pod. Check the `Endpoint` and that `wireguard.endpoints` matches it.
-    - A handshake that is old, with bytes received: the server answered and then stopped. The server is down, the key was revoked since, or UDP to it is blocked now. `wireguard.failover` switches to another server in that case.
-- **Pod never created?**
-  - `kubectl describe rs` shows `violates PodSecurity`: the namespace needs the `privileged` Pod Security level (see Requirements).
-  - `exceeded quota` or `must specify limits`: set the `resources` (and `transmission.initResources`) your ResourceQuota requires.
-- **Pod never Ready in a service mesh?**
-  - The chart opts the pod out of Istio (sidecar and ambient) and Linkerd. A mesh whose injection ignores those annotations and labels can't work through the kill switch.
-- **Web UI unreachable?**
-  - The source (ingress controller, kubelet) must be in `firewall.webAllowedCIDRs`, and in `networkPolicy.ingressFrom` if you set it.
-  - A LoadBalancer or NodePort that keeps the client's source address (some cloud load balancers do; the chart doesn't set `externalTrafficPolicy`) shows public client IPs, which the default private ranges don't cover. Add your clients' ranges, or use an ingress. The same applies to global (non-ULA) IPv6 pod CIDRs.
-  - HTTP 421 means the hostname isn't in `rpc-host-whitelist`.
-- **DNS failures?**
-  - Lookups go to `wireguard.dns.nameservers` through the tunnel. Use a resolver your VPN allows (usually the provider's).
-  - Cluster-internal names do not resolve from this pod, by design.
-- **Multiple replicas?**
-  - Not supported: `replicaCount` must be 1. Install another release, with its own storage and WireGuard config, for a second instance.
-- **`Permission denied` from `wg`, `wg-quick` or `readlink` in the sidecar log?**
-  - Recent Ubuntu hosts ship AppArmor profiles that attach to those binaries by path, and they apply inside containers too, privileged or not. Check with `sudo aa-status` on the node; disable the offending profile (`sudo aa-disable <profile>`) or use a node image without it.
-- **PVC/hostPath issues?**
-  - Check your storage class and access modes.
+## Uninstall
 
-# Advanced Usage
+```bash
+helm uninstall transmission -n transmission
+```
 
-- **Custom environment variables:**
-  - You can add extra environment variables for both containers under `transmission.env` and `wireguard.env` in `values.yaml`.
-- **Resource limits and scheduling:**
-  - Set `resources`, `nodeSelector`, `affinity`, and `tolerations` in `values.yaml` for advanced scheduling.
-- **Customizing settings.json:**
-  - See the Transmission docs linked above for all available settings. Set them in `transmission.settings`: changes made in the web UI are lost on restart (see [Transmission settings](#transmission-settings)).
+The PVCs are kept, so your downloads survive (`persistence.keepOnUninstall`). Delete them when you're done with the data: `kubectl -n transmission delete pvc -l app.kubernetes.io/instance=transmission`. A finished `helm test` pod (`<release>-transmission-wireguard-test`) is also left behind; delete it with `kubectl delete pod`.
+
+## More
+
+- [Upgrading](https://github.com/czprz/transmission-wireguard/blob/main/docs/upgrading.md): what changed in each release, and what to do before upgrading.
+- [Troubleshooting](https://github.com/czprz/transmission-wireguard/blob/main/docs/troubleshooting.md): a pod stuck in `Init`, a sidecar restarting, an unreachable web UI, ...
+- [Configuration](https://github.com/czprz/transmission-wireguard/blob/main/values.yaml): every option, documented in `values.yaml`; `values.schema.json` refuses unknown keys and bad values.
+- [Contributing](https://github.com/czprz/transmission-wireguard/blob/main/CONTRIBUTING.md) and [testing](https://github.com/czprz/transmission-wireguard/blob/main/docs/testing.md).
+
+## License
+
+[MIT](https://github.com/czprz/transmission-wireguard/blob/main/LICENSE)

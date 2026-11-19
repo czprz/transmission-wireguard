@@ -10,6 +10,7 @@
       "description": "One pod per WireGuard key"
     },
     "images": {
+      "description": "Container images; defaults are pinned by digest",
       "type": "object",
       "properties": {
         "wireguard": {
@@ -69,6 +70,7 @@
       "additionalProperties": false
     },
     "service": {
+      "description": "The Service for the web UI (peers only ever come through the VPN)",
       "type": "object",
       "properties": {
         "type": {
@@ -148,6 +150,7 @@
       "additionalProperties": false
     },
     "ingress": {
+      "description": "An Ingress for the web UI",
       "type": "object",
       "properties": {
         "enabled": {
@@ -272,6 +275,7 @@
       "additionalProperties": false
     },
     "issuer": {
+      "description": "A cert-manager Issuer or ClusterIssuer for the Ingress or HTTPRoute",
       "type": "object",
       "properties": {
         "enabled": {
@@ -299,6 +303,7 @@
       "additionalProperties": false
     },
     "persistence": {
+      "description": "Storage for /config and the downloads",
       "type": "object",
       "properties": {
         "enabled": {
@@ -398,6 +403,7 @@
       "additionalProperties": false
     },
     "transmission": {
+      "description": "Transmission: settings.json, web UI credentials, environment and resources",
       "type": "object",
       "properties": {
         "env": {
@@ -475,6 +481,7 @@
       "additionalProperties": false
     },
     "wireguard": {
+      "description": "The WireGuard sidecar: wg0.conf, DNS, port forwarding, failover and privileges",
       "type": "object",
       "properties": {
         "wg0Conf": {
@@ -627,6 +634,7 @@
       "additionalProperties": false
     },
     "firewall": {
+      "description": "The kill switch in the pod's network namespace",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -659,6 +667,7 @@
       }
     },
     "networkPolicy": {
+      "description": "The egress NetworkPolicy: the second layer, enforced by the CNI",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -680,6 +689,7 @@
       }
     },
     "tests": {
+      "description": "helm test: leak checks from inside the cluster",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -727,6 +737,7 @@
       }
     },
     "monitoring": {
+      "description": "PrometheusRule alerts",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -778,6 +789,7 @@
       "type": "object"
     },
     "probes": {
+      "description": "Probe timings",
       "type": "object",
       "properties": {
         "initialDelaySeconds": {

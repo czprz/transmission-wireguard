@@ -13,7 +13,7 @@ name=$(helm show chart "$pkg" | sed -n 's/^name: //p')
 
 failed=0
 extra=$(tar -tzf "$pkg" | sed "s|^$name/||" |
-  grep -vxE 'Chart\.yaml|values\.yaml|values\.schema\.json|(README|ARCHITECTURE|CHANGELOG)\.md|icon\.svg|templates/.+|files/.+' || true)
+  grep -vxE 'Chart\.yaml|values\.yaml|values\.schema\.json|(README|ARCHITECTURE|CHANGELOG)\.md|LICENSE|icon\.svg|templates/.+|files/.+' || true)
 if [[ -z $extra ]]; then
   echo "PASS  the package holds only the chart"
 else
