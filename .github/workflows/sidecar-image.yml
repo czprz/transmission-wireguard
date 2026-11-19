@@ -6,12 +6,6 @@ name: Sidecar image
 # provenance attestation.
 on:
   pull_request:
-    paths:
-      - image/wireguard/**
-      - files/**
-      - tests/e2e/docker/**
-      - tests/e2e/docker-test.sh
-      - .github/workflows/sidecar-image.yml
   push:
     branches:
       - main
@@ -35,8 +29,37 @@ env:
   TRIVY: aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
 
 jobs:
+  # Pull requests run the image's tests only when they touch what goes into
+  # the image or tests it; sidecar-image-passed reports either way, so it can be a
+  # required check (a workflow with a path filter would leave it pending).
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Relevant changes
+        id: diff
+        run: |
+          if [ "$EVENT" != pull_request ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          run=false
+          while read -r f; do
+            case $f in image/wireguard/*|files/*|tests/e2e/docker/*|tests/e2e/docker-test.sh|.github/workflows/sidecar-image.yml) run=true ;; esac
+          done < <(git diff --name-only "$BASE_SHA" HEAD)
+          echo "run=${run}" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
   test:
     name: leak test (${{ matrix.runner }}, ${{ matrix.sidecar }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -71,6 +94,7 @@ jobs:
         env:
           SIDECAR: ${{ matrix.sidecar }}
           SIDECAR_IMAGE: twg-wireguard:ci
+          REQUIRE_NATPMP: "1"
 
       # Fixable HIGH and CRITICAL vulnerabilities fail the run; a weekly
       # rebuild picks up Alpine's fixes.
@@ -84,6 +108,8 @@ jobs:
   # Calico (NetworkPolicy), as in helm-chart.yaml's e2e-kind.
   cluster:
     name: cluster (${{ matrix.cni }}, k8s ${{ matrix.k8s }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -209,9 +235,25 @@ jobs:
           version=$(docker run --rm --entrypoint wg "${REF}@${DIGEST}" --version 2>&1 | sed -nE 's/^wireguard-tools v([0-9]+\.[0-9]+\.[0-9]+)( .*)?$/\1/p' | head -n1)
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "could not read a version from ${REF}@${DIGEST} (got '${version}')" >&2; exit 1; }
           tag="${REF}:${version#v}-$(date -u +%Y%m%d)"
+          # The weekly rebuild exists for Alpine's fixes: with the same
+          # packages as the newest published version, it gets no version tag,
+          # so Renovate proposes nothing. (Changes to the image's own files
+          # come through a push to main, which is always tagged.)
+          if [ "$EVENT" = schedule ]; then
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:${REF#ghcr.io/}:pull" | jq -r .token)
+            latest=$(curl -fsS -H "Authorization: Bearer ${token}" "https://${REF%%/*}/v2/${REF#ghcr.io/}/tags/list" |
+              jq -r '.tags[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]{8}$' | sort -V | tail -n1 || true)
+            pkgs() { docker run --rm --entrypoint cat "$1" /lib/apk/db/installed 2>/dev/null | grep -E '^[PV]:' || true; }
+            if [ -n "$latest" ] && [ -n "$(pkgs "${REF}@${DIGEST}")" ] && [ "$(pkgs "${REF}@${DIGEST}")" = "$(pkgs "${REF}:${latest}")" ]; then
+              echo "Same packages as ${latest}: no new version tag."
+              echo "tags=${SHA_TAG} (packages as in ${latest})" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
           docker buildx imagetools create --tag "$tag" "${REF}@${DIGEST}"
           echo "tags=${tag},${SHA_TAG}" >> "$GITHUB_OUTPUT"
         env:
+          EVENT: ${{ github.event_name }}
           REF: ${{ steps.ref.outputs.image }}
           SHA_TAG: ${{ steps.ref.outputs.sha_tag }}
           DIGEST: ${{ steps.push.outputs.digest }}
@@ -241,3 +283,44 @@ jobs:
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
           TAGS: ${{ steps.tags.outputs.tags }}
+
+  # The one check to require: the tests passed, or nothing they cover changed.
+  sidecar-image-passed:
+    if: always()
+    needs: [changes, test, cluster]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every test job passed or had nothing to test
+        run: |
+          jq -e '.changes.result == "success" and (to_entries | all(.value.result == "success" or .value.result == "skipped"))' <<<"$NEEDS" >/dev/null ||
+            { echo "$NEEDS"; exit 1; }
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+
+  # A failed weekly run opens an issue, or adds to the open one, instead of
+  # only an email.
+  report:
+    if: failure() && github.event_name == 'schedule'
+    needs: [sidecar-image-passed, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the issue
+        run: |
+          title="Weekly run failed: ${WORKFLOW}"
+          run_url="${SERVER}/${REPO}/actions/runs/${RUN_ID}"
+          n=$(gh issue list -R "$REPO" --state open --search "in:title \"${title}\"" --json number,title -q ".[] | select(.title == \"${title}\") | .number" | head -n1)
+          if [ -n "$n" ]; then
+            gh issue comment "$n" -R "$REPO" --body "Failed again: ${run_url}"
+          else
+            gh issue create -R "$REPO" --title "$title" --body "The scheduled run failed: ${run_url}"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ github.workflow }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}

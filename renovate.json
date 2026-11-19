@@ -9,6 +9,11 @@
   },
   "packageRules": [
     {
+      "description": "Each kindest/node digest belongs to one kind release, and every leg's Kubernetes version is chosen (1.29 is the oldest the chart supports): node images, kind and kubectl are bumped together by hand",
+      "matchPackageNames": ["kindest/node"],
+      "enabled": false
+    },
+    {
       "description": "linuxserver tags are <version>-r<build>-ls<revision>; docker versioning would treat a new -rN-lsNNN suffix as incompatible and never offer an update",
       "matchPackageNames": ["lscr.io/linuxserver/transmission", "ghcr.io/linuxserver/wireguard"],
       "matchDepTypes": ["image"],
