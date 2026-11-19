@@ -33,8 +33,7 @@ images:
     # root and drops to PUID/PGID. minimal: the chart's own image
     # (image/transmission, ghcr.io/czprz/twg-transmission): Transmission runs
     # as PUID/PGID from the start, with no capabilities and a read-only root
-    # filesystem. Until the chart pins a published minimal image, set its
-    # tag or digest too.
+    # filesystem. Its default image is pinned by digest, like the others.
     flavor: linuxserver
 
 service:
@@ -100,7 +99,8 @@ issuer:
   name: ""
   email: ""
   server: https://acme-v02.api.letsencrypt.org/directory
-  # The Secret for the ACME account key (default: the issuer's name).
+  # The Secret for the ACME account key (default: the issuer's name, which
+  # for a ClusterIssuer includes the namespace).
   privateKeySecretName: ""
 
 persistence:
@@ -265,7 +265,8 @@ wireguard:
 
   # VPN port forwarding over NAT-PMP (Proton VPN, among others): the gateway
   # inside the tunnel, e.g. 10.2.0.1 for Proton. Empty: off. The sidecar's
-  # liveness probe renews the mapping every 30 s, opens that one port on wg0
+  # liveness probe renews the mapping (every probes.liveness.periodSeconds,
+  # at most 45 s: gateways keep it for 60), opens that one port on wg0
   # and sets it as Transmission's peer port (so announces carry it). Needs
   # the chart's sidecar image (the default; the linuxserver image lacks
   # natpmpc) and a VPN server that allows port forwarding.

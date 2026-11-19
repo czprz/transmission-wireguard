@@ -23,13 +23,15 @@ tests:
       - isNull:
           path: spec.template.spec.initContainers[1].securityContext.runAsUser
 
-  - it: needs a tag or digest for the minimal image
+  - it: pins the minimal image's default by digest
     template: templates/deployment.yaml
     set:
       images.transmission.flavor: minimal
     asserts:
-      - failedTemplate:
-          errorMessage: images.transmission.flavor=minimal needs images.transmission.tag or digest, since the chart doesn't pin a published ghcr.io/czprz/twg-transmission yet
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^ghcr\.io/czprz/twg-transmission:[0-9.]+-[0-9]+@sha256:[0-9a-f]{64}$'
+
 
   - it: names the minimal image by digest alone
     template: templates/deployment.yaml
@@ -39,10 +41,10 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: ghcr.io/czprz/twg-transmission@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          value: ghcr.io/czprz/twg-transmission:4.1.2-20261119@sha256:0000000000000000000000000000000000000000000000000000000000000000
       - equal:
           path: spec.template.spec.initContainers[1].image
-          value: ghcr.io/czprz/twg-transmission@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          value: ghcr.io/czprz/twg-transmission:4.1.2-20261119@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
   - it: runs the minimal image as PUID/PGID with no capabilities and a read-only root
     template: templates/deployment.yaml

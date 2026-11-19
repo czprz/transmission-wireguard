@@ -25,7 +25,7 @@ icon: https://raw.githubusercontent.com/czprz/transmission-wireguard/main/icon.s
 annotations:
   artifacthub.io/images: |
     - name: wireguard
-      image: ghcr.io/czprz/twg-wireguard:1.0.20260223-20261111@sha256:a3f0b14045a3ea0bac6e3507ce2a42b103a88b93db2b3cba57a5537e7f329648
+      image: ghcr.io/czprz/twg-wireguard:1.0.20260223-20261119@sha256:bb36c8f42b41d7fcc2937f5ff0e6278949a7677af73b7feb8613d1cea44e1752
     - name: transmission
       image: lscr.io/linuxserver/transmission:4.1.3-r0-ls365@sha256:55aaeedf9fc354d34136387e15ee0ba4679096f20398dd2875867e5cd5cf8be5
     - name: leak-test

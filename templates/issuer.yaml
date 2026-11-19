@@ -10,7 +10,8 @@ spec:
     server: {{ .Values.issuer.server | quote }}
     email: {{ required "issuer.email is required when issuer.enabled=true" .Values.issuer.email | quote }}
     privateKeySecretRef:
-      name: {{ default (printf "%s-issuer" (include "twg.fullname" .)) .Values.issuer.privateKeySecretName }}
+      {{- /* Named like the issuer: a ClusterIssuer's name has the namespace in it, so two never share an ACME account key. */}}
+      name: {{ default (include "twg.issuerName" .) .Values.issuer.privateKeySecretName }}
     solvers:
       - http01:
           {{- if and .Values.httpRoute.enabled (not .Values.ingress.enabled) }}

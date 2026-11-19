@@ -299,3 +299,63 @@ tests:
     asserts:
       - notMatchRegexRaw:
           pattern: HTTP 421
+
+  - it: gives each ClusterIssuer an ACME key Secret of its own
+    template: templates/issuer.yaml
+    release:
+      name: tx
+      namespace: media
+    set:
+      issuer.enabled: true
+      issuer.kind: ClusterIssuer
+      issuer.email: you@example.com
+      ingress.enabled: true
+      ingress.hosts: [{ host: tx.example.com }]
+    asserts:
+      - equal:
+          path: spec.acme.privateKeySecretRef.name
+          value: media-tx-transmission-wireguard-issuer
+
+  - it: mounts an emptyDir at /data without persistence, with the linuxserver image too
+    template: templates/deployment.yaml
+    set:
+      persistence.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: transmission-data, mountPath: /data }
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: transmission-data, emptyDir: {} }
+
+  - it: refuses a liveness period too long to keep a NAT-PMP mapping
+    template: templates/deployment.yaml
+    set:
+      wireguard.portForwarding.natpmpGateway: 10.2.0.1
+      probes.liveness.periodSeconds: 60
+    asserts:
+      - failedTemplate:
+          errorMessage: "probes.liveness.periodSeconds 60 is too long for port forwarding. The liveness probe renews the NAT-PMP mapping, which gateways keep for 60 s, so it must run at least every 45 s"
+
+  - it: refuses a namespaced Issuer for a Gateway in another namespace
+    template: templates/deployment.yaml
+    release:
+      namespace: transmission
+    set:
+      issuer.enabled: true
+      issuer.email: you@example.com
+      httpRoute.enabled: true
+      httpRoute.parentRefs: [{ name: public, namespace: gateway-system }]
+    asserts:
+      - failedTemplate:
+          errorMessage: "issuer.kind Issuer can't issue the certificate for Gateway public in namespace gateway-system. cert-manager looks for a namespaced Issuer in the Gateway's own namespace, so set issuer.kind to ClusterIssuer"
+
+  - it: accepts httpRoute.hostnames set to null
+    template: templates/configmap-settings.yaml
+    set:
+      httpRoute.enabled: true
+      httpRoute.parentRefs: [{ name: public }]
+      httpRoute.hostnames: null
+    asserts:
+      - isKind:
+          of: ConfigMap

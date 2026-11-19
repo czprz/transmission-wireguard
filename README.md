@@ -83,7 +83,7 @@ The threats each part covers, and the tests that prove it, are in [ARCHITECTURE.
 5. **Install** a released version (see [Releases](https://github.com/czprz/transmission-wireguard/releases)):
 
    ```bash
-   VERSION=1.1.0
+   VERSION=1.0.0 # x-release-please-version
    helm install transmission oci://ghcr.io/czprz/transmission-wireguard --version "$VERSION" \
      -n transmission -f my-values.yaml
    ```
@@ -162,7 +162,7 @@ wireguard:
     natpmpGateway: 10.2.0.1   # the gateway inside the tunnel
 ```
 
-The sidecar's liveness probe renews the mapping every 30 seconds, opens just that port on `wg0`, and sets it as Transmission's peer port over RPC on loopback, so announces carry it. A gateway that doesn't answer is logged and retried; downloads still work without a forwarded port. A gateway that offers the web UI's port is refused. NAT-PMP is IPv4 only and needs the chart's sidecar image (the default).
+The sidecar's liveness probe renews the mapping every `probes.liveness.periodSeconds` (30; at most 45, since gateways keep a mapping for 60 seconds), opens just that port on `wg0`, and sets it as Transmission's peer port over RPC on loopback, so announces carry it. A gateway that doesn't answer is logged and retried; downloads still work without a forwarded port. A gateway that offers the web UI's port is refused. NAT-PMP is IPv4 only and needs the chart's sidecar image (the default).
 
 **A fixed port** from your provider (AirVPN, for example): set `transmission.settings.peer-port` to it. The kill switch accepts peers on that port through `wg0` only.
 
@@ -223,7 +223,7 @@ httpRoute:
     - transmission.example.com
 ```
 
-TLS is configured on the Gateway's listener. `httpRoute.matches` (default: every path) and `httpRoute.filters` shape the route's one rule. With `issuer.enabled` and no Ingress, the issuer solves HTTP-01 challenges with a route on the same Gateways; that needs cert-manager's Gateway API support turned on, and the `cert-manager.io/issuer` annotation on the Gateway.
+TLS is configured on the Gateway's listener. `httpRoute.matches` (default: every path) and `httpRoute.filters` shape the route's one rule. With `issuer.enabled` and no Ingress, the issuer solves HTTP-01 challenges with a route on the same Gateways; that needs cert-manager's Gateway API support turned on, and the `cert-manager.io/issuer` (or `cluster-issuer`) annotation on the Gateway. A Gateway in another namespace needs `issuer.kind: ClusterIssuer`: cert-manager looks for a namespaced Issuer in the Gateway's own namespace.
 
 ### LoadBalancer or NodePort
 
@@ -284,7 +284,7 @@ transmission:
 ## Images
 
 - **Sidecar:** `ghcr.io/czprz/twg-wireguard` (from [`image/wireguard`](https://github.com/czprz/transmission-wireguard/tree/main/image/wireguard)): `wg-quick`, iptables/nftables, iproute2, `resolvconf` and `natpmpc`, no init system, package manager or busybox network clients.
-- **Transmission:** `lscr.io/linuxserver/transmission` by default. With `images.transmission.flavor: minimal`, the chart's own non-root image (`ghcr.io/czprz/twg-transmission`, from [`image/transmission`](https://github.com/czprz/transmission-wireguard/tree/main/image/transmission)) runs Transmission with no capabilities and a read-only root filesystem; until the chart pins a published digest, set its `tag` or `digest`.
+- **Transmission:** `lscr.io/linuxserver/transmission` by default. With `images.transmission.flavor: minimal`, the chart's own non-root image (`ghcr.io/czprz/twg-transmission`, from [`image/transmission`](https://github.com/czprz/transmission-wireguard/tree/main/image/transmission)) runs Transmission with no capabilities and a read-only root filesystem. Its default is pinned by digest, like the others.
 
 Default images are pinned by digest; overriding `repository` or `tag` drops the default digest, so set `digest` too. Both of the chart's images are scanned on every change, rebuilt weekly for Alpine's fixes, signed with cosign and have a build provenance attestation. [docs/images.md](https://github.com/czprz/transmission-wireguard/blob/main/docs/images.md) has the details: keeping the linuxserver sidecar, the minimal image's ownership handling, and verification commands.
 
@@ -293,7 +293,7 @@ Default images are pinned by digest; overriding `repository` or `tag` drops the 
 Releases from 1.0.0 on are signed with Sigstore (keyless, with the identity of the release workflow on main) and carry a build provenance attestation; the package is also attached to its [GitHub release](https://github.com/czprz/transmission-wireguard/releases), whose notes give its digest. With cosign 2.6 or later (older versions can't read the signature's format and report "no signatures found"):
 
 ```bash
-VERSION=1.1.0
+VERSION=1.0.0 # x-release-please-version
 cosign verify ghcr.io/czprz/transmission-wireguard:$VERSION \
   --certificate-identity-regexp '^https://github\.com/czprz/transmission-wireguard/\.github/workflows/helm-release\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
