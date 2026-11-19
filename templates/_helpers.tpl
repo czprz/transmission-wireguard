@@ -80,8 +80,8 @@ always wins, and overriding repository or tag drops the default digest.
 {{- end -}}
 
 {{- define "twg.wireguardImage" -}}
-{{- $tag := default "1.0.20260223-20261111" .Values.images.wireguard.tag -}}
-{{- $digest := default "sha256:a3f0b14045a3ea0bac6e3507ce2a42b103a88b93db2b3cba57a5537e7f329648" .Values.images.wireguard.digest -}}
+{{- $tag := default "1.0.20260223-20261119" .Values.images.wireguard.tag -}}
+{{- $digest := default "sha256:bb36c8f42b41d7fcc2937f5ff0e6278949a7677af73b7feb8613d1cea44e1752" .Values.images.wireguard.digest -}}
 {{- include "twg.image" (dict "img" .Values.images.wireguard "repo" "ghcr.io/czprz/twg-wireguard" "tag" $tag "digest" $digest) -}}
 {{- end -}}
 
@@ -94,11 +94,11 @@ always wins, and overriding repository or tag drops the default digest.
 {{/* The Transmission image of the chosen flavor. */}}
 {{- define "twg.transmissionImageRef" -}}
 {{- if eq (include "twg.transmissionFlavor" .) "minimal" -}}
+{{- /* The minimal image's default, on one line (Renovate's twg-transmission
+manager reads it). Through $img: tests/e2e/docker/helpers.bash finds the
+linuxserver default by ".Values.images.transmission "repo"". */ -}}
 {{- $img := .Values.images.transmission -}}
-{{- if not (or $img.tag $img.digest) -}}
-{{- fail "images.transmission.flavor=minimal needs images.transmission.tag or digest, since the chart doesn't pin a published ghcr.io/czprz/twg-transmission yet" -}}
-{{- end -}}
-{{- include "twg.image" (dict "img" $img "repo" "ghcr.io/czprz/twg-transmission" "tag" "" "digest" "") -}}
+{{- include "twg.image" (dict "img" $img "repo" "ghcr.io/czprz/twg-transmission" "tag" "4.1.2-20261119" "digest" "sha256:a45b186c448a88cdde3afd7275ec82a25c601bf5b8303d81d8512d4b9c48f87f") -}}
 {{- else -}}
 {{- include "twg.transmissionImage" . -}}
 {{- end -}}
@@ -219,6 +219,16 @@ true
 {{- define "twg.validate" -}}
 {{- if and .Values.ingress.enabled (not .Values.ingress.hosts) -}}
 {{- fail "ingress.enabled needs ingress.hosts. An Ingress without rules routes nothing" -}}
+{{- end -}}
+{{- if and .Values.wireguard.portForwarding.natpmpGateway (gt (int .Values.probes.liveness.periodSeconds) 45) -}}
+{{- fail (printf "probes.liveness.periodSeconds %v is too long for port forwarding. The liveness probe renews the NAT-PMP mapping, which gateways keep for 60 s, so it must run at least every 45 s" .Values.probes.liveness.periodSeconds) -}}
+{{- end -}}
+{{- if and .Values.issuer.enabled .Values.httpRoute.enabled (not .Values.ingress.enabled) (ne (default "Issuer" .Values.issuer.kind) "ClusterIssuer") -}}
+{{- range .Values.httpRoute.parentRefs -}}
+{{- if and .namespace (ne .namespace $.Release.Namespace) -}}
+{{- fail (printf "issuer.kind Issuer can't issue the certificate for Gateway %s in namespace %s. cert-manager looks for a namespaced Issuer in the Gateway's own namespace, so set issuer.kind to ClusterIssuer" .name .namespace) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if and .Values.issuer.enabled (not .Values.ingress.enabled) (not .Values.httpRoute.enabled) -}}
 {{- fail "issuer.enabled needs ingress.enabled or httpRoute.enabled. Its HTTP-01 solver answers challenges through one of them" -}}
@@ -516,12 +526,13 @@ already in podSecurityContext win.
 {{- end -}}
 
 {{/*
-"true" when the minimal image needs an emptyDir at the data path: its root
-is read-only, so without persistence it has no /data, unless
-transmission.extraVolumeMounts mounts something there.
+"true" when nothing else is mounted at the data path: without persistence
+it is an emptyDir, so downloads survive container restarts (not the pod)
+and never land in the container's own layer (read-only with the minimal
+image).
 */}}
 {{- define "twg.dataEmptyDir" -}}
-{{- if and (eq (include "twg.transmissionFlavor" .) "minimal") (not .Values.persistence.enabled) (not .Values.persistence.downloads.enabled) (not (include "twg.dataPathTaken" .)) -}}
+{{- if and (not .Values.persistence.enabled) (not .Values.persistence.downloads.enabled) (not (include "twg.dataPathTaken" .)) -}}
 true
 {{- end -}}
 {{- end -}}
@@ -559,7 +570,7 @@ persistence.mounts.data.mountPath puts it elsewhere.
 {{- end -}}
 {{- end -}}
 {{- if .Values.httpRoute.enabled -}}
-{{- $hosts = concat $hosts .Values.httpRoute.hostnames -}}
+{{- $hosts = concat $hosts (.Values.httpRoute.hostnames | default list) -}}
 {{- end -}}
 {{- $_ := set $settings "rpc-host-whitelist" (without ($hosts | uniq) "" | join ",") -}}
 {{- end -}}

@@ -300,11 +300,54 @@ jobs:
           path: ${{ runner.temp }}/junit
           if-no-files-found: ignore
 
+  # What helm-main.yml's release job needs, checked before a merge rather
+  # than after it: the config (release-please reads it from main, so the
+  # dry run alone can't test a PR's), the manifest's version against
+  # Chart.yaml, and release-please itself against the repository.
+  release-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+
+      - name: The release config
+        run: |
+          jq -e '.["release-type"] == "helm" and (.packages["."] | type == "object")' release-please-config.json >/dev/null ||
+            { echo "release-please-config.json: not a helm package at ." >&2; exit 1; }
+          manifest=$(jq -r '.["."]' .release-please-manifest.json)
+          chart=$(sed -n 's/^version: //p' Chart.yaml)
+          [ "$manifest" = "$chart" ] ||
+            { echo ".release-please-manifest.json says ${manifest}, Chart.yaml ${chart}: set neither by hand" >&2; exit 1; }
+          for f in $(jq -r '.packages["."]["extra-files"][]? | if type == "object" then .path else . end' release-please-config.json); do
+            grep -q 'x-release-please-version' "$f" || { echo "$f has no x-release-please-version marker" >&2; exit 1; }
+          done
+
+      # Reads main's config and commits; pinned, as it runs with a token.
+      - name: release-please, dry run
+        run: |
+          npx -y release-please@17.11.2 release-pr --dry-run --repo-url "$GITHUB_REPOSITORY" --target-branch main \
+            --config-file release-please-config.json --manifest-file .release-please-manifest.json --token "$GH_TOKEN"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Release credentials
+        run: |
+          [ -n "$CLIENT_ID" ] ||
+            echo "::warning::The Actions variable RELEASE_APP_CLIENT_ID is not set, so releases can't run (CONTRIBUTING.md, Release credentials)."
+        env:
+          CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+
   # Not a test: the merge gate. Require this one job in branch protection,
   # because GitHub counts a skipped job (e2e after a failed verify) as passed.
   ci-passed:
     if: always()
-    needs: [verify, e2e-docker, e2e-kind]
+    needs: [verify, release-check, e2e-docker, e2e-kind]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

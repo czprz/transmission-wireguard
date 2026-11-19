@@ -33,10 +33,9 @@ The default Transmission image is `lscr.io/linuxserver/transmission`. Its s6 ini
 ```yaml
 images:
   transmission:
-    flavor: minimal
-    digest: sha256:<a published digest>   # or tag
+    flavor: minimal   # the pinned default; images.transmission.digest/tag override it
 ```
 
 The chart's init container still runs as root, with only `CHOWN`. It writes `settings.json` and gives `PUID`/`PGID` the `/config` and `/data` mount points, plus the download, incomplete and watch directories `settings.json` names under them. It never changes ownership recursively, but it does change those directories' owner, including on a `hostPath` volume, so point `hostPath` at a tree meant for `PUID`/`PGID`. Volumes from `extraVolumeMounts` (an NFS share, say) are left alone: they must already be writable by `PUID`/`PGID`, since Transmission can't fix their ownership as a non-root user. Without persistence, `/data` is an `emptyDir`, because the root filesystem is read-only. Moving an existing install from the linuxserver image works if your files already belong to `PUID`/`PGID` (the linuxserver image keeps them that way). The minimal image follows Alpine's Transmission package, so its version can trail the linuxserver image's, which sets `appVersion`.
 
-Every change scans it with Trivy and runs the cluster leak test with it as the Transmission container. Merges to main and a weekly rebuild publish it to `ghcr.io/czprz/twg-transmission` for amd64 and arm64, signed with cosign and with a build provenance attestation (verify it like the sidecar image, with `transmission-image.yml` in the identity regex). The chart doesn't pin it yet, so set its tag or digest.
+Every change scans it with Trivy and runs the cluster leak test with it as the Transmission container. Merges to main and a weekly rebuild publish it to `ghcr.io/czprz/twg-transmission` for amd64 and arm64, signed with cosign and with a build provenance attestation (verify it like the sidecar image, with `transmission-image.yml` in the identity regex). The chart pins its default by digest; `images.transmission.digest` or `tag` override it.

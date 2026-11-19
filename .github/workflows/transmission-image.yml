@@ -196,7 +196,9 @@ jobs:
           # (...)", on stderr), so a warning printed by docker can't become the tag.
           version=$(docker run --rm "${REF}@${DIGEST}" --version 2>&1 | sed -nE 's/^transmission-daemon ([0-9]+\.[0-9]+\.[0-9]+)( .*)?$/\1/p' | head -n1)
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "could not read a version from ${REF}@${DIGEST} (got '${version}')" >&2; exit 1; }
-          tag="${REF}:${version#v}-$(date -u +%Y%m%d)"
+          # Date and time: a second build on the same day gets a tag of its
+          # own instead of taking over the first one's.
+          tag="${REF}:${version#v}-$(date -u +%Y%m%d%H%M)"
           # The weekly rebuild exists for Alpine's fixes: with the same
           # packages as the newest published version, it gets no version tag,
           # so Renovate proposes nothing. (Changes to the image's own files
@@ -204,7 +206,7 @@ jobs:
           if [ "$EVENT" = schedule ]; then
             token=$(curl -fsS "https://ghcr.io/token?scope=repository:${REF#ghcr.io/}:pull" | jq -r .token)
             latest=$(curl -fsS -H "Authorization: Bearer ${token}" "https://${REF%%/*}/v2/${REF#ghcr.io/}/tags/list" |
-              jq -r '.tags[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]{8}$' | sort -V | tail -n1 || true)
+              jq -r '.tags[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]{8}([0-9]{4})?$' | sort -V | tail -n1 || true)
             pkgs() { docker run --rm --entrypoint cat "$1" /lib/apk/db/installed 2>/dev/null | grep -E '^[PV]:' || true; }
             if [ -n "$latest" ] && [ -n "$(pkgs "${REF}@${DIGEST}")" ] && [ "$(pkgs "${REF}@${DIGEST}")" = "$(pkgs "${REF}:${latest}")" ]; then
               echo "Same packages as ${latest}: no new version tag."

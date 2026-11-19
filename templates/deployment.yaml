@@ -377,10 +377,10 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- end }}
         {{- if include "twg.dataEmptyDir" . }}
         - name: transmission-data
           emptyDir: {}
-        {{- end }}
         {{- end }}
         {{- if .Values.wireguard.portForwarding.natpmpGateway }}
         - name: forward

@@ -25,10 +25,10 @@
       "groupName": "Transmission"
     },
     {
-      "description": "The chart's own sidecar image: tags are <wireguard-tools version>-<build date>, and its weekly rebuild (Alpine's fixes) comes from this repository's CI, so it need not wait 14 days. Also referenced from Chart.yaml; one PR for both",
-      "matchPackageNames": ["ghcr.io/czprz/twg-wireguard"],
+      "description": "The chart's own images: tags are <tool version>-<build date and time>, and its weekly rebuild (Alpine's fixes) comes from this repository's CI, so it need not wait 14 days. Also referenced from Chart.yaml; one PR for both",
+      "matchPackageNames": ["ghcr.io/czprz/twg-wireguard", "ghcr.io/czprz/twg-transmission"],
       "matchDepTypes": ["image"],
-      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-(?<build>\\d{8})$",
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-(?<build>\\d{8}(\\d{4})?)$",
       "minimumReleaseAge": "0 days",
       "groupName": "WireGuard"
     }
@@ -52,6 +52,17 @@
         "\\$tag := default \"(?<currentValue>[^\"]+)\" \\.Values\\.images\\.wireguard\\.tag -}}\\n\\{\\{- \\$digest := default \"(?<currentDigest>sha256:[a-f0-9]+)\" \\.Values\\.images\\.wireguard\\.digest"
       ],
       "depNameTemplate": "ghcr.io/czprz/twg-wireguard",
+      "datasourceTemplate": "docker",
+      "depTypeTemplate": "image"
+    },
+    {
+      "customType": "regex",
+      "description": "The minimal Transmission image's default (images.transmission.flavor: minimal)",
+      "managerFilePatterns": ["/^templates/_helpers\\.tpl$/"],
+      "matchStrings": [
+        "\"repo\" \"ghcr\\.io/czprz/twg-transmission\" \"tag\" \"(?<currentValue>[^\"]+)\" \"digest\" \"(?<currentDigest>sha256:[a-f0-9]+)\""
+      ],
+      "depNameTemplate": "ghcr.io/czprz/twg-transmission",
       "datasourceTemplate": "docker",
       "depTypeTemplate": "image"
     },

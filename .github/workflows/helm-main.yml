@@ -8,7 +8,9 @@ name: Helm Main
 permissions:
   contents: read
 
-# One release at a time: back-to-back merges queue instead of racing.
+# One run at a time, never two racing in release-please. GitHub keeps one
+# waiting run: a merge while one is waiting replaces it, and the newer run
+# covers both commits (release-please tags a merged release PR either way).
 concurrency:
   group: helm-main
   cancel-in-progress: false
