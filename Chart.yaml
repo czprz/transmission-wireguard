@@ -23,14 +23,6 @@ maintainers:
     url: https://github.com/czprz
 icon: https://raw.githubusercontent.com/czprz/transmission-wireguard/main/icon.svg
 annotations:
-  artifacthub.io/license: MIT
-  artifacthub.io/links: |
-    - name: Source
-      url: https://github.com/czprz/transmission-wireguard
-    - name: Security policy
-      url: https://github.com/czprz/transmission-wireguard/blob/main/SECURITY.md
-    - name: Upgrading
-      url: https://github.com/czprz/transmission-wireguard/blob/main/docs/upgrading.md
   artifacthub.io/images: |
     - name: wireguard
       image: ghcr.io/czprz/twg-wireguard:1.0.20260223-20261111@sha256:a3f0b14045a3ea0bac6e3507ce2a42b103a88b93db2b3cba57a5537e7f329648
