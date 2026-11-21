@@ -279,6 +279,7 @@ jobs:
       # The Gateway API CRDs, so the HTTPRoute is validated as well.
       - name: Install Gateway API CRDs
         run: |
+          # renovate: datasource=github-releases depName=kubernetes-sigs/gateway-api (its checksum below by hand)
           curl -sSLo gateway-api.yaml https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/standard-install.yaml
           echo "6a4029e661446d64add866a00ecdc40c14219b68777ab614c5cdaac0adb481f1  gateway-api.yaml" | sha256sum -c -
           kubectl apply --server-side -f gateway-api.yaml

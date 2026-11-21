@@ -31,6 +31,23 @@
       "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-(?<build>\\d{8}(\\d{4})?)$",
       "minimumReleaseAge": "0 days",
       "groupName": "WireGuard"
+    },
+    {
+      "description": "Helm 3.14 is the oldest version the chart supports: its CI legs stay on it",
+      "matchDepNames": ["helm/helm"],
+      "matchCurrentVersion": "v3.14.4",
+      "enabled": false
+    },
+    {
+      "description": "The Helm 3 and Helm 4 legs each stay on their major version",
+      "matchDepNames": ["helm/helm"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "binfmt tags are qemu-vX.Y.Z",
+      "matchPackageNames": ["docker.io/tonistiigi/binfmt"],
+      "versioning": "regex:^qemu-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
     }
   ],
   "customManagers": [
@@ -105,6 +122,40 @@
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver",
       "depTypeTemplate": "appVersion"
+    },
+    {
+      "customType": "regex",
+      "description": "A '# renovate: datasource=... depName=...' comment above a line: that line's first version (devcontainer tools, Calico, Cilium, Gateway API)",
+      "managerFilePatterns": ["/^\\.devcontainer/post-create\\.sh$/", "/^tests/e2e/kind-cluster\\.sh$/", "/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( extractVersion=(?<extractVersion>\\S+))?[^\\n]*\\n[^\\n]*?(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"
+      ],
+      "extractVersionTemplate": "{{#if extractVersion}}{{{extractVersion}}}{{else}}^(?<version>.+)${{/if}}"
+    },
+    {
+      "customType": "regex",
+      "description": "Helm in the CI legs' matrices",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["\\n\\s+helm: (?<currentValue>v\\d+\\.\\d+\\.\\d+)\\n"],
+      "depNameTemplate": "helm/helm",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "The Go that builds kind in CI",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["go-version: \"(?<currentValue>\\d+\\.\\d+)\""],
+      "depNameTemplate": "go",
+      "datasourceTemplate": "golang-version",
+      "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "The QEMU (binfmt) image in the image workflows' signing jobs",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["(?<depName>docker\\.io/tonistiigi/binfmt):(?<currentValue>qemu-v[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
+      "datasourceTemplate": "docker",
+      "depTypeTemplate": "image"
     }
   ]
 }
