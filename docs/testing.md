@@ -8,9 +8,9 @@ CI tests every change, and every week, on these combinations (`.github/workflows
 | 1.32 | 3.22 | Calico | |
 | 1.34 | 4.3 | Cilium | |
 | 1.37 | 3.22 | kindnet | upgrade from the last release |
-| 1.37 | 4.3 | kindnet | fresh install, upgrade from the last release, the privileged sidecar, and sysctls set for the pod |
+| 1.37 | 4.3 | kindnet | fresh install, upgrade from the last release, the privileged sidecar, sysctls set for the pod, and on arm64 |
 
-The kill switch itself is also tested on Docker: on amd64 with a privileged and an unprivileged sidecar, and on arm64.
+The kill switch itself is also tested on Docker: on amd64 with a privileged and an unprivileged sidecar, and on arm64. The minimal Transmission image runs the cluster suite on amd64 and arm64.
 
 ## Running the tests
 
@@ -21,7 +21,7 @@ The kill switch itself is also tested on Docker: on amd64 with a privileged and 
 - `make e2e-upgrade [CLUSTER=k3d]`: installs the last release, upgrades it to this chart and runs the cluster suite on the upgraded release.
 - `make mutation`: turns off each firewall rule in turn and runs the Docker suite, which must fail every time. The few rules in `tests/e2e/mutation-baseline.txt` are exempt, each with its reason: another rule already covers every packet they match.
 
-Each check is one named bats test. A suite builds its environment once; every test leaves it healthy, so one failure does not hide the next. `FILTER='<name>'` runs only the matching checks, after a fresh setup, for example `make e2e-docker FILTER='UDP leaves'`. CI shows each failed check by name in the run's summary and keeps the JUnit report. [ARCHITECTURE.md](../ARCHITECTURE.md#threats-and-the-tests-that-cover-them) maps each threat to the tests that cover it.
+Each check is one named bats test. In CI a skipped check fails the job unless its reason is expected for that run (`tests/e2e/junit-check.sh`): no upgrade, no IPv6 on an IPv4-only cluster, the other sidecar mode's router advertisement check, or Transmission sending no shutdown announce, a path a later check forces. A suite builds its environment once; every test leaves it healthy, so one failure does not hide the next. `FILTER='<name>'` runs only the matching checks, after a fresh setup, for example `make e2e-docker FILTER='UDP leaves'`. CI shows each failed check by name in the run's summary and keeps the JUnit report. [ARCHITECTURE.md](../ARCHITECTURE.md#threats-and-the-tests-that-cover-them) maps each threat to the tests that cover it.
 
 CI runs on every pull request, on pushes to `dev` and `main`, and weekly:
 - **The Docker suite:** on amd64 and arm64, and once with the sidecar unprivileged (`make e2e-docker SIDECAR=unprivileged`).

@@ -61,15 +61,26 @@ jobs:
   # Calico (NetworkPolicy), as in helm-chart.yaml's e2e-kind. The suite
   # covers the web UI, helm test (capabilities), and a clean stop on SIGTERM.
   cluster:
-    name: cluster (${{ matrix.cni }}, k8s ${{ matrix.k8s }})
+    name: cluster (${{ matrix.cni }}, k8s ${{ matrix.k8s }}${{ matrix.arch && format(', {0}', matrix.arch) || '' }})
     needs: changes
     if: needs.changes.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
+          # arm64: the minimal image on an arm64 runner, dual-stack.
+          - cni: kindnet
+            ipv6: 1
+            k8s: "1.37"
+            kind: v0.33.0
+            node: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+            kubectl: v1.37.0
+            kubectl_sha256: 922df28df248cc00a9e025f947704f1d1482de64ece54cfe57e61f19eaf1eef3
+            helm: v4.3.1
+            runner: ubuntu-24.04-arm
+            arch: arm64
           - cni: kindnet
             ipv6: 1
             k8s: "1.37"
@@ -114,10 +125,17 @@ jobs:
 
       - name: Install kubectl
         run: |
-          curl -sSLo kubectl "https://dl.k8s.io/release/${{ matrix.kubectl }}/bin/linux/amd64/kubectl"
+          curl -sSLo kubectl "https://dl.k8s.io/release/${{ matrix.kubectl }}/bin/linux/${{ matrix.arch || 'amd64' }}/kubectl"
           echo "${{ matrix.kubectl_sha256 }}  kubectl" | sha256sum -c -
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
           rm kubectl
+
+      # A pinned Go for go install kind, on every runner (amd64 and arm64).
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27"
+          cache: false
 
       - name: Create kind cluster and load the image
         run: |
@@ -134,6 +152,13 @@ jobs:
         env:
           IPV6: ${{ matrix.ipv6 }}
           TRANSMISSION_IMAGE: twg-transmission:ci
+          JUNIT_DIR: ${{ runner.temp }}/junit
+
+      # A skipped check proved nothing: only the run's expected skips pass.
+      - name: Unexpected skips
+        run: tests/e2e/junit-check.sh "$RUNNER_TEMP/junit"
+        env:
+          IPV6: ${{ matrix.ipv6 }}
 
   publish:
     needs: [cluster]
