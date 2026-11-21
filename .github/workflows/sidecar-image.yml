@@ -95,6 +95,13 @@ jobs:
           SIDECAR: ${{ matrix.sidecar }}
           SIDECAR_IMAGE: twg-wireguard:ci
           REQUIRE_NATPMP: "1"
+          JUNIT_DIR: ${{ runner.temp }}/junit
+
+      # A skipped check proved nothing: only the run's expected skips pass.
+      - name: Unexpected skips
+        run: tests/e2e/junit-check.sh "$RUNNER_TEMP/junit"
+        env:
+          IPV6: "1"
 
       # Fixable HIGH and CRITICAL vulnerabilities fail the run; a weekly
       # rebuild picks up Alpine's fixes.
@@ -172,6 +179,13 @@ jobs:
         env:
           IPV6: ${{ matrix.ipv6 }}
           SIDECAR_IMAGE: twg-wireguard:ci
+          JUNIT_DIR: ${{ runner.temp }}/junit
+
+      # A skipped check proved nothing: only the run's expected skips pass.
+      - name: Unexpected skips
+        run: tests/e2e/junit-check.sh "$RUNNER_TEMP/junit"
+        env:
+          IPV6: ${{ matrix.ipv6 }}
 
   publish:
     needs: [test, cluster]
