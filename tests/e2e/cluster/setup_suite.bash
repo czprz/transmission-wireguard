@@ -20,12 +20,14 @@ setup_suite() {
   touch "$BATS_SUITE_TMPDIR/our-cluster"
   cleanup true
   # Pull up front with retries: registries rate-limit bursts of pulls.
-  local image attempt
+  local image attempt wait
   for image in "$WG_IMAGE" "$CANARY_IMAGE"; do
-    for attempt in 1 2 3 4 5; do
+    # 10, 20, 40, 80, 120 s: a rate limit (toomanyrequests) can last minutes.
+    for attempt in 1 2 3 4 5 6; do
       docker pull -q "$image" >/dev/null && break
-      ((attempt < 5)) || fail "cannot pull $image"
-      sleep $((attempt * 5)) # back off before the registry's next try
+      ((attempt < 6)) || fail "cannot pull $image"
+      wait=$((10 << (attempt - 1)))
+      sleep $((wait > 120 ? 120 : wait))
     done
   done
   local server_key client_pub

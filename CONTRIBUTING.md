@@ -26,6 +26,7 @@ Thank you for considering contributing! Here are some guidelines to help you get
 - Pins: every image, action and download is pinned, by digest or checksum where there is one.
   - Renovate tracks the images, the Helm and Go versions in CI, the QEMU builder image, and every line under a `# renovate: datasource=... depName=...` comment: the devcontainer's ct, kubeconform, yq and helm-unittest (checked against their releases' checksums, so a bump needs nothing else), Calico, Cilium and the Gateway API CRDs. Their checksums and image digests in `tests/e2e/kind-cluster.sh` and `helm-chart.yaml` are updated by hand, so those PRs fail until they are.
   - Bumped by hand, on purpose: each kind leg's `kind`, `kindest/node` digest and `kubectl` with its checksum together (a node digest belongs to one kind release, and every leg's Kubernetes version is chosen), and Helm 3.14.4, the oldest version the chart supports. Dependabot bumps the actions.
+- Workflows: `tests/workflow-test.sh` checks that a reusable workflow's jobs ask for no more permissions than its callers grant (otherwise GitHub doesn't start the caller at all). A job in `helm-chart.yaml` that needs a new permission needs it in `helm-main.yml`'s `verify` call too.
 - CI: the `ci-passed` job passes only when every test job passed; make it the required check (a skipped job counts as passed).
 
 ## Code of Conduct
