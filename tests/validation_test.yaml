@@ -48,7 +48,7 @@ tests:
       images.wireguard.tag: 1.0.20260223-r0-ls126
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[2].image
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].image
           value: ghcr.io/linuxserver/wireguard:1.0.20260223-r0-ls126
 
   - template: templates/deployment.yaml
@@ -399,7 +399,7 @@ tests:
         Endpoint = 203.0.113.10:51820
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[2].env
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].env
           content: { name: TWG_WG_FWMARK, value: "4026531839" }
 
   - template: templates/deployment.yaml

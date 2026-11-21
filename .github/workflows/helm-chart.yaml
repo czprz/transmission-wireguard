@@ -173,7 +173,7 @@ jobs:
             kubectl: v1.34.11
             kubectl_sha256: 8efbb9435132a190920eb65a47a8c1ecf755ad85ab57a600c9bedbab460bb7a8
             helm: v4.3.1
-          # wireguard.unprivileged: the sidecar without privileged, dual-stack
+          # wireguard.unprivileged.sysctls=pod: nothing privileged, dual-stack
           # so the router advertisement sysctls are set too.
           - cni: kindnet
             ipv6: 1
@@ -184,7 +184,8 @@ jobs:
             kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
             helm: v4.3.1
             sidecar: unprivileged
-          # The same, with the sysctls from an init container (no kubelet change).
+          # The privileged sidecar of 1.0 (wireguard.unprivileged.enabled=false);
+          # every other leg runs the default, sysctls from an init container.
           - cni: kindnet
             ipv6: 1
             k8s: "1.37"
@@ -193,7 +194,7 @@ jobs:
             kubectl: v1.37.0
             kubectl_sha256: 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f
             helm: v4.3.1
-            sidecar: unprivileged-init
+            sidecar: privileged
           # Upgrades from the last release tag, as its users would run them.
           - cni: kindnet
             ipv6: 1

@@ -18,7 +18,7 @@ tests:
     template: templates/deployment.yaml
     asserts:
       - notContains:
-          path: spec.template.spec.initContainers[2].env
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].env
           any: true
           content: { name: TWG_FAILOVER_PEERS }
 
@@ -43,12 +43,12 @@ tests:
           port: 1637
     asserts:
       - contains:
-          path: spec.template.spec.initContainers[2].env
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].env
           content:
             name: TWG_FAILOVER_PEERS
             value: "kEcjsuwvTe+shMpTw1JzQXLXQ8HFsKLsJ+dyvN3fYlQ=@198.51.100.20:51820 xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=@[2001:db8::20]:1637"
       - contains:
-          path: spec.template.spec.initContainers[2].env
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].env
           content: { name: TWG_FAILOVER_AFTER, value: "200" }
 
   - it: lets the NetworkPolicy reach the failover peers too
