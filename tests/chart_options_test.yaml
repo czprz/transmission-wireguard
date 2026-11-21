@@ -257,13 +257,13 @@ tests:
       probes.startup.failureThreshold: 150
     asserts:
       - equal:
-          path: spec.template.spec.initContainers[2].livenessProbe.periodSeconds
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].livenessProbe.periodSeconds
           value: 60
       - equal:
-          path: spec.template.spec.initContainers[2].livenessProbe.failureThreshold
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].livenessProbe.failureThreshold
           value: 5
       - equal:
-          path: spec.template.spec.initContainers[2].startupProbe.failureThreshold
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].startupProbe.failureThreshold
           value: 150
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.periodSeconds
@@ -289,7 +289,7 @@ tests:
       images.wireguard.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     asserts:
       - matchRegex:
-          path: spec.template.spec.initContainers[2].image
+          path: spec.template.spec.initContainers[?(@.name == "wireguard")].image
           pattern: '^registry\.example\.com/twg-wireguard:.*@sha256:0{64}$'
 
   - it: says nothing about HTTP 421 while RPC auth is on

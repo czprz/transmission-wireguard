@@ -139,14 +139,19 @@ chart_args() {
     --set tests.enabled=true
     --set "tests.ipEchoUrl=http://$CANARY_IP/cgi-bin/ip"
   )
-  # wireguard.unprivileged: the sidecar with NET_ADMIN + NET_RAW and the
-  # pod's sysctls (the cluster scripts allow them on the kubelet).
-  # unprivileged-init: the same, with the sysctls set by an init container.
-  if [[ ${SIDECAR:-privileged} == unprivileged* ]]; then
-    CHART_ARGS+=(--set wireguard.unprivileged.enabled=true)
-    [[ ${IPV6:-0} != 1 ]] || CHART_ARGS+=(--set wireguard.unprivileged.blockRouterAdvertisements=true)
-  fi
-  [[ ${SIDECAR:-} != unprivileged-init ]] || CHART_ARGS+=(--set wireguard.unprivileged.sysctls=initContainer)
+  # The sidecar: the chart's default (unprivileged, sysctls from an init
+  # container), privileged (unprivileged.enabled=false, as in 1.0), or
+  # unprivileged with the sysctls set for the pod (the cluster scripts allow
+  # them on the kubelet).
+  case ${SIDECAR:-default} in
+    default | unprivileged-init) ;;
+    privileged) CHART_ARGS+=(--set wireguard.unprivileged.enabled=false) ;;
+    unprivileged)
+      CHART_ARGS+=(--set wireguard.unprivileged.sysctls=pod)
+      [[ ${IPV6:-0} != 1 ]] || CHART_ARGS+=(--set wireguard.unprivileged.blockRouterAdvertisements=true)
+      ;;
+    *) echo "SIDECAR must be default, privileged or unprivileged" >&2; return 1 ;;
+  esac
   # A Transmission image built here (image/transmission), loaded into the
   # cluster, as images.transmission.flavor=minimal.
   if [[ -n ${TRANSMISSION_IMAGE:-} ]]; then

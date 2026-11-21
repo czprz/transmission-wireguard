@@ -155,11 +155,12 @@ spec:
             - |
               set -e
               echo 1 >/proc/sys/net/ipv4/conf/all/src_valid_mark
-              {{- if .Values.wireguard.unprivileged.blockRouterAdvertisements }}
+              # Where eth0 has IPv6: router advertisements may not add
+              # routes past the tunnel (what the kill switch does when
+              # privileged).
               for f in accept_ra_pinfo accept_ra_rt_info_max_plen; do
                 [ ! -e /proc/sys/net/ipv6/conf/eth0/$f ] || echo 0 >/proc/sys/net/ipv6/conf/eth0/$f
               done
-              {{- end }}
           securityContext:
             privileged: true
           resources:
