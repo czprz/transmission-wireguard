@@ -161,16 +161,18 @@ setup_suite() {
 
   # Pull up front with retries: registries rate-limit bursts of pulls, so
   # back off between attempts.
-  local image attempt
+  local image attempt wait
   local images=("$WG_IMAGE" "$SIDECAR_IMAGE" "$TX_IMAGE" "$CANARY_IMAGE" "$TRACKER_IMAGE")
   ((NATPMP)) && images+=("$NATPMP_IMAGE")
   for image in "${images[@]}"; do
     # A sidecar image built here (image/wireguard) is not pulled.
     [[ $image != "$SIDECAR_IMAGE" || $image == "$WG_IMAGE" ]] || ! docker image inspect "$image" >/dev/null 2>&1 || continue
-    for attempt in 1 2 3 4 5; do
+    # 10, 20, 40, 80, 120 s: a rate limit (toomanyrequests) can last minutes.
+    for attempt in 1 2 3 4 5 6; do
       docker pull -q "$image" >/dev/null && break
-      ((attempt < 5)) || { echo "cannot pull $image" >&2; return 1; }
-      sleep $((attempt * 5))
+      ((attempt < 6)) || { echo "cannot pull $image" >&2; return 1; }
+      wait=$((10 << (attempt - 1)))
+      sleep $((wait > 120 ? 120 : wait))
     done
   done
   local client_key server_pub

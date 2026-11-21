@@ -1,8 +1,9 @@
 name: Helm Chart
 
 # main runs it through helm-main.yml, which releases only if it passes. That
-# call grants only contents: read, so no job here may ask for more
-# permissions: GitHub would refuse to start Helm Main (startup_failure).
+# call grants contents: read and packages: read (the suites pull from GHCR
+# as the workflow), so no job here may ask for more permissions: GitHub
+# would refuse to start Helm Main (startup_failure).
 on:
   pull_request:
   push:
@@ -68,6 +69,11 @@ jobs:
       - name: Package test
         run: tests/package-test.sh
 
+      - name: Workflow permissions test
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || pip install --user --quiet pyyaml
+          tests/workflow-test.sh
+
 
   # Leak tests: try to make traffic escape the tunnel and fail if it does.
   # The Docker test runs on amd64 and arm64 (the images are multi-arch), and
@@ -75,6 +81,9 @@ jobs:
   # src_valid_mark sysctl, as the README documents).
   e2e-docker:
     name: e2e-docker (${{ matrix.runner }}, ${{ matrix.sidecar }})
+    permissions:
+      contents: read
+      packages: read
     runs-on: ${{ matrix.runner }}
     needs: verify
     timeout-minutes: 45
@@ -91,6 +100,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      # Pulls from GHCR as this workflow: anonymous pulls share a rate
+      # limit across GitHub's runners and get toomanyrequests.
+      - name: Log in to GHCR
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
 
       - name: Load WireGuard kernel module
         run: sudo modprobe wireguard
@@ -140,6 +157,9 @@ jobs:
   # release notes; kubectl matches the cluster's version.
   e2e-kind:
     name: e2e-kind (${{ matrix.cni }}, k8s ${{ matrix.k8s }}, helm ${{ matrix.helm }}${{ matrix.upgrade && ', upgrade' || '' }}${{ matrix.sidecar && format(', {0} sidecar', matrix.sidecar) || '' }}${{ matrix.arch && format(', {0}', matrix.arch) || '' }})
+    permissions:
+      contents: read
+      packages: read
     runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     needs: verify
     timeout-minutes: 45
@@ -240,6 +260,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
         with:
           fetch-depth: 0  # the release tags, for the upgrade runs
+
+      # Pulls from GHCR as this workflow: anonymous pulls share a rate
+      # limit across GitHub's runners and get toomanyrequests.
+      - name: Log in to GHCR
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
 
       - name: Load WireGuard kernel module
         run: sudo modprobe wireguard

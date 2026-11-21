@@ -20,8 +20,10 @@ jobs:
   # release commits too: nothing is released unless it passed here.
   verify:
     uses: ./.github/workflows/helm-chart.yaml
+    # Everything helm-chart.yaml's jobs ask for, and nothing more.
     permissions:
       contents: read
+      packages: read
 
   # release-please keeps a "chore(main): release X.Y.Z" pull request up to
   # date: the next version (Conventional Commits) in Chart.yaml and

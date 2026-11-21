@@ -8,6 +8,7 @@ lint:
 	tests/schema-test.sh
 	tests/metadata-test.sh
 	tests/package-test.sh
+	tests/workflow-test.sh
 
 validate:
 	docker run --rm -v "$(PWD):/repo" -w /repo \

@@ -60,6 +60,9 @@ jobs:
     name: leak test (${{ matrix.runner }}, ${{ matrix.sidecar }})
     needs: changes
     if: needs.changes.outputs.run == 'true'
+    permissions:
+      contents: read
+      packages: read
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -75,6 +78,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      # Pulls from GHCR as this workflow: anonymous pulls share a rate
+      # limit across GitHub's runners and get toomanyrequests.
+      - name: Log in to GHCR
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
 
       - name: Build the image
         run: docker build -t twg-wireguard:ci image/wireguard
@@ -117,6 +128,9 @@ jobs:
     name: cluster (${{ matrix.cni }}, k8s ${{ matrix.k8s }})
     needs: changes
     if: needs.changes.outputs.run == 'true'
+    permissions:
+      contents: read
+      packages: read
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -142,6 +156,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
+
+      # Pulls from GHCR as this workflow: anonymous pulls share a rate
+      # limit across GitHub's runners and get toomanyrequests.
+      - name: Log in to GHCR
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
 
       - name: Build the image
         run: docker build -t twg-wireguard:ci image/wireguard
